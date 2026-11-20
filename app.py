@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -1130,7 +1130,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.6 · IMPROVED LIVE SCORE MATCHING & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.7 · ROYAL FOCUS: NBA • NFL • NHL · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
@@ -1148,7 +1148,7 @@ if st.button("👑 Refresh Queen", type="primary", use_container_width=True):
     api.clear()
     scores.clear()
     st.rerun()
-st.caption("Score source: ESPN where available. The Odds API is not connected in this version; its key alone does not supply live scores. Tennis coverage may be incomplete.")
+st.caption("Live scores: ESPN where available. Previous sports remain in saved history.")
 st.caption("Live market scans refresh about every 2 minutes while the page is active; ESPN scores are cached for up to 60 seconds and saved finals are checked about every 10 minutes. Updates pause when Streamlit sleeps. Tap Refresh Queen for a manual check.")
 
 @st.fragment(run_every="600s")
@@ -1177,14 +1177,14 @@ with st.expander("📚 History, units & backups", expanded=False):
 # Automatic discovery covers live games and the next three calendar days.
 # One stable daily session prevents duplicate parlays from changing filters.
 max_quotes = 60
-max_leagues = len(LEAGUES)
-sport = "All Sports"
+ACTIVE_SPORTS = ("NBA", "NFL", "NHL")
 window = "Next 3 Days"
 
 @st.fragment(run_every="120s")
 def royal_auto_scan():
-    priority = ["NCAAB", "NCAAF", "NBA", "NFL", "NHL", "Tennis", "MLB", "WNBA", "MLS", "EPL", "UFC"]
-    selected = priority[:max_leagues] if sport == "All Sports" else [sport]
+    # Only these sports are eligible for new market scans and parlays.
+    # Historical records from all leagues remain available for grading and export.
+    selected = list(ACTIVE_SPORTS)
     with st.spinner("Finding Polymarket US sports events and checking market quotes..."):
         index = score_index(selected)
         logo_catalog={}
@@ -1279,7 +1279,7 @@ def royal_auto_scan():
 
 
     st.subheader("👑 Queen’s Featured Picks")
-    st.caption("Up to five tracked forecasts with the strongest available evidence. These are not verified betting edges or buy recommendations.")
+    st.caption("NBA · NFL · NHL | Up to five paper-test picks. Not verified betting edges.")
     watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
 
     def evidence_rank(x):
@@ -1309,7 +1309,8 @@ def royal_auto_scan():
     else:
         st.info("No evidence-backed featured picks found in this scan. Queen says WAIT rather than guess.")
 
-    st.caption("Season-record estimates are uncalibrated. Market-favorite selections repeat market sentiment and are not independent forecasts.")
+    with st.expander("ℹ️ How Queen ranks picks", expanded=False):
+        st.caption("Season-record estimates are uncalibrated. Market-favorite selections repeat market sentiment and are not independent forecasts.")
     with st.expander(f"📋 Other tracked games ({max(0,len(watch)-len(featured))})", expanded=False):
         other = [x for x in watch if x not in featured]
         st.caption("These are saved or monitored, but not highlighted as stronger predictions. Some older records use uninformed baselines.")
@@ -1383,7 +1384,7 @@ def royal_auto_scan():
 
     # Session is local calendar date + scan window + sport selector; a repeated scan
     # never changes the picks already locked for that session.
-    royal_session=f"{current.isoformat()}|{window}|{sport}"
+    royal_session=f"{current.isoformat()}|{window}|ROYAL-FOCUS-NBA-NFL-NHL"
     royal_candidates=royal_parlay_candidates()
     royal_new=royal_lock_parlays(royal_candidates,royal_session)
     royal_grade_parlays()
@@ -1419,7 +1420,7 @@ def royal_auto_scan():
                 st.caption("Hypothetical quote-based payout before fees. No fill, wager, or guaranteed value. Shadow tests are NOT Queen's picks.")
     else:
         st.caption("No verified lower-priced YES contracts in this scan.")
-    st.caption("Low prices are not proof of value. Experimental allocations are for paper evaluation, not betting advice.")
+    st.caption("Underdog prices alone do not establish value. Paper testing only.")
 
     st.subheader("🎯 Queen’s Royal Parlays")
     with st.container():
