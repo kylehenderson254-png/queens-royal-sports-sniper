@@ -32,6 +32,12 @@ def conn():
  c.execute("""CREATE TABLE IF NOT EXISTS parlays (
  id TEXT PRIMARY KEY, sport TEXT, legs TEXT, odds_decimal REAL, probability REAL,
  stake REAL, placed_at TEXT, status TEXT DEFAULT 'OPEN', profit REAL, settled_at TEXT)""")
+ c.execute("""CREATE TABLE IF NOT EXISTS live_predictions (
+ id TEXT PRIMARY KEY, sport TEXT, event_id TEXT, event_time TEXT,
+ home TEXT, away TEXT, selection TEXT, home_score REAL, away_score REAL,
+ period TEXT, predicted_at TEXT, confidence REAL, rationale TEXT,
+ status TEXT DEFAULT 'OPEN', result TEXT, final_home REAL, final_away REAL,
+ settled_at TEXT)""")
  c.commit(); return c
 
 def now(): return datetime.now(timezone.utc)
@@ -281,10 +287,12 @@ def update_live_history(games):
     if h is None or a is None:continue
     winner=g['home']['name'] if h>a else g['away']['name'] if a>h else None
     if winner:
-     c.execute("""UPDATE live_predictions SET status='SETTLED',result=?,final_home=?,final_away=?,settled_at=?
-      WHERE id=? AND status='OPEN' """,
-      ('WIN' if c.execute('SELECT selection FROM live_predictions WHERE id=?',(ident,)).fetchone() and
-       c.execute('SELECT selection FROM live_predictions WHERE id=?',(ident,)).fetchone()['selection']==winner else 'LOSS',h,a,now().isoformat(),ident))
+     saved=c.execute("SELECT selection FROM live_predictions WHERE id=? AND status='OPEN'",(ident,)).fetchone()
+     if saved is not None:
+      outcome='WIN' if saved['selection']==winner else 'LOSS'
+      c.execute("""UPDATE live_predictions SET status='SETTLED',result=?,final_home=?,final_away=?,settled_at=?
+       WHERE id=? AND status='OPEN'""",
+       (outcome,h,a,now().isoformat(),ident))
   c.commit()
 
 def live_panel():
