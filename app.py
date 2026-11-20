@@ -6,7 +6,8 @@ import unicodedata
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
+from html import escape
 
 import requests
 import streamlit as st
@@ -39,7 +40,7 @@ div.stButton>button{background:linear-gradient(110deg,#7426bd,#aa48eb);color:whi
 
 
 def get_json(url, params=None):
-    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/1.7"}, timeout=15)
+    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/1.9"}, timeout=15)
     response.raise_for_status()
     return response.json(), response.headers
 
@@ -136,29 +137,59 @@ def scoreboard(league, day):
             record = next((r.get("summary") for r in c.get("records", []) if r.get("type") in ("total", "overall") and r.get("summary")), None)
             rank = c.get("curatedRank") or {}
             rank = rank.get("current") if isinstance(rank, dict) else None
+            logos = team.get("logos") or []
+            team_logo = team.get("logo") or (logos[0].get("href") if logos and isinstance(logos[0], dict) else None)
             teams.append({"name": team.get("displayName", ""), "short": team.get("shortDisplayName", ""),
                           "record": record, "rank": rank if isinstance(rank, int) and 1 <= rank <= 25 else None,
-                          "score": c.get("score", "–")})
+                          "score": c.get("score", "–"), "logo": team_logo})
         if len(teams) != 2:
             continue
         status = event.get("status", {}).get("type", {})
-        output.append({"start": when(event.get("date")), "teams": teams,
+        league_info = (data.get("leagues") or [{}])[0]
+        league_logos = league_info.get("logos") or []
+        league_logo = league_logos[0].get("href") if league_logos and isinstance(league_logos[0], dict) else None
+        output.append({"start": when(event.get("date")), "teams": teams, "league_logo": league_logo,
                        "state": status.get("state", ""), "detail": status.get("shortDetail") or status.get("description", "")})
     return output
 
 
+def safe_logo(url):
+    """Only display ESPN-hosted HTTPS logo URLs supplied by ESPN game data."""
+    if not isinstance(url, str):
+        return None
+    parsed = urlparse(url)
+    return url if parsed.scheme == "https" and (
+        parsed.hostname == "espncdn.com" or (parsed.hostname or "").endswith(".espncdn.com")
+    ) else None
+
+
+def compact_team(team, live=False):
+    logo = safe_logo(team.get("logo"))
+    with st.container():
+        a, b = st.columns([1, 7], vertical_alignment="center", gap="small")
+        with a:
+            if logo:
+                st.image(logo, width=30)
+            else:
+                st.caption("🏟️")
+        with b:
+            rank = f"#{team['rank']} " if team.get("rank") else ""
+            record = f" · {team['record']}" if team.get("record") else ""
+            score = f" · {team['score']}" if live else ""
+            st.markdown(f"**{escape(rank + team['name'])}**{escape(record + score)}")
+
+
 def matching_game(event, games):
-    """Both full/short names and start time must agree; ambiguous matches fail closed."""
+    """Unique ESPN event matched by both team names and start within 90 minutes."""
     target = {norm(event["home"]), norm(event["away"])}
-    matched = []
+    matches = []
     for game in games:
         if not game["start"] or abs((game["start"] - event["start"]).total_seconds()) > 5400:
             continue
-        options = [[norm(t["name"]), norm(t["short"])] for t in game["teams"]]
-        if all(any(name in options[i] for name in target) for i in (0, 1)) and any(
-            target == {a, b} for a in options[0] for b in options[1]):
-            matched.append(game)
-    return matched[0] if len(matched) == 1 else None
+        options = [{norm(t["name"]), norm(t["short"])} for t in game["teams"]]
+        if all(any(name in opts for opts in options) for name in target) and len(target) == 2:
+            matches.append(game)
+    return matches[0] if len(matches) == 1 else None
 
 
 @st.cache_data(ttl=180, show_spinner=False)
@@ -266,12 +297,101 @@ def paper_db():
     return con
 
 
+
+def parlay_tables(con):
+    con.execute("""CREATE TABLE IF NOT EXISTS royal_parlays (
+      parlay_id TEXT PRIMARY KEY, created_at TEXT NOT NULL, legs INTEGER NOT NULL,
+      stake REAL NOT NULL, decimal_odds REAL NOT NULL, status TEXT NOT NULL,
+      settled_at TEXT, payout REAL, pnl REAL, note TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS royal_parlay_legs (
+      parlay_id TEXT NOT NULL, leg_index INTEGER NOT NULL, league TEXT NOT NULL,
+      home TEXT NOT NULL, away TEXT NOT NULL, start TEXT NOT NULL,
+      selection TEXT NOT NULL, decimal_odds REAL NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING',
+      PRIMARY KEY(parlay_id,leg_index))""")
+    con.commit()
+
+
+def settle_parlays(con, games_by_league):
+    """Only settle when a single ESPN final matchup matches both teams and time."""
+    parlay_tables(con)
+    pending = con.execute("SELECT * FROM royal_parlay_legs WHERE status='PENDING'").fetchall()
+    for leg in pending:
+        event = {"home": leg["home"], "away": leg["away"], "start": when(leg["start"])}
+        game = matching_game(event, games_by_league.get(leg["league"], []))
+        if not game or game["state"] != "post":
+            continue
+        scores = {}
+        try:
+            scores = {norm(t["name"]): float(t["score"]) for t in game["teams"]}
+            selected = norm(leg["selection"])
+            if selected not in scores or len(scores) != 2:
+                continue
+            high = max(scores.values())
+            outcome = "VOID" if len(set(scores.values())) == 1 else ("WON" if scores[selected] == high else "LOST")
+            con.execute("UPDATE royal_parlay_legs SET status=? WHERE parlay_id=? AND leg_index=?",
+                        (outcome, leg["parlay_id"], leg["leg_index"]))
+        except (TypeError, ValueError):
+            continue
+    for p in con.execute("SELECT * FROM royal_parlays WHERE status='OPEN'").fetchall():
+        statuses = [r["status"] for r in con.execute(
+            "SELECT status FROM royal_parlay_legs WHERE parlay_id=?", (p["parlay_id"],)).fetchall()]
+        if not statuses or "PENDING" in statuses:
+            continue
+        if "LOST" in statuses:
+            payout = 0.0
+        else:
+            factors = [r["decimal_odds"] for r in con.execute(
+                "SELECT decimal_odds FROM royal_parlay_legs WHERE parlay_id=? AND status='WON'",
+                (p["parlay_id"],)).fetchall()]
+            payout = float(p["stake"])
+            for f in factors:
+                payout *= float(f)
+        pnl = payout - float(p["stake"])
+        con.execute("""UPDATE royal_parlays SET status='SETTLED',settled_at=?,payout=?,pnl=?
+                       WHERE parlay_id=?""",
+                    (datetime.now(timezone.utc).isoformat(), payout, pnl, p["parlay_id"]))
+    con.commit()
+
+
+def parlay_stats(con):
+    parlay_tables(con)
+    row = con.execute("""SELECT
+      COALESCE(SUM(CASE WHEN status='OPEN' THEN stake ELSE 0 END),0) locked,
+      COALESCE(SUM(CASE WHEN status='SETTLED' THEN pnl ELSE 0 END),0) pnl,
+      SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) opened
+      FROM royal_parlays""").fetchone()
+    return {"locked": float(row["locked"]), "pnl": float(row["pnl"]),
+            "open": int(row["opened"] or 0)}
+
+
+def paper_parlay_candidates(rows, now):
+    """Research-only pregame legs from consensus; NOT platform parlay quotes."""
+    options = []
+    for row in rows:
+        event = row["event"]
+        if row["state"] != "pre" or event["start"] <= now:
+            continue
+        # We require at least 3 bookmaker observations; still not independent prediction.
+        if event["books"] < 3:
+            continue
+        team, probability = max(event["probs"].items(), key=lambda x: x[1])
+        if not 0.52 <= probability <= 0.85:
+            continue
+        # Conservative display-only proxy; no actual sportsbook/parlay price.
+        options.append({"event": event, "team": team, "p": probability,
+                        "decimal": 1 / probability,
+                        "key": f"{event['league']}:{event['start'].isoformat()}:{norm(event['home'])}"})
+    options.sort(key=lambda x: (-x["p"], x["event"]["start"]))
+    return options
+
 def paper_summary(con):
     row = con.execute("""SELECT COALESCE(SUM(CASE WHEN status='OPEN' THEN contracts*entry_price+entry_fee ELSE 0 END),0) locked,
         COALESCE(SUM(CASE WHEN status='CLOSED' THEN realized_pnl ELSE 0 END),0) pnl,
         SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) opened FROM paper_trades""").fetchone()
-    return {"cash": STARTING_BANKROLL + float(row["pnl"]) - float(row["locked"]),
-            "pnl": float(row["pnl"]), "open": row["opened"] or 0}
+    parlays = parlay_stats(con)
+    return {"cash": STARTING_BANKROLL + float(row["pnl"]) + parlays["pnl"] - float(row["locked"]) - parlays["locked"],
+            "pnl": float(row["pnl"]) + parlays["pnl"],
+            "open": (row["opened"] or 0) + parlays["open"]}
 
 
 def paper_strip(account):
@@ -288,7 +408,7 @@ if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V1.7 · Verified-data-first Top 5 · Live scores + team records · PAPER ONLY")
+st.caption("V1.9 · Verified-data-first Top 5 · Live scores + team records · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Top 5")
 st.caption("Best researched opportunities first. Live games win ties, never override missing odds or contract verification.")
 
@@ -323,6 +443,12 @@ for league in leagues:
         except (requests.RequestException, ValueError, KeyError):
             pass
 
+try:
+    with paper_db() as con:
+        settle_parlays(con, games_by_league)
+except (sqlite3.Error, OSError):
+    pass
+
 rows = []
 for event in odds:
     if not now - timedelta(hours=8) <= event["start"] <= now + timedelta(days=2):
@@ -345,15 +471,22 @@ else:
         e, game, state = row["event"], row["game"], row["state"]
         status = "🔴 LIVE NOW" if state == "in" else "🟣 STARTING SOON" if e["start"] > now else "⚪ STATUS UNVERIFIED"
         with st.container(border=True):
-            st.markdown(f"**👑 {index}. {e['away']} @ {e['home']}**")
-            st.caption(f"{e['league']} · {status} · {local(e['start'])}")
+            st.markdown(f"**👑 {index}. {escape(e['away'])} @ {escape(e['home'])}**")
+            league_logo = safe_logo(game.get("league_logo")) if game else None
+            if league_logo:
+                logo_col, info_col = st.columns([1, 16], vertical_alignment="center", gap="small")
+                with logo_col:
+                    st.image(league_logo, width=24)
+                with info_col:
+                    st.caption(f"{e['league']} · {status} · {local(e['start'])}")
+            else:
+                st.caption(f"{e['league']} · {status} · {local(e['start'])}")
             if game:
-                details = []
-                for team in game["teams"]:
-                    rank = f"#{team['rank']} " if team['rank'] else ""
-                    record = f" ({team['record']})" if team['record'] else " (record unavailable)"
-                    details.append(f"{rank}{team['name']}{record}" + (f" — {team['score']}" if state == "in" else ""))
-                st.write("  |  ".join(details))
+                left, right = st.columns(2, gap="small")
+                with left:
+                    compact_team(game["teams"][0], live=state == "in")
+                with right:
+                    compact_team(game["teams"][1], live=state == "in")
                 if state == "in":
                     st.caption(game["detail"])
             else:
@@ -385,8 +518,81 @@ st.markdown("#### 📡 Queen's Live Activity")
 st.info("RESEARCH / WAIT — No automatic paper BUY, HOLD or CASH OUT until exact contracts, executable prices, fees, liquidity and appropriately timed probabilities are verified.")
 
 st.markdown("#### 👑 Royal Paper Parlays")
-st.caption("2-, 3- and 5-leg combinations require distinct, independently qualified picks; no combinations are fabricated.")
-st.info("⏳ WAIT — No qualified legs. No paper parlays created.")
+st.caption("Research simulation only. These are NOT verified BUY signals, actual sportsbook odds, or executable Kalshi/Polymarket parlays.")
+leg_count = st.select_slider("Parlay legs", options=[2, 3, 5, 10], value=2)
+stake = st.select_slider("Paper stake ($)", options=[5, 10, 20], value=10)
+candidates = paper_parlay_candidates(rows, now)
+selected = []
+used = set()
+for item in candidates:
+    if item["key"] in used:
+        continue
+    selected.append(item)
+    used.add(item["key"])
+    if len(selected) == leg_count:
+        break
+if len(selected) < leg_count:
+    st.info(f"⏳ Only {len(selected)} eligible pregame research legs found; {leg_count} requested. No simulated parlay assembled.")
+else:
+    combined_probability = 1.0
+    for item in selected:
+        combined_probability *= item["p"]
+        parlay_game = matching_game(item["event"], games_by_league.get(item["event"]["league"], []))
+        if parlay_game:
+            team_data = next((t for t in parlay_game["teams"] if norm(t["name"]) == norm(item["team"])), None)
+            logo = safe_logo(team_data.get("logo")) if team_data else None
+        else:
+            logo = None
+        if logo:
+            logo_col, label_col = st.columns([1, 15], vertical_alignment="center", gap="small")
+            with logo_col:
+                st.image(logo, width=25)
+            with label_col:
+                st.markdown(f"**{escape(item['team'])}** · {escape(item['event']['away'])} @ "
+                            f"{escape(item['event']['home'])} · {item['event']['league']}")
+        else:
+            st.markdown(f"**{escape(item['team'])}** · {escape(item['event']['away'])} @ "
+                        f"{escape(item['event']['home'])} · {item['event']['league']}")
+
+    example_odds = 1 / combined_probability
+    st.caption(f"Illustrative independent-leg estimate: {combined_probability:.1%} all win · "
+               f"fair-price proxy {example_odds:.2f}x · illustrative gross return ${stake*example_odds:.2f}. "
+               "Not a real parlay quote; correlated legs can invalidate the probability estimate.")
+    st.caption("Queen's Reason: These are the strongest available pregame sportsbook consensus favorites "
+               "in the selected leagues, not independently verified value opportunities.")
+    if st.button("📝 Enter hypothetical $%s paper parlay" % stake, key="paper_parlay_enter"):
+        import hashlib
+        stamp = datetime.now(timezone.utc).isoformat()
+        identity = "|".join(item["key"] + ":" + norm(item["team"]) for item in selected)
+        parlay_id = hashlib.sha256(identity.encode()).hexdigest()[:20]
+        try:
+            with paper_db() as con:
+                parlay_tables(con)
+                existing = con.execute("SELECT parlay_id FROM royal_parlays WHERE parlay_id=?", (parlay_id,)).fetchone()
+                if existing:
+                    st.warning("This same selection was already recorded. No duplicate paper entry.")
+                else:
+                    account_now = paper_summary(con)
+                    if account_now["cash"] < stake:
+                        st.warning("Insufficient available paper cash.")
+                    else:
+                        con.execute("""INSERT INTO royal_parlays
+                           (parlay_id,created_at,legs,stake,decimal_odds,status,note)
+                           VALUES (?,?,?,?,?,'OPEN',?)""",
+                           (parlay_id, stamp, leg_count, float(stake), example_odds,
+                            "HYPOTHETICAL fair-odds proxy, not an executable parlay"))
+                        for i, item in enumerate(selected):
+                            e = item["event"]
+                            con.execute("""INSERT INTO royal_parlay_legs
+                              (parlay_id,leg_index,league,home,away,start,selection,decimal_odds)
+                              VALUES (?,?,?,?,?,?,?,?)""",
+                              (parlay_id,i,e["league"],e["home"],e["away"],
+                               e["start"].isoformat(),item["team"],item["decimal"]))
+                        con.commit()
+                        st.success("Hypothetical parlay recorded for paper tracking. Not a real trade.")
+                        st.rerun()
+        except (sqlite3.Error, OSError) as exc:
+            st.error("Paper ledger unavailable: " + str(exc)[:120])
 
 with st.expander("🔴 Live Sports Scoreboard", expanded=False):
     for league in leagues:
@@ -426,6 +632,27 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         with paper_db() as con:
             positions = [dict(x) for x in con.execute("SELECT opened_at,platform,title,side,grade,contracts,entry_price,status,realized_pnl FROM paper_trades ORDER BY opened_at DESC LIMIT 100")]
             activity = [dict(x) for x in con.execute("SELECT created_at,action,details FROM paper_activity ORDER BY event_id DESC LIMIT 100")]
+        parlay_tables(con)
+        parlays = [dict(x) for x in con.execute(
+            "SELECT created_at,legs,stake,decimal_odds,status,payout,pnl,note FROM royal_parlays ORDER BY created_at DESC LIMIT 100")]
+        legs_history = [dict(x) for x in con.execute(
+            "SELECT parlay_id,selection,league,start,status FROM royal_parlay_legs ORDER BY start DESC LIMIT 200")]
+        st.markdown("**👑 Parlay history**")
+        if parlays:
+            st.dataframe(parlays, use_container_width=True, hide_index=True)
+            with st.expander("Individual parlay legs", expanded=False):
+                st.dataframe(legs_history, use_container_width=True, hide_index=True)
+            settled = [x for x in parlays if x["status"] == "SETTLED"]
+            today = datetime.now(CENTRAL).date()
+            def totals_since(days):
+                return sum(float(x["pnl"] or 0) for x in settled if
+                           when(x["created_at"]).astimezone(CENTRAL).date() >= today - timedelta(days=days))
+            st.caption(f"Paper parlay P&L by ENTRY date — today ${totals_since(0):+.2f} · "
+                       f"7 days ${totals_since(6):+.2f} · 30 days ${totals_since(29):+.2f} · "
+                       f"all time ${sum(float(x['pnl'] or 0) for x in settled):+.2f}")
+        else:
+            st.caption("No hypothetical parlays recorded yet.")
+        st.markdown("**Individual paper trades**")
         if positions:
             st.dataframe(positions, use_container_width=True, hide_index=True)
         else:
@@ -438,4 +665,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(exc)[:120])
     st.caption("Streamlit Community Cloud local SQLite storage is not durable; page refreshes are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.7 · PAPER ONLY · NO REAL ORDERS")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.9 · PAPER ONLY · NO REAL ORDERS")
