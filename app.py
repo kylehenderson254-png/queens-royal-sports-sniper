@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.7.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -581,28 +581,57 @@ def refresh_saved_results():
     return changed,parlay_changes,'ESPN final results are provisional; exchange settlements have not been independently confirmed'
 
 
-def royal_results_dashboard():
+# Royal Focus started with the V4.7 deployment on Nov 20, 2026 at 9:07 AM CT.
+# This immutable cutoff excludes earlier experiments, even in the same leagues.
+ROYAL_FOCUS_SINCE_UTC = "2026-11-20T15:07:00+00:00"
+ROYAL_FOCUS_SPORTS = ("NBA", "NFL", "NHL")
+
+
+def royal_focus_stats():
+    """Read-only split: never alter historical grades, trades, or tickets."""
     with db() as c:
-        picks=c.execute("SELECT COUNT(*) n, SUM(result='WIN') w, SUM(result='LOSS') l, SUM(result='PENDING') pending FROM royal_predictions_v34").fetchone()
-        papers=c.execute("SELECT COUNT(*) n, SUM(status='WIN') w, SUM(status='LOSS') l, COALESCE(SUM(CASE WHEN status IN ('WIN','LOSS') THEN pnl ELSE 0 END),0) pnl FROM royal_paper_v34").fetchone()
-        parlays=[dict(r) for r in c.execute('SELECT leg_count,status,COUNT(*) n FROM royal_parlays_v37 GROUP BY leg_count,status ORDER BY leg_count,status')]
-        sport_rows=[dict(r) for r in c.execute("SELECT sport,COUNT(*) total,SUM(result='WIN') wins,SUM(result='LOSS') losses FROM royal_predictions_v34 GROUP BY sport ORDER BY total DESC")]
-    w,l=picks['w'] or 0,picks['l'] or 0
-    st.subheader('📊 Royal Results & Unit Scoreboard')
+        where = "sport IN (?,?,?) AND created_at >= ?"
+        args = (*ROYAL_FOCUS_SPORTS, ROYAL_FOCUS_SINCE_UTC)
+        picks = c.execute(f"""SELECT COUNT(*) n,
+            COALESCE(SUM(result='WIN'),0) w,
+            COALESCE(SUM(result='LOSS'),0) l,
+            COALESCE(SUM(result='PENDING'),0) pending
+            FROM royal_predictions_v34 WHERE {where}""", args).fetchone()
+        paper = c.execute("""SELECT COUNT(*) n,
+            COALESCE(SUM(CASE WHEN t.status IN ('WIN','LOSS') THEN t.pnl ELSE 0 END),0) pnl
+            FROM royal_paper_v34 t JOIN royal_predictions_v34 p ON p.id=t.prediction_id
+            WHERE p.sport IN (?,?,?) AND p.created_at >= ?""", args).fetchone()
+        parlays = c.execute("""SELECT COUNT(*) n FROM royal_parlays_v37
+            WHERE created_at >= ? AND session_key LIKE ?""",
+            (ROYAL_FOCUS_SINCE_UTC, "%ROYAL-FOCUS-NBA-NFL-NHL%" )).fetchone()
+        all_picks = c.execute("SELECT COUNT(*) FROM royal_predictions_v34").fetchone()[0]
+    return dict(picks), dict(paper), parlays['n'], all_picks
+
+
+def royal_results_dashboard():
+    focus, papers, focus_parlays, total_saved = royal_focus_stats()
+    w,l=focus['w'],focus['l']
+    st.subheader('📊 Royal Focus Scoreboard')
     a,b,c,d=st.columns(4)
-    a.metric('Saved picks',picks['n'])
-    b.metric('Graded accuracy',f'{w/(w+l):.1%}' if w+l else '—')
-    c.metric('Pending picks',picks['pending'] or 0)
-    d.metric('Recorded paper P&L',f"${papers['pnl']:+,.2f}")
-    st.caption(f"Graded picks: {w} WIN / {l} LOSS. Original paper trades: {papers['n']} (${100} each where recorded). Net paper units: {papers['pnl']/BASE_UNIT:+.2f} U at $20/U. Experimental suggested units are NOT additional executed trades.")
-    st.caption('Results use ESPN finals, not confirmed exchange settlements. Paper P&L excludes fees, slippage and actual fills. No parlay payout is calculated without verified combo pricing.')
-    with st.expander('🏆 Accuracy by sport',expanded=False):
+    a.metric('Focus picks',focus['n'])
+    b.metric('Focus accuracy',f'{w/(w+l):.1%}' if w+l else '—')
+    c.metric('Focus pending',focus['pending'])
+    d.metric('Focus paper P&L',f"${papers['pnl']:+,.2f}")
+    st.caption(f"NBA · NFL · NHL | Since Nov 20, 2026 at 9:07 AM CT · {w} wins / {l} losses · {papers['n']} paper trades · {focus_parlays} new parlays")
+    if not w+l:
+        st.caption('No graded Royal Focus picks yet. Accuracy will appear after verified final results.')
+    st.caption('Paper results are provisional until exchange settlement; no actual orders placed.')
+    with st.expander('📚 Historical archive — previous experiments',expanded=False):
+        with db() as c:
+            picks=c.execute("SELECT COUNT(*) n, COALESCE(SUM(result='WIN'),0) w, COALESCE(SUM(result='LOSS'),0) l FROM royal_predictions_v34").fetchone()
+            old_parlays=c.execute('SELECT COUNT(*) FROM royal_parlays_v37').fetchone()[0]
+            sport_rows=[dict(r) for r in c.execute("SELECT sport,COUNT(*) total,COALESCE(SUM(result='WIN'),0) wins,COALESCE(SUM(result='LOSS'),0) losses FROM royal_predictions_v34 GROUP BY sport ORDER BY total DESC")]
+        old_count=total_saved-focus['n']
+        st.write(f"Older picks outside Royal Focus: **{old_count}** · All-time saved picks: **{picks['n']}** · All-time parlays: **{old_parlays}**")
+        st.caption('These records remain saved and can be graded, but do not affect Royal Focus accuracy or P&L.')
         for r in sport_rows:
-            won,lost=r['wins'] or 0,r['losses'] or 0
-            st.write(f"{SPORT_ICON.get(r['sport'],'🏆')} {r['sport']}: {won} W / {lost} L · {won/(won+lost):.1%} graded accuracy" if won+lost else f"{SPORT_ICON.get(r['sport'],'🏆')} {r['sport']}: {r['total']} tracked · not graded yet")
-    with st.expander('🎯 Saved parlay result counts',expanded=False):
-        if not parlays: st.caption('No saved parlay tickets yet.')
-        for r in parlays: st.write(f"{r['leg_count']}-leg · {r['status']}: {r['n']}")
+            won,lost=r['wins'],r['losses']
+            st.write(f"{SPORT_ICON.get(r['sport'],'🏆')} {r['sport']}: {r['total']} saved · {won} W / {lost} L")
 
 
 def prediction_lookup():
@@ -1130,19 +1159,16 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.7 · ROYAL FOCUS: NBA • NFL • NHL · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.7.1 · ROYAL FOCUS: NBA • NFL • NHL · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
-# Saved records load without a new market scan.
-with db() as _quick_db:
-    _qp=_quick_db.execute("SELECT COUNT(*) FROM royal_predictions_v34").fetchone()[0]
-    _qt=_quick_db.execute("SELECT COUNT(*),COALESCE(SUM(pnl),0) FROM royal_paper_v34").fetchone()
-    _ql=_quick_db.execute("SELECT COUNT(*) FROM royal_parlays_v37").fetchone()[0]
+# The primary dashboard shows ONLY the post-switch Royal Focus cohort.
+_focus_picks, _focus_papers, _focus_parlays, _all_saved = royal_focus_stats()
 st.markdown("#### 👑 Royal Dashboard")
 _q1,_q2,_q3,_q4=st.columns(4)
-_q1.metric("Saved picks",_qp)
-_q2.metric("Paper trades",_qt[0])
-_q3.metric("Parlays",_ql)
-_q4.metric("Paper P&L",f"${_qt[1]:+,.2f}")
+_q1.metric("Focus picks",_focus_picks['n'])
+_q2.metric("Focus paper trades",_focus_papers['n'])
+_q3.metric("Focus parlays",_focus_parlays)
+_q4.metric("Focus paper P&L",f"${_focus_papers['pnl']:+,.2f}")
 # One simple refresh button. Automatic updates run only while the app session is active.
 if st.button("👑 Refresh Queen", type="primary", use_container_width=True):
     api.clear()
@@ -1163,7 +1189,8 @@ def royal_auto_results():
 
 royal_auto_results()
 
-with st.expander("📚 History, units & backups", expanded=False):
+with st.expander("📚 Historical archive, units & backups", expanded=False):
+    st.caption("All-time historical records below include picks from before Royal Focus. They do not affect the Focus scoreboard above.")
     royal_unit_manager()
     st.caption("0 U = SKIP / WATCH: no verified edge. Experimental paper units are not real-money recommendations.")
     prediction_panel()
