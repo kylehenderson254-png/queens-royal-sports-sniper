@@ -6,7 +6,7 @@ from urllib.parse import quote
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -53,7 +53,7 @@ def db():
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.2"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.3"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -261,7 +261,7 @@ def display_row(x, number=None):
         action = "WAIT"
         main = "No verified quote"
         secondary = "Price unavailable"
-    with st.container():
+    with st.container(border=True):
         st.markdown(f'''<div class="royal-game">
           <div class="royal-game-head"><span class="sport-icon">{icon}</span>
           <span class="royal-match">{f'{number}. ' if number else ''}{title}</span>
@@ -386,28 +386,38 @@ h2{font-size:clamp(1.15rem,3vw,1.5rem)!important}
 [data-testid="stMetricValue"]{font-size:1.2rem}
 .stButton>button{border-radius:22px;min-height:2.55rem}
 [data-testid="stExpander"]{border-radius:10px;border-color:#352b3a}
-.royal-game{border-bottom:1px solid #33263b;padding:.42rem .1rem .32rem;margin:0}
-.royal-game-head{display:flex;align-items:center;gap:.45rem;min-width:0}
+.royal-game{padding:.1rem 0 .05rem;margin:0;min-height:100px}
+.royal-game-head{display:flex;align-items:flex-start;gap:.3rem;min-width:0}
 .sport-icon{font-size:1.2rem;flex-shrink:0}
-.royal-match{font-size:.97rem;font-weight:700;color:#f2eafa;flex:1;min-width:0;line-height:1.22}
+.royal-match{font-size:.88rem;font-weight:700;color:#f2eafa;flex:1;min-width:0;line-height:1.22;overflow-wrap:anywhere}
 .logos{display:flex;gap:3px;align-items:center;flex-shrink:0}
-.team-logo{height:24px;width:24px;object-fit:contain}
-.royal-game-bottom{display:flex;align-items:center;justify-content:space-between;gap:.4rem;margin-left:1.65rem;padding-top:.12rem}
+.team-logo{height:19px;width:19px;object-fit:contain}
+.royal-game-bottom{display:flex;align-items:flex-start;justify-content:space-between;gap:.25rem;margin-left:0;padding-top:.3rem;flex-wrap:wrap}
 .royal-game-text{min-width:0}
-.royal-meta{font-size:.72rem;color:#b3a6c0;margin:0 0 .12rem}
-.royal-selection{font-size:.87rem;font-weight:700;color:#e9d3ff;line-height:1.2}
-.royal-price{font-size:.73rem;color:#a99cb1;margin-top:.1rem}
-.royal-watch{font-size:.7rem;font-weight:750;color:#f3c978;border:1px solid #59462d;border-radius:18px;padding:.18rem .5rem;white-space:nowrap}
-[data-testid="stVerticalBlockBorderWrapper"]{border-radius:10px!important}
+.royal-meta{font-size:.67rem;color:#b3a6c0;margin:0 0 .12rem}
+.royal-selection{font-size:.78rem;font-weight:700;color:#e9d3ff;line-height:1.2}
+.royal-price{font-size:.68rem;color:#a99cb1;margin-top:.1rem}
+.royal-watch{font-size:.64rem;font-weight:750;color:#f3c978;border:1px solid #59462d;border-radius:18px;padding:.18rem .5rem;white-space:nowrap}
+[data-testid="stVerticalBlockBorderWrapper"]{border-radius:12px!important}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.royal-game){background:linear-gradient(145deg,#211628,#15121b);border:1px solid #46304e!important;padding:.45rem .55rem!important;min-width:0}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.royal-game) [data-testid="stExpander"]{margin-top:.1rem}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.royal-game) [data-testid="stExpander"] summary{font-size:.69rem;padding:.32rem!important}
+[data-testid="stVerticalBlockBorderWrapper"]:has(.royal-game) [data-testid="stExpander"] [data-testid="stExpanderDetails"]{font-size:.76rem}
 @media(max-width:650px){
  .block-container{padding-left:.55rem;padding-right:.55rem}
  [data-testid="stHorizontalBlock"]{gap:.3rem!important}
  [data-testid="column"]{min-width:calc(50% - .3rem)!important;flex:1 1 calc(50% - .3rem)!important}
  [data-testid="stMetric"]{padding:.35rem}
  [data-testid="stMetricValue"]{font-size:1.05rem}
- .royal-match{font-size:.9rem}
- .team-logo{width:21px;height:21px}
- .royal-game{padding:.36rem .05rem .25rem}
+ .royal-match{font-size:.76rem}
+ .team-logo{width:15px;height:15px}
+ .royal-game{padding:.02rem;min-height:118px}
+ .sport-icon{font-size:.95rem}
+ .royal-meta{font-size:.6rem}
+ .royal-selection{font-size:.72rem}
+ .royal-price{font-size:.63rem}
+ .royal-watch{font-size:.6rem;padding:.1rem .35rem}
+ [data-testid="stVerticalBlockBorderWrapper"]:has(.royal-game){padding:.35rem!important}
 }
 </style>""",unsafe_allow_html=True)
 
@@ -425,7 +435,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.2 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
+st.caption("V3.3 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
@@ -531,7 +541,14 @@ for x in watch:
     unique.append(x); seen.add(x["event_id"])
 if window == "🔴 Live":
     st.caption("Showing only markets marked live by the event feed or matched scoreboard. Tennis is included when the US feed provides it.")
-for i,x in enumerate(unique[:10], 1): display_row(x, i)
+# Pair consecutive games in a compact two-column grid, including on phones.
+for offset in range(0, min(len(unique), 10), 2):
+    left_card, right_card = st.columns(2, gap="small")
+    with left_card:
+        display_row(unique[offset], offset + 1)
+    if offset + 1 < min(len(unique), 10):
+        with right_card:
+            display_row(unique[offset + 1], offset + 2)
 if not unique: st.info("No valid open two-sided quotes in this scan. Queen says WAIT. Try Today or Next 3 Days and check the feed diagnostics.")
 st.caption("Top 10 includes different leagues when possible. WATCH is not a buy recommendation; no independent win-probability model is validated yet.")
 
