@@ -6,7 +6,7 @@ from urllib.parse import quote
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -53,7 +53,7 @@ def db():
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.1"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.2"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -99,24 +99,76 @@ def event_score(sport, event, index):
     return index.get(key)
 
 def identify_yes_team(market):
-    """Only map YES to a team when the contract metadata is unambiguous.
+    """Fail closed: map YES only with an explicit contract-side assertion.
 
-    A two-team list alone does NOT tell us which team's win pays YES.
+    The event's two marketSides are competitors, not YES/NO outcomes.
+    The event slug and a low quote cannot prove which team YES pays on.
     """
-    sides = [s for s in (market.get("marketSides") or []) if isinstance(s, dict)]
-    if len(sides) == 1:
-        team = (sides[0].get("team") or {}).get("name")
-        return (str(team), "Single named team side") if team else (None, "One side, no team name")
+    sides = [v for v in market.get("marketSides", []) if isinstance(v, dict)]
+    names = [str((v.get("team") or {}).get("name") or "").strip() for v in sides]
+    names = [n for n in names if n]
+    if not names:
+        return None, "No named competitors in marketSides"
+
+    # A one-sided, explicitly named winner contract is sufficient only when
+    # the market's own question states the proposition, not just an event title.
+    proposition = str(market.get("question") or market.get("contractQuestion") or "").strip()
+    if proposition:
+        matches = [n for n in names if re.search(r"\b" + re.escape(n) + r"\b", proposition, re.I)]
+        winner_question = bool(re.search(r"\b(win|wins|winner|beat|defeat|victory)\b", proposition, re.I))
+        if len(matches) == 1 and winner_question and not re.search(r"\b(not|won.t|lose|loses)\b", proposition, re.I):
+            return matches[0], "Explicit team-to-win contract question"
+
     explicit = []
     for side in sides:
-        team = (side.get("team") or {}).get("name")
-        # Only an explicitly labeled YES side may identify the contract outcome.
-        labels = [side.get(k) for k in ("side", "outcome", "position", "result", "label")]
-        if team and any(str(v).strip().upper() == "YES" for v in labels if v is not None):
-            explicit.append(str(team))
-    if len(explicit) == 1:
-        return explicit[0], "Explicit YES team side"
-    return None, f"Ambiguous: {len(sides)} sides, no unique explicit YES team"
+        team = str((side.get("team") or {}).get("name") or "").strip()
+        if not team:
+            continue
+        # Check side labels, but never treat an arbitrary team array order as YES.
+        for key in ("side", "outcome", "position", "result", "label", "contractSide"):
+            val = side.get(key)
+            if isinstance(val, str) and val.strip().upper() == "YES":
+                explicit.append(team)
+                break
+    if len(set(explicit)) == 1:
+        return explicit[0], "Explicit YES side on named competitor"
+    return None, f"Unverified YES mapping: {len(sides)} competitors, no explicit winning side"
+
+@st.cache_data(ttl=120, show_spinner=False)
+def market_details(slug):
+    """Optional detailed metadata. Endpoint may not be available for every market."""
+    if not slug or not re.fullmatch(r"[A-Za-z0-9_-]+", str(slug)):
+        return None, "Invalid slug"
+    return api(f"/v1/markets/{quote(str(slug), safe='')}")
+
+def resolve_contract(market):
+    # Never infer the YES team from slug abbreviation or event title.
+    name, reason = identify_yes_team(market)
+    if name:
+        return name, reason, "event market"
+    slug = market.get("slug")
+    if not slug:
+        return None, reason, "none"
+    detail, err = market_details(slug)
+    if not isinstance(detail, dict):
+        return None, reason + (f"; detail unavailable ({err})" if err else ""), "none"
+    # Only use a nested object that itself describes the exact same market.
+    candidates = [detail]
+    for key in ("market", "marketData"):
+        obj = detail.get(key)
+        if isinstance(obj, dict):
+            candidates.append(obj)
+    for candidate in candidates:
+        if candidate.get("slug") and candidate["slug"] != slug:
+            continue
+        merged = dict(market)
+        for key in ("question", "contractQuestion", "marketSides"):
+            if candidate.get(key):
+                merged[key] = candidate[key]
+        name, detail_reason = identify_yes_team(merged)
+        if name:
+            return name, detail_reason, "market detail"
+    return None, reason + "; detail does not establish YES outcome", "market detail"
 
 def events_for(sport):
     # Different league identifiers may appear across Polymarket US surfaces.
@@ -222,6 +274,7 @@ def display_row(x, number=None):
             st.write("Game:", x.get("score_detail") or local(x.get("start")))
             st.write("Verified YES outcome:", x["selection"] if verified else "Not established by contract metadata")
             st.write("Mapping check:", x.get("side_reason", "Unknown"))
+            st.write("Mapping source:", x.get("mapping_source", "Not available"))
             st.write("Market slug:", x.get("slug"))
             if valid:
                 st.write(f"Observed YES ask {q['ask']:.0%}, bid {q['bid']:.0%}")
@@ -372,7 +425,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.1 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
+st.caption("V3.2 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
@@ -421,11 +474,11 @@ for s, e in all_events:
         if not slug: continue
         sides = m.get("marketSides") or []
         # One contract is one instrument. Only label a side when the API identifies it.
-        verified_team, side_reason = identify_yes_team(m)
+        verified_team, side_reason, mapping_source = resolve_contract(m)
         selection = verified_team or (m.get("titleShort") or m.get("question") or m.get("title") or slug)
         market_type = str(m.get("sportsMarketTypeV2") or m.get("sportsMarketType") or "Market").replace("SPORTS_MARKET_TYPE_", "").replace("_", " ").title()
         rows.append({"event_id":str(e.get("id")), "sport":s, "title":str(e.get("title") or "Sports event"),
-                     "slug":str(slug), "selection":str(selection), "market_type":market_type, "verified_side":bool(verified_team), "side_reason":side_reason, "raw_sides":sides, "event_raw":e,
+                     "slug":str(slug), "selection":str(selection), "market_type":market_type, "verified_side":bool(verified_team), "side_reason":side_reason, "mapping_source":mapping_source, "raw_sides":sides, "market_raw":m, "event_raw":e,
                      "start":e.get("eventDate") or e.get("startTime") or e.get("startDate"),
                      "live":is_live, "game_state":game["state"] if game else "unknown",
                      "score_detail":game["detail"] if game else "", "score_game":game, "quote":None, "error":None})
@@ -457,12 +510,12 @@ with st.expander("🔎 Why paper entries are skipped", expanded=False):
         st.write("No markets checked in this game window.")
     for reason, count in reasons.most_common():
         st.write(f"{count} contracts · {reason}")
-    st.caption("A multi-team list alone does not identify which team YES represents. This is for debugging, not betting advice.")
+    st.caption("Team arrays and event slugs do not identify the YES winner. The expanded sample now includes original contract metadata for troubleshooting; no guessing.")
     if rows:
         st.markdown("**Sample market metadata (copy and send this to me)**")
         sample = next((x for x in rows if not x.get("verified_side")), rows[0])
         st.json({"event":sample["title"], "market_slug":sample["slug"], "market_type":sample["market_type"],
-                 "marketSides":sample.get("raw_sides"), "mapping_result":sample.get("side_reason")}, expanded=False)
+                 "marketSides":sample.get("raw_sides"), "market_metadata":sample.get("market_raw"), "mapping_result":sample.get("side_reason")}, expanded=False)
 
 st.subheader("👑 Queen’s Top 10 · Market Watch")
 watch = [x for x in checked if x.get("quote") and x["quote"]["valid"] and "OPEN" in x["quote"]["state"].upper()]
