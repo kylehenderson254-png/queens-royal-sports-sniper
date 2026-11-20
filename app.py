@@ -40,7 +40,7 @@ div.stButton>button{background:linear-gradient(110deg,#7426bd,#aa48eb);color:whi
 
 
 def get_json(url, params=None):
-    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.0"}, timeout=15)
+    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.2"}, timeout=15)
     response.raise_for_status()
     return response.json(), response.headers
 
@@ -192,107 +192,68 @@ def matching_game(event, games):
     return matches[0] if len(matches) == 1 else None
 
 
-# Explicitly scoped game-winner series. No Olympics, futures, or unrelated sports.
-GAME_SERIES = {
-    "NBA": ("KXNBAGAME",),
-    "NFL": ("KXNFLGAME",),
-    "NCAAB": ("KXNCAABGAME", "KXNCAAMBGAME"),
-    "NCAAF": ("KXNCAAFGAME", "KXNCAAFBGAME"),
-}
-
-def game_series_for(series):
-    ticker = str(series.get("ticker") or "").upper()
-    title = norm(series.get("title") or "")
-    for league, tickers in GAME_SERIES.items():
-        if ticker in tickers:
-            return league
-    # Discovery fallback is deliberately narrow: require both league and
-    # single-game winner terminology, never broad 'basketball'/'football'.
-    league_words = {"NBA": ("nba",), "NFL": ("nfl",),
-                    "NCAAB": ("ncaab", "college basketball", "mens college basketball"),
-                    "NCAAF": ("ncaaf", "college football")}
-    for league, words in league_words.items():
-        if any(w in title for w in words) and any(
-            w in title for w in ("game winner", "game winners", "game result", "moneyline", "match winner")
-        ) and not any(w in title for w in ("season", "championship", "futures", "olympic", "award")):
-            return league
-    return None
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def kalshi_scan(active_leagues):
-    """Scan only game-winner series for the four selected leagues."""
-    results, seen, errors = [], set(), []
-    catalog = []
-    try:
-        payload, _ = get_json(f"{KALSHI}/series", {"category": "Sports"})
-        catalog = payload.get("series") or []
-    except (requests.RequestException, ValueError, TypeError) as exc:
-        errors.append("Series directory: " + str(exc)[:110])
-    targets = {league: set(GAME_SERIES[league]) for league in active_leagues}
-    for entry in catalog:
-        league = game_series_for(entry)
-        if league in targets:
-            targets[league].add(str(entry.get("ticker") or "").upper())
+@st.cache_data(ttl=180, show_spinner=False)
+def kalshi_scan():
+    """Kalshi-only, paginated sports discovery with bounded public API requests."""
+    results, seen = [], set()
+    series, _ = get_json(f"{KALSHI}/series", {"category": "Sports"})
+    candidates = [x for x in series.get("series", []) if str(x.get("category", "")).lower() == "sports"]
+    # Prioritize leagues in our sportsbook coverage, not alphabetical unrelated sports.
+    terms = ("nba", "nfl", "ncaab", "ncaaf", "basketball", "football", "college")
+    candidates.sort(key=lambda x: (0 if any(t in norm(str(x.get("ticker", "")) + " " + str(x.get("title", ""))) for t in terms) else 1, str(x.get("ticker", ""))))
     checked = 0
-    # Explicit series first; cap pages to protect public API usage.
-    for league in active_leagues:
-        for ticker in sorted(targets[league]):
-            if not ticker:
-                continue
-            cursor = None
-            got_page = False
-            for page in range(4):
-                params = {"series_ticker": ticker, "status": "open", "limit": 200}
-                if cursor:
-                    params["cursor"] = cursor
-                try:
-                    data, _ = get_json(f"{KALSHI}/markets", params)
-                except (requests.RequestException, ValueError, TypeError) as exc:
-                    if not got_page:
-                        errors.append(f"{league}/{ticker}: {str(exc)[:85]}")
-                    break
-                got_page = True
-                if page == 0:
-                    checked += 1
-                for m in data.get("markets", []):
-                    mid = str(m.get("ticker") or "")
-                    if not mid or mid in seen:
-                        continue
-                    title = str(m.get("title") or "")
-                    subtitle = str(m.get("subtitle") or "")
-                    yes_outcome = str(m.get("yes_sub_title") or "")
-                    context = " ".join((title, subtitle, yes_outcome, str(m.get("no_sub_title") or "")))
-                    if any(w in norm(context) for w in ("2028 olympic", "season champion", "championship winner")):
-                        continue
-                    seen.add(mid)
-                    results.append({
-                        "platform": "Kalshi", "league": league, "series": ticker,
-                        "id": mid, "title": title or subtitle, "context": context,
-                        "outcome": yes_outcome,
-                        "yes": price(m.get("yes_ask_dollars")) or price(m.get("yes_ask"), True),
-                        "no": price(m.get("no_ask_dollars")) or price(m.get("no_ask"), True),
-                        "volume": float(m.get("volume") or 0),
-                        "end": m.get("close_time"), "event_ticker": m.get("event_ticker"),
-                        "url": "https://kalshi.com/markets/" + quote(ticker.lower()),
-                        "quote_kind": "Public Kalshi ask snapshot; fees, depth and fills unverified"
-                    })
-                cursor = data.get("cursor")
-                if not cursor:
-                    break
-    return results, checked, errors
+    for series_info in candidates[:75]:
+        ticker = str(series_info.get("ticker") or "")
+        if not ticker:
+            continue
+        checked += 1
+        cursor = None
+        for page in range(3):
+            params = {"series_ticker": ticker, "status": "open", "limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                data, _ = get_json(f"{KALSHI}/markets", params)
+            except (requests.RequestException, ValueError, TypeError):
+                break
+            for m in data.get("markets", []):
+                mid = str(m.get("ticker") or "")
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                # YES and NO are prices for the exact outcome described by the market.
+                title = str(m.get("title") or "")
+                subtitle = str(m.get("subtitle") or "")
+                outcome = str(m.get("yes_sub_title") or "")
+                context = " ".join([str(series_info.get("title") or ""), ticker, title,
+                                    subtitle, outcome, str(m.get("no_sub_title") or "")])
+                results.append({"platform": "Kalshi", "id": mid, "title": title or subtitle,
+                                "context": context, "outcome": outcome,
+                                "yes": price(m.get("yes_ask_dollars")) or price(m.get("yes_ask"), True),
+                                "no": price(m.get("no_ask_dollars")) or price(m.get("no_ask"), True),
+                                "volume": float(m.get("volume") or 0),
+                                "end": m.get("close_time"), "event_ticker": m.get("event_ticker"),
+                                 "series_ticker": ticker, "subtitle": subtitle,
+                                 "yes_sub_title": outcome, "no_sub_title": str(m.get("no_sub_title") or ""),
+                                "url": "https://kalshi.com/markets/" + quote(ticker.lower()),
+                                "quote_kind": "Public Kalshi ask snapshot; depth, fees and fill not guaranteed"})
+            cursor = data.get("cursor")
+            if not cursor:
+                break
+    return results, checked
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def markets_scan(active_leagues):
+@st.cache_data(ttl=180, show_spinner=False)
+def markets_scan():
     try:
-        batch, count, errors = kalshi_scan(active_leagues)
-        return batch, errors, count
+        batch, count = kalshi_scan()
+        return batch, [], count
     except (requests.RequestException, ValueError, TypeError) as exc:
         return [], ["Kalshi: " + str(exc)[:140]], 0
 
 
 def team_aliases(team):
+    """Full name and distinctive last token; aliases are for discovery, not trade verification."""
     full = norm(team)
     parts = full.split()
     aliases = {full}
@@ -301,24 +262,87 @@ def team_aliases(team):
     return aliases
 
 
+# Game matching deliberately fails closed when a market's game identity is ambiguous.
+# Team outcome alone is not enough to verify a contract belongs to this matchup.
+LEAGUE_HINTS = {
+    "NBA": ("nba", "pro basketball"),
+    "NFL": ("nfl", "pro football"),
+    "NCAAB": ("ncaab", "college basketball", "mens college basketball"),
+    "NCAAF": ("ncaaf", "college football"),
+}
+
+
+def _team_in_text(team, content):
+    words = set(norm(content).split())
+    full = norm(team)
+    if not full:
+        return False
+    if " " + full + " " in " " + norm(content) + " ":
+        return True
+    # A mascot alone is not a safe college identifier (e.g. Tigers, Bulldogs).
+    if len(full.split()) < 2:
+        return False
+    mascot = full.split()[-1]
+    return len(mascot) >= 5 and mascot in words
+
+
+def _league_verified(league, market):
+    series = norm(market.get("series_ticker", ""))
+    context = norm(market.get("context", ""))
+    hints = LEAGUE_HINTS.get(league, ())
+    # Require an explicit league marker; 'basketball' alone is not NBA.
+    return any(h in series.split() or (" " + h + " ") in (" " + context + " ")
+               for h in hints)
+
+
+def _date_verified(event, market):
+    # Close time can be later than game start; it is not a verified event date.
+    # Require a recognizable date in the event/market identifier or text.
+    start = event.get("start")
+    if not start:
+        return False
+    blob = " ".join(str(market.get(k) or "") for k in
+                    ("event_ticker", "id", "title", "subtitle", "context"))
+    compact = re.sub(r"[^a-zA-Z0-9]", "", blob).upper()
+    for dt in (start.astimezone(CENTRAL), start.astimezone(timezone.utc)):
+        forms = (dt.strftime("%y%b%d").upper(), dt.strftime("%b%d%y").upper(),
+                 dt.strftime("%Y%m%d"), dt.strftime("%y%m%d"))
+        if any(form in compact for form in forms):
+            return True
+    return False
+
+
 def match_contract(event, contracts):
-    """League-specific two-team match; exclude contracts with ambiguous dates."""
-    left, right = team_aliases(event["home"]), team_aliases(event["away"])
-    candidates = []
+    """Return only verified, unambiguous game-winner contracts for this event."""
+    home, away = event["home"], event["away"]
+    league = event["league"]
+    verified = []
     for m in contracts:
-        if m.get("league") != event["league"]:
+        if not _league_verified(league, m) or not _date_verified(event, m):
             continue
-        content = " " + norm(m["title"] + " " + m["context"]) + " "
-        def has_alias(aliases):
-            return any(" " + alias + " " in content for alias in aliases)
-        if not (has_alias(left) and has_alias(right)):
+        title = " ".join(str(m.get(k) or "") for k in
+                         ("title", "subtitle", "context"))
+        outcome = " ".join(str(m.get(k) or "") for k in
+                           ("yes_sub_title", "outcome"))
+        # Require both teams in game metadata, not just a one-team market title.
+        if not (_team_in_text(home, title) and _team_in_text(away, title)):
+            continue
+        yes_home = _team_in_text(home, outcome)
+        yes_away = _team_in_text(away, outcome)
+        if yes_home == yes_away:
             continue
         end = when(m.get("end"))
-        if end is None or not (event["start"] - timedelta(hours=2) <= end <= event["start"] + timedelta(days=3)):
+        if end and end < event["start"] - timedelta(hours=1):
             continue
-        candidates.append(m)
-    # This is still a DISCOVERY match, not verified settlement or YES-side mapping.
-    return sorted(candidates, key=lambda m: -(m["volume"] or 0))[:3]
+        item = dict(m)
+        item["verified_yes_team"] = home if yes_home else away
+        item["match_status"] = "League, matchup, event date and YES outcome matched; settlement rules unverified"
+        verified.append(item)
+    # Never silently choose among duplicate contracts for the same YES outcome.
+    by_team = {}
+    for m in verified:
+        by_team.setdefault(norm(m["verified_yes_team"]), []).append(m)
+    return [group[0] for group in by_team.values() if len(group) == 1]
 
 
 def price_tiles(m):
@@ -465,9 +489,9 @@ if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.1 · Four-league game scanner · Kalshi-first verified-data Top 5 · Live scores + team records · PAPER ONLY")
+st.caption("V2.2 · Kalshi-first verified-data Top 5 · Live scores + team records · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Top 5")
-st.caption("Best researched opportunities first. Live games win ties. NFL · NBA · NCAAF · NCAAB only. No futures or unverified BUY signals.")
+st.caption("Best researched opportunities first. Live games win ties. Kalshi-only market discovery; no unverified BUY signals.")
 
 if st.button("🔄 Refresh sports and markets"):
     scoreboard.clear()
@@ -478,7 +502,7 @@ if st.button("🔄 Refresh sports and markets"):
 key = odds_key()
 # Limit free quota: user selects leagues; Odds API cache is 15 minutes and refresh button does not clear it.
 with st.expander("⚙️ League coverage & free API usage", expanded=False):
-    leagues = st.multiselect("Sportsbook leagues to check", list(LEAGUES), default=list(LEAGUES),
+    leagues = st.multiselect("Sportsbook leagues to check", list(LEAGUES), default=["NBA", "NFL", "NCAAB", "NCAAF"],
                              help="Each selected league can use Odds API quota. NBA and NFL are the conservative default.")
     st.caption("Odds API calls are cached for 15 minutes. Refresh does not force new paid-quota requests.")
 
@@ -487,7 +511,7 @@ if not key:
     st.warning("ODDS_API_KEY not configured. Market discovery and ESPN scores can still work, but no probability comparisons are possible.")
 
 with st.spinner("Checking sports schedules, scores and available contracts..."):
-    contracts, market_errors, series_count = markets_scan(tuple(leagues))
+    contracts, market_errors, series_count = markets_scan()
 
 now = datetime.now(timezone.utc)
 games_by_league = {}
@@ -553,14 +577,14 @@ else:
                 for m in row["markets"]:
                     st.markdown(f"**{escape(m['platform'])}** · {escape(m['title'])}")
                     price_tiles(m)
-                    st.caption(m["quote_kind"] + " · YES means the specific Kalshi market outcome, not necessarily the home team. Settlement rules not independently verified.")
+                    st.caption(m["quote_kind"] + " · YES outcome: " + m["verified_yes_team"] + ". " + m["match_status"])
                     if m["url"]:
                         st.link_button("View market", m["url"], key=f"top_{index}_{m['platform']}_{m['id']}")
             else:
                 st.caption("Kalshi: No matching open contract found in the bounded sports scan. Price unavailable.")
             reason = ("LIVE ODDS UNAVAILABLE — pregame consensus cannot price an in-play contract." if state == "in" else
                       "Game status unconfirmed; live pricing cannot be assessed." if state == "unknown" else
-                      "Kalshi ask snapshots may be available, but exact settlement outcome, fees, fillable depth and independent probability edge are not yet verified.")
+                      "Matched Kalshi game prices are research-only. Settlement rules, fees, fillable depth and an independent probability edge are not verified.")
             st.markdown("**⏳ WAIT** — Queen's Reason: " + reason)
 
 st.markdown("#### 💜 Royal Paper Bankroll")
@@ -667,8 +691,8 @@ with st.expander("🔴 Live Sports Scoreboard", expanded=False):
             st.caption("No confirmed live games returned.")
 
 with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
-    st.caption(f"Scanned {len(contracts)} game-winner markets from {series_count} responding Kalshi series across selected leagues. Bounded scan; not exhaustive.")
-    st.caption("Kalshi only in V2.1. Market snapshots are not guaranteed executable fills.")
+    st.caption(f"Scanned {len(contracts)} markets from {series_count} Kalshi sports series (up to 3 pages per series). Bounded scan; not exhaustive.")
+    st.caption("Kalshi only in V2.2. Market snapshots are not guaranteed executable fills.")
     search = st.text_input("Search team or market")
     platform = "Kalshi"
     filtered = [m for m in contracts if (m["platform"] == platform)
@@ -688,9 +712,10 @@ with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
 with st.expander("📊 Royal Tracking Center — Paper Trades & History", expanded=False):
     try:
         with paper_db() as con:
-            parlay_tables(con)
             positions = [dict(x) for x in con.execute("SELECT opened_at,platform,title,side,grade,contracts,entry_price,status,realized_pnl FROM paper_trades ORDER BY opened_at DESC LIMIT 100")]
             activity = [dict(x) for x in con.execute("SELECT created_at,action,details FROM paper_activity ORDER BY event_id DESC LIMIT 100")]
+        with paper_db() as con:
+            parlay_tables(con)
             parlays = [dict(x) for x in con.execute(
             "SELECT created_at,legs,stake,decimal_odds,status,payout,pnl,note FROM royal_parlays ORDER BY created_at DESC LIMIT 100")]
             legs_history = [dict(x) for x in con.execute(
@@ -723,4 +748,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(exc)[:120])
     st.caption("Streamlit Community Cloud local SQLite storage is not durable; page refreshes are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.1 · PAPER ONLY · NO REAL ORDERS")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.2 · PAPER ONLY · NO REAL ORDERS")
