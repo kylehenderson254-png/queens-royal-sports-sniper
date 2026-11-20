@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -947,7 +947,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.1 · LIVE GAME TRACKER · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.2 · LIVE SCORES & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
@@ -1218,7 +1218,11 @@ def royal_auto_scan():
             profit=royal_profit_preview(ask,u)
             per_unit=royal_profit_preview(ask,1.0)
             with st.container(border=True):
+                dog_game=x.get("score_game")
                 st.markdown(f"**{SPORT_ICON.get(x['sport'],'🏆')} {html.escape(str(x['selection']))}** · {ask*100:.1f}¢ YES")
+                st.caption(royal_game_clock(dog_game,x.get("start")))
+                dog_score=royal_score_line(dog_game,x.get("selection"))
+                if dog_score: st.caption(dog_score)
                 if shadow:
                     st.markdown(f"**Queen: 0 U · WATCH ONLY** · {reason}")
                     st.caption(f"Optional shadow-paper test: {u:g} U (${u*BASE_UNIT:.2f}) · NOT a recommended wager")
@@ -1247,22 +1251,28 @@ def royal_auto_scan():
             tlegs=royal_legs.get(ticket["id"],[])
             status=ticket["status"]
             st.markdown(f"**{'🟢 WON' if status=='WIN' else '🔴 LOST' if status=='LOSS' else '🟡 PENDING'} · {selected_legs}-leg {'Royal Lotto' if selected_legs==10 else 'Royal Parlay'}**")
-            st.caption(f"🔒 Locked {local(ticket['created_at'])} · {ticket['wins']} won · {ticket['losses']} lost · {len(tlegs)-ticket['wins']-ticket['losses']} pending")
+            st.caption(f"🔒 Locked {local(ticket['created_at'])} · ✅ {ticket['wins']}/{len(tlegs)} won · ❌ {ticket['losses']} lost · ⏳ {len(tlegs)-ticket['wins']-ticket['losses']} pending")
             pu,preason=royal_parlay_units(tlegs)
             st.markdown(f"**👑 Experimental parlay paper stake: {pu:g} U · ${pu*BASE_UNIT:.2f} | Potential profit: unavailable**")
             st.caption(preason + " · This is a research budget, not a recommendation to wager. No purchasable parlay or combined payout verified.")
             game_by_event={x["event_id"]:x for x in rows if x.get("score_game")}
-            for leg in tlegs:
-                icon=SPORT_ICON.get(leg["sport"],"🏆")
-                matched=game_by_event.get(str(leg.get("event_id")))
-                game=matched.get("score_game") if matched else None
-                timing=royal_game_clock(game,matched.get("start")) if matched else "🕒 Schedule not confirmed in current scan"
-                st.caption(f"{icon} {leg['selection']} to WIN · {leg['leg_result']} · {timing}")
-                score_line=royal_score_line(game,leg["selection"])
-                if score_line: st.caption(score_line)
+            with st.container(border=True):
+                for leg in tlegs:
+                    icon=SPORT_ICON.get(leg["sport"],"🏆")
+                    matched=game_by_event.get(str(leg.get("event_id")))
+                    game=matched.get("score_game") if matched else None
+                    result=leg["leg_result"]
+                    mark="✅" if result=="WIN" else "❌" if result=="LOSS" else "🔴" if game and game.get("state")=="in" else "⏳"
+                    timing=royal_game_clock(game,matched.get("start")) if matched else "🕒 Schedule unavailable in current scan"
+                    st.markdown(f"{mark} **{icon} {leg['selection']}** · {timing}")
+                    score_line=royal_score_line(game,leg["selection"])
+                    if score_line: st.caption(score_line)
+            st.caption("Checks update from matched ESPN final scores. Live games show 🔴 until graded; locked picks stay unchanged.")
         else:
             st.info(f"Only {len(royal_candidates)} eligible tracked games in this scan; {selected_legs} different games are required. Queen won't invent extra legs.")
-        st.caption("These are locked *prediction combinations*, not purchasable Polymarket US parlays. Combined odds, paper P&L and payout are intentionally omitted until verified combo pricing and settlement are supported. Season-record estimates are not calibrated and market-favorite baselines are not independent edges.")
-    st.caption("No real orders. Paper records are experimental and do not establish profitability. Local SQLite on Streamlit Community Cloud can be lost on restart/redeploy; persistent storage is required for dependable long-term tracking.")
+        with st.expander("ℹ️ Parlay limitations",expanded=False):
+            st.caption("Locked prediction combinations are not purchasable Polymarket US parlays. No verified combined odds, payout or paper P&L. Season-record estimates are uncalibrated and market-favorite baselines are not independent edges.")
+    with st.expander("ℹ️ Paper testing & data storage",expanded=False):
+        st.caption("No real orders. Paper results do not establish profitability. Local SQLite on Streamlit Community Cloud may be lost on restart/redeploy; export backups or use persistent storage.")
 
 royal_auto_scan()
