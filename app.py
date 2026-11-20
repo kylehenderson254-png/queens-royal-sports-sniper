@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -129,10 +129,48 @@ def _score_record(event, sport):
             "home":next((n for n,p in zip(names,participants) if p.get("homeAway")=="home"),""),
             "event_id":str(event.get("id") or "")}
 
-def score_index(sports):
+def _name_tokens(name):
+    """Normalize common scoreboard abbreviations without guessing the winner."""
+    text=str(name or '').lower().replace('st.', 'saint ').replace('st ', 'saint ')
+    tokens=re.findall(r"[a-z0-9]+",text)
+    drop={'the','fc','cf','university','college','of','at','vs','versus'}
+    return [t for t in tokens if t not in drop]
+
+def _person_name_match(a,b):
+    aa,bb=_name_tokens(a),_name_tokens(b)
+    if not aa or not bb: return 0.0
+    if sorted(aa)==sorted(bb): return 1.0
+    # First initial + last name can safely identify a player only with a unique match.
+    if len(aa)>=2 and len(bb)>=2 and aa[-1]==bb[-1] and aa[0][0]==bb[0][0]: return .95
+    return SequenceMatcher(None,clean(a),clean(b)).ratio()
+
+def _team_name_match(a,b):
+    aa,bb=_name_tokens(a),_name_tokens(b)
+    if not aa or not bb: return 0.0
+    if clean(a)==clean(b): return 1.0
+    if sorted(aa)==sorted(bb): return .99
+    # E.g. 'Atlanta Hawks' and 'ATL Hawks' only if shared nickname is distinctive.
+    if len(aa)>=2 and len(bb)>=2 and aa[-1]==bb[-1] and len(aa[-1])>=5: return .94
+    return SequenceMatcher(None,clean(a),clean(b)).ratio()
+
+def _game_similarity(row, game):
+    if row.get('sport')=='Tennis': score=_person_name_match
+    else: score=_team_name_match
+    a,b=row.get('selection'),row.get('opponent')
+    x,y=game['teams']
+    return max(min(score(a,x),score(b,y)),min(score(a,y),score(b,x)))
+
+def score_index(sports, extra_dates=None):
+    """Scoreboard snapshots for today and selected saved-event dates, not just a fixed window."""
     result={}
     today=utc().astimezone(CT).date()
-    jobs=[(sport,(today+timedelta(days=delta)).strftime("%Y%m%d")) for sport in sports if sport in ESPN for delta in (-1,0,1,2,3)]
+    dates={today+timedelta(days=d) for d in (-2,-1,0,1,2,3)}
+    for value in (extra_dates or []):
+        dt=parse_date(value)
+        if dt and abs((dt.astimezone(CT).date()-today).days)<=14:
+            d=dt.astimezone(CT).date()
+            dates.update((d-timedelta(days=1),d,d+timedelta(days=1)))
+    jobs=[(sport,d.strftime('%Y%m%d')) for sport in sports if sport in ESPN for d in sorted(dates)]
     with ThreadPoolExecutor(max_workers=12) as pool:
         futures={pool.submit(scores,sport,day):sport for sport,day in jobs}
         for future in as_completed(futures):
@@ -142,59 +180,52 @@ def score_index(sports):
             for event in events:
                 game=_score_record(event,sport)
                 if game:
-                    result[(sport,frozenset(clean(n) for n in game["teams"]))]=game
+                    result[(sport,str(game['event_id']))]=game
     return result
 
 def _match_saved_game(row, index):
-    """Match BOTH saved opponents in the same sport; never assume LIVE from phase."""
-    sport=row.get("sport")
-    a,b=clean(row.get("selection")),clean(row.get("opponent"))
+    """Match both opponents, sport, and time; reject ambiguous candidates."""
+    sport=row.get('sport')
+    a,b=clean(row.get('selection')),clean(row.get('opponent'))
     if not a or not b or a==b: return None
-    exact=index.get((sport,frozenset((a,b))))
-    if exact: return exact
-    # Handle harmless name punctuation and tennis 'First Last' vs 'Last First'
-    def similarity(x,y):
-        if clean(x)==clean(y): return 1.0
-        tx=sorted(re.findall(r"[a-z]+",str(x).lower()))
-        ty=sorted(re.findall(r"[a-z]+",str(y).lower()))
-        if len(tx)>=2 and tx==ty: return .98
-        return SequenceMatcher(None,clean(x),clean(y)).ratio()
+    created=parse_date(row.get('created_at'))
     matches=[]
     for (league,_),game in index.items():
         if league!=sport: continue
-        x,y=game["teams"]
-        strength=max(min(similarity(row.get("selection"),x),similarity(row.get("opponent"),y)),
-                     min(similarity(row.get("selection"),y),similarity(row.get("opponent"),x)))
-        if strength>=.92: matches.append((strength,game))
+        strength=_game_similarity(row,game)
+        if strength<.90: continue
+        start=parse_date(game.get('date'))
+        # A locked forecast should not match a game played before it was created.
+        if created and start and start<created-timedelta(hours=6): continue
+        # Prevent matching a similarly named rematch weeks later.
+        if created and start and start>created+timedelta(days=8): continue
+        matches.append((strength,game))
     matches.sort(key=lambda v:v[0],reverse=True)
-    if len(matches)==1 or (len(matches)>1 and matches[0][0]-matches[1][0]>=.07):
+    if matches and (len(matches)==1 or matches[0][0]-matches[1][0]>=.06):
         return matches[0][1]
     return None
 
 
 def event_score(sport, event, index):
-    names = []
-    for market in event.get("markets") or []:
-        for side in market.get("marketSides") or []:
-            name = (side.get("team") or {}).get("name")
+    names=[]
+    for market in event.get('markets') or []:
+        for side in market.get('marketSides') or []:
+            name=(side.get('team') or {}).get('name')
             if name and clean(name) not in [clean(n) for n in names]: names.append(name)
-    if len(names) != 2: return None
-    key = (sport, frozenset(clean(n) for n in names))
-    exact = index.get(key)
-    if exact: return exact
-    # Strict unique fuzzy matching, using both competitors, to help college nicknames.
-    candidates = [v for (league, _), v in index.items() if league == sport]
-    matched = []
-    for game in candidates:
-        a,b = game["teams"][:2]
-        pairs = [(names[0],a,names[1],b),(names[0],b,names[1],a)]
-        best = max(min(SequenceMatcher(None,clean(x),clean(y)).ratio(),
-                       SequenceMatcher(None,clean(z),clean(w)).ratio()) for x,y,z,w in pairs)
-        if best >= .89: matched.append((best,game))
-    matched.sort(key=lambda v:v[0],reverse=True)
-    if matched and (len(matched)==1 or matched[0][0]-matched[1][0] >= .07):
-        return matched[0][1]
+    if len(names)!=2: return None
+    candidates=[]
+    for (league,_),game in index.items():
+        if league!=sport: continue
+        score=_game_similarity({'sport':sport,'selection':names[0],'opponent':names[1]},game)
+        if score>=.90:
+            when=parse_date(event.get('eventDate') or event.get('startTime') or event.get('startDate'))
+            gd=parse_date(game.get('date'))
+            if when and gd and abs((when-gd).total_seconds())>36*3600: continue
+            candidates.append((score,game))
+    candidates.sort(key=lambda x:x[0],reverse=True)
+    if candidates and (len(candidates)==1 or candidates[0][0]-candidates[1][0]>=.06): return candidates[0][1]
     return None
+
 
 def identify_yes_team(market):
     """Fail closed: map YES only with an explicit contract-side assertion.
@@ -677,7 +708,7 @@ def _saved_game_banner(game, result):
 
 def _render_saved_score(game, row):
     if not game:
-        st.caption("🕒 Live scoreboard not matched yet · original pick remains saved")
+        st.caption("🕒 Scoreboard unavailable or unmatched · no verified score or clock · original pick remains saved")
         return
     st.markdown(f"**{royal_game_clock(game,game.get('date'))}**")
     line=royal_score_line(game,row.get("selection"))
@@ -765,7 +796,7 @@ def prediction_panel():
     # Fetch once for visible saved picks, even if those events are absent from the
     # current Polymarket market scan. No invented live status for unmatched games.
     history_sports={r.get("sport") for r in shown if r.get("sport") in ESPN}
-    history_scores=score_index(sorted(history_sports)) if history_sports else {}
+    history_scores=score_index(sorted(history_sports), [r.get("created_at") for r in shown]) if history_sports else {}
     for r in shown:
         _pick_card(r,paper_by_prediction.get(r["id"]),history_scores)
     if len(filtered)>limit:
@@ -828,7 +859,7 @@ def display_row(x, number=None):
     logo_html = "".join(f'<img src="{html.escape(u,quote=True)}" class="team-logo" alt="team logo">' for u in logos)
     valid = bool(q and q.get("valid"))
     verified = bool(x.get("verified_side"))
-    state = "🔴 LIVE" if x.get("live") else "UPCOMING"
+    state = "🔴 LIVE" if x.get('score_game') and x['score_game'].get('state')=='in' else "UPCOMING" if x.get('score_game') and x['score_game'].get('state')=='pre' else "STATUS UNVERIFIED"
     locked = st.session_state.get("royal_locked",{}).get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"))
     # Predictions are distinct from verified contract quotes and recommended trades.
     if valid and verified:
@@ -1065,7 +1096,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.4 · LIVE HISTORY SCOREBOARDS & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.5 · IMPROVED LIVE SCORE MATCHING & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
@@ -1083,6 +1114,7 @@ if st.button("👑 Refresh Queen", type="primary", use_container_width=True):
     api.clear()
     scores.clear()
     st.rerun()
+st.caption("Score source: ESPN where available. The Odds API is not connected in this version; its key alone does not supply live scores. Tennis coverage may be incomplete.")
 st.caption("Live market scans refresh about every 2 minutes while the page is active; ESPN scores are cached for up to 60 seconds and saved finals are checked about every 10 minutes. Updates pause when Streamlit sleeps. Tap Refresh Queen for a manual check.")
 
 @st.fragment(run_every="600s")
@@ -1374,14 +1406,19 @@ def royal_auto_scan():
             st.markdown(f"**👑 Experimental parlay paper stake: {pu:g} U · ${pu*BASE_UNIT:.2f} | Potential profit: unavailable**")
             st.caption(preason + " · This is a research budget, not a recommendation to wager. No purchasable parlay or combined payout verified.")
             game_by_event={x["event_id"]:x for x in rows if x.get("score_game")}
+            with db() as _leg_db:
+                _saved_leg_rows={r['id']:dict(r) for r in _leg_db.execute('SELECT * FROM royal_predictions_v34 WHERE id IN ('+','.join('?' for _ in tlegs)+')',[leg['prediction_id'] for leg in tlegs])} if tlegs else {}
+            _leg_sports=sorted({r.get('sport') for r in _saved_leg_rows.values() if r.get('sport') in ESPN})
+            _leg_scores=score_index(_leg_sports,[r.get('created_at') for r in _saved_leg_rows.values()]) if _leg_sports else {}
             with st.container(border=True):
                 for leg in tlegs:
                     icon=SPORT_ICON.get(leg["sport"],"🏆")
                     matched=game_by_event.get(str(leg.get("event_id")))
-                    game=matched.get("score_game") if matched else None
+                    saved_leg=_saved_leg_rows.get(leg['prediction_id'])
+                    game=(matched.get('score_game') if matched else None) or (_match_saved_game(saved_leg,_leg_scores) if saved_leg else None)
                     result=leg["leg_result"]
                     mark="✅" if result=="WIN" else "❌" if result=="LOSS" else "🔴" if game and game.get("state")=="in" else "⏳"
-                    timing=royal_game_clock(game,matched.get("start")) if matched else "🕒 Schedule unavailable in current scan"
+                    timing=royal_game_clock(game, matched.get('start') if matched else (saved_leg.get('created_at') if saved_leg else None)) if game else '🕒 Scoreboard not matched · time unverified' 
                     st.markdown(f"{mark} **{icon} {leg['selection']}** · {timing}")
                     score_line=royal_score_line(game,leg["selection"])
                     if score_line: st.caption(score_line)
