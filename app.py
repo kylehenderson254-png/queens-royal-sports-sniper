@@ -40,7 +40,7 @@ div.stButton>button{background:linear-gradient(110deg,#7426bd,#aa48eb);color:whi
 
 
 def get_json(url, params=None):
-    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.4"}, timeout=15)
+    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.5"}, timeout=15)
     response.raise_for_status()
     return response.json(), response.headers
 
@@ -124,7 +124,7 @@ def sportsbook(key, active_leagues):
     return output, errors, quota
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+@st.cache_data(ttl=60, show_spinner=False)
 def scoreboard(league, day):
     data, _ = get_json(f"https://site.api.espn.com/apis/site/v2/sports/{LEAGUES[league][1]}/scoreboard", {
         "dates": day, "limit": 500})
@@ -140,8 +140,6 @@ def scoreboard(league, day):
             logos = team.get("logos") or []
             team_logo = team.get("logo") or (logos[0].get("href") if logos and isinstance(logos[0], dict) else None)
             teams.append({"name": team.get("displayName", ""), "short": team.get("shortDisplayName", ""),
-                           "abbreviation": team.get("abbreviation", ""),
-                           "location": team.get("location", ""), "nickname": team.get("name", ""),
                           "record": record, "rank": rank if isinstance(rank, int) and 1 <= rank <= 25 else None,
                           "score": c.get("score", "–"), "logo": team_logo})
         if len(teams) != 2:
@@ -150,7 +148,7 @@ def scoreboard(league, day):
         league_info = (data.get("leagues") or [{}])[0]
         league_logos = league_info.get("logos") or []
         league_logo = league_logos[0].get("href") if league_logos and isinstance(league_logos[0], dict) else None
-        output.append({"start": when(event.get("date")), "teams": teams, "league_logo": league_logo,
+        output.append({"id": str(event.get("id") or ""), "start": when(event.get("date")), "teams": teams, "league_logo": league_logo,
                        "state": status.get("state", ""), "detail": status.get("shortDetail") or status.get("description", "")})
     return output
 
@@ -181,51 +179,17 @@ def compact_team(team, live=False):
             st.markdown(f"**{escape(rank + team['name'])}**{escape(record + score)}")
 
 
-def team_names(team):
-    """Use several ESPN identifiers without matching by a generic college mascot."""
-    if isinstance(team, dict):
-        raw = [team.get(k, "") for k in ("name", "short", "abbreviation", "location", "nickname")]
-    else:
-        raw = [team]
-    aliases = {norm(x) for x in raw if x}
-    aliases.discard("")
-    return aliases
-
-
-def same_team(sportsbook_name, espn_team, league=""):
-    target = norm(sportsbook_name)
-    aliases = team_names(espn_team)
-    if target in aliases:
-        return True
-    # A full school/city name plus a mascot is distinctive; a mascot by itself is not.
-    target_words = target.split()
-    if len(target_words) >= 2:
-        return any(len(alias.split()) >= 2 and
-                   (target in alias or alias in target) and
-                   min(len(alias), len(target)) >= 7 for alias in aliases)
-    if league in ("NBA", "NFL") and len(target.split()) >= 2:
-        mascot = target.split()[-1]
-        return len(mascot) >= 5 and mascot == norm(espn_team.get("nickname", ""))
-    return False
-
-
 def matching_game(event, games):
-    """Match a single ESPN event by both teams, regardless of home/away order."""
-    if not event.get("start"):
-        return None
+    """Unique ESPN event matched by both team names and start within 90 minutes."""
+    target = {norm(event["home"]), norm(event["away"])}
     matches = []
     for game in games:
-        if not game.get("start") or abs((game["start"] - event["start"]).total_seconds()) > 7200:
+        if not game["start"] or abs((game["start"] - event["start"]).total_seconds()) > 5400:
             continue
-        teams = game.get("teams", [])
-        if len(teams) != 2:
-            continue
-        if ((same_team(event["home"], teams[0], event.get("league", "")) and same_team(event["away"], teams[1], event.get("league", ""))) or
-            (same_team(event["home"], teams[1], event.get("league", "")) and same_team(event["away"], teams[0], event.get("league", "")))):
+        options = [{norm(t["name"]), norm(t["short"])} for t in game["teams"]]
+        if all(any(name in opts for opts in options) for name in target) and len(target) == 2:
             matches.append(game)
-    # Deduplicate ESPN events repeated across queried dates.
-    unique = {(g["start"], tuple(sorted(norm(t["name"]) for t in g["teams"]))): g for g in matches}
-    return next(iter(unique.values())) if len(unique) == 1 else None
+    return matches[0] if len(matches) == 1 else None
 
 
 @st.cache_data(ttl=180, show_spinner=False)
@@ -238,7 +202,7 @@ def kalshi_scan():
     terms = ("nba", "nfl", "ncaab", "ncaaf", "basketball", "football", "college")
     candidates.sort(key=lambda x: (0 if any(t in norm(str(x.get("ticker", "")) + " " + str(x.get("title", ""))) for t in terms) else 1, str(x.get("ticker", ""))))
     checked = 0
-    for series_info in candidates[:100]:
+    for series_info in candidates[:75]:
         ticker = str(series_info.get("ticker") or "")
         if not ticker:
             continue
@@ -265,8 +229,6 @@ def kalshi_scan():
                                     subtitle, outcome, str(m.get("no_sub_title") or "")])
                 results.append({"platform": "Kalshi", "id": mid, "title": title or subtitle,
                                 "context": context, "outcome": outcome,
-                                "series_title": str(series_info.get("title") or ""),
-                                "event_title": "", "event_subtitle": "",
                                 "yes": price(m.get("yes_ask_dollars")) or price(m.get("yes_ask"), True),
                                 "no": price(m.get("no_ask_dollars")) or price(m.get("no_ask"), True),
                                 "volume": float(m.get("volume") or 0),
@@ -278,117 +240,210 @@ def kalshi_scan():
             cursor = data.get("cursor")
             if not cursor:
                 break
-    # Fetch event-level matchup names for game-winner markets; many individual
-    # market titles mention only the YES team, so market text alone is insufficient.
-    # Bound event lookups and cache the whole scan to protect rate limits.
-    event_ids = list(dict.fromkeys(str(m.get("event_ticker") or "") for m in results
-                                  if m.get("event_ticker") and any(
-                                      str(m.get("series_ticker") or "").upper().startswith(prefix)
-                                      for prefixes in LEAGUE_SERIES.values() for prefix in prefixes)))[:40]
-    events = {}
-    for event_id in event_ids:
-        try:
-            data, _ = get_json(f"{KALSHI}/events/{quote(event_id, safe='')}")
-            info = data.get("event") or {}
-            events[event_id] = (str(info.get("title") or ""),
-                                str(info.get("sub_title") or info.get("subtitle") or ""))
-        except (requests.RequestException, ValueError, TypeError):
-            continue
-    for m in results:
-        title, subtitle = events.get(str(m.get("event_ticker") or ""), ("", ""))
-        m["event_title"], m["event_subtitle"] = title, subtitle
-        m["context"] += " " + title + " " + subtitle
     return results, checked
 
 
 @st.cache_data(ttl=180, show_spinner=False)
+def polymarket_scan():
+    """Bounded Gamma sports event discovery; only explicit two-outcome moneyline markets."""
+    output, seen, errors = [], set(), []
+    for offset in range(0, 1200, 100):
+        try:
+            events, _ = get_json(f"{POLY}/events", {"active": "true", "closed": "false",
+                                                       "limit": 100, "offset": offset})
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            errors.append("Polymarket: " + str(exc)[:120])
+            break
+        if not isinstance(events, list) or not events:
+            break
+        for event in events:
+            if not isinstance(event, dict):
+                continue
+            tags = " ".join(str(t.get("label", "")) for t in event.get("tags", []) if isinstance(t, dict))
+            event_title = str(event.get("title") or "")
+            slug = str(event.get("slug") or "")
+            context = " ".join([event_title, slug, tags, str(event.get("description") or "")[:250]])
+            for market in event.get("markets") or []:
+                if not isinstance(market, dict) or market.get("closed") is True or market.get("active") is False:
+                    continue
+                mid = str(market.get("id") or "")
+                if not mid or mid in seen:
+                    continue
+                seen.add(mid)
+                question = str(market.get("question") or event_title)
+                raw_outcomes = market.get("outcomes") or []
+                raw_prices = market.get("outcomePrices") or []
+                try:
+                    outcomes = json.loads(raw_outcomes) if isinstance(raw_outcomes, str) else raw_outcomes
+                    prices = json.loads(raw_prices) if isinstance(raw_prices, str) else raw_prices
+                except (ValueError, TypeError):
+                    continue
+                if not isinstance(outcomes, list) or len(outcomes) != 2:
+                    continue
+                if not isinstance(prices, list) or len(prices) != 2:
+                    continue
+                # These are displayed indicative probabilities, NOT executable asks.
+                # For two-team moneylines, the two outcomes must name two distinct teams.
+                if {norm(x) for x in outcomes} == {"yes", "no"}:
+                    continue
+                values = [price(x) for x in prices]
+                if any(x is None for x in values):
+                    continue
+                output.append({"platform": "Polymarket", "id": mid,
+                    "title": question, "context": context + " " + question,
+                    "outcomes": [str(x) for x in outcomes], "outcome_prices": values,
+                    "yes": None, "no": None, "end": market.get("endDate") or event.get("endDate"),
+                    "event_start": market.get("gameStartTime") or event.get("startTime"),
+                    "event_ticker": slug, "series_ticker": tags,
+                    "url": "https://polymarket.com/event/" + quote(slug, safe="-") if slug else None,
+                    "quote_kind": "Indicative Gamma outcome prices; NOT live executable asks"})
+        if len(events) < 100:
+            break
+    return output, errors
+
+
+@st.cache_data(ttl=180, show_spinner=False)
 def markets_scan():
+    combined, errors, count = [], [], 0
     try:
         batch, count = kalshi_scan()
-        return batch, [], count
+        combined.extend(batch)
     except (requests.RequestException, ValueError, TypeError) as exc:
-        return [], ["Kalshi: " + str(exc)[:140]], 0
+        errors.append("Kalshi: " + str(exc)[:140])
+    try:
+        batch, poly_errors = polymarket_scan()
+        combined.extend(batch)
+        errors.extend(poly_errors)
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        errors.append("Polymarket: " + str(exc)[:140])
+    return combined, errors, count
 
 
-LEAGUE_SERIES = {
-    "NBA": ("KXNBAGAME", "KXNBA"),
-    "NFL": ("KXNFLGAME", "KXNFL"),
-    "NCAAB": ("KXNCAABGAME", "KXNCAAMB", "KXNCAAB"),
-    "NCAAF": ("KXNCAAFGAME", "KXNCAAF"),
+def team_aliases(team):
+    """Full name and distinctive last token; aliases are for discovery, not trade verification."""
+    full = norm(team)
+    parts = full.split()
+    aliases = {full}
+    if len(parts) >= 2 and len(parts[-1]) >= 4:
+        aliases.add(parts[-1])
+    return aliases
+
+
+# Game matching deliberately fails closed when a market's game identity is ambiguous.
+# Team outcome alone is not enough to verify a contract belongs to this matchup.
+LEAGUE_HINTS = {
+    "NBA": ("nba", "pro basketball"),
+    "NFL": ("nfl", "pro football"),
+    "NCAAB": ("ncaab", "college basketball", "mens college basketball"),
+    "NCAAF": ("ncaaf", "college football"),
 }
 
 
-def _league_verified(league, market):
-    ticker = str(market.get("series_ticker") or "").upper()
-    title = norm(market.get("series_title") or "")
-    markers = LEAGUE_SERIES.get(league, ())
-    if any(ticker.startswith(marker) for marker in markers):
+def _team_in_text(team, content):
+    words = set(norm(content).split())
+    full = norm(team)
+    if not full:
+        return False
+    if " " + full + " " in " " + norm(content) + " ":
         return True
-    # Require a clear league marker, not just the word football or basketball.
-    hints = {"NBA": ("nba",), "NFL": ("nfl",),
-             "NCAAB": ("ncaab", "college basketball", "mens college basketball"),
-             "NCAAF": ("ncaaf", "college football")}
-    return any(h in title.split() or h in title for h in hints.get(league, ()))
+    # A mascot alone is not a safe college identifier (e.g. Tigers, Bulldogs).
+    if len(full.split()) < 2:
+        return False
+    mascot = full.split()[-1]
+    return len(mascot) >= 5 and mascot in words
+
+
+def _league_verified(league, market):
+    series = norm(market.get("series_ticker", ""))
+    context = norm(market.get("context", ""))
+    hints = LEAGUE_HINTS.get(league, ())
+    # Require an explicit league marker; 'basketball' alone is not NBA.
+    return any(h in series.split() or (" " + h + " ") in (" " + context + " ")
+               for h in hints)
 
 
 def _date_verified(event, market):
+    # Close time can be later than game start; it is not a verified event date.
+    # Require a recognizable date in the event/market identifier or text.
     start = event.get("start")
     if not start:
         return False
-    blob = " ".join(str(market.get(k) or "") for k in ("event_ticker", "id", "event_title"))
-    compact = re.sub(r"[^A-Za-z0-9]", "", blob).upper()
+    blob = " ".join(str(market.get(k) or "") for k in
+                    ("event_ticker", "id", "title", "subtitle", "context"))
+    compact = re.sub(r"[^a-zA-Z0-9]", "", blob).upper()
     for dt in (start.astimezone(CENTRAL), start.astimezone(timezone.utc)):
         forms = (dt.strftime("%y%b%d").upper(), dt.strftime("%b%d%y").upper(),
-                 dt.strftime("%Y%m%d"), dt.strftime("%y%m%d"),
-                 dt.strftime("%b%d").upper())
+                 dt.strftime("%Y%m%d"), dt.strftime("%y%m%d"))
         if any(form in compact for form in forms):
             return True
     return False
 
 
-def _mentions_team(team, content, league):
-    content = " " + norm(content) + " "
-    full = norm(team)
-    if len(full) >= 5 and " " + full + " " in content:
-        return True
-    # Pro mascots are generally unique; never use mascot-only for college games.
-    if league in ("NBA", "NFL"):
-        mascot = full.split()[-1]
-        return len(mascot) >= 5 and " " + mascot + " " in content
-    return False
+def _team_aliases_strict(name):
+    full = norm(name)
+    parts = full.split()
+    result = {full}
+    # Mascots alone are not safe for college teams.
+    if len(parts) >= 2 and len(parts[-1]) >= 5:
+        result.add(parts[-1])
+    return result
+
+
+def _contains_team(team, text, league):
+    content = " " + norm(text) + " "
+    aliases = {norm(team)} if league in ("NCAAB", "NCAAF") else _team_aliases_strict(team)
+    return any(" " + a + " " in content for a in aliases if a)
 
 
 def match_contract(event, contracts):
-    """Identify game-winner YES outcomes only when league, date and teams agree."""
+    """Fail closed on ambiguous identity, league, date, or outcome mapping."""
     home, away, league = event["home"], event["away"], event["league"]
-    verified = []
+    found = []
     for m in contracts:
-        if not _league_verified(league, m) or not _date_verified(event, m):
+        platform = m.get("platform")
+        if not _league_verified(league, m):
             continue
-        context = " ".join(str(m.get(k) or "") for k in
-                           ("event_title", "event_subtitle", "title", "subtitle"))
-        if not (_mentions_team(home, context, league) and _mentions_team(away, context, league)):
+        context = " ".join(str(m.get(k) or "") for k in ("title", "context"))
+        if not (_contains_team(home, context, league) and _contains_team(away, context, league)):
             continue
-        # A market title like 'Will the Lakers win?' may be its own YES outcome.
-        outcome = str(m.get("yes_sub_title") or "")
-        if not outcome:
-            outcome = str(m.get("title") or "")
-        yes_home = _mentions_team(home, outcome, league)
-        yes_away = _mentions_team(away, outcome, league)
-        if yes_home == yes_away:
+        if platform == "Kalshi":
+            if not _date_verified(event, m):
+                continue
+            outcome = str(m.get("yes_sub_title") or m.get("outcome") or "")
+            yes_home = _contains_team(home, outcome, league)
+            yes_away = _contains_team(away, outcome, league)
+            if yes_home == yes_away:
+                continue
+            item = dict(m)
+            item["verified_yes_team"] = home if yes_home else away
+        elif platform == "Polymarket":
+            # Gamma dates can reflect settlement, so require an explicit game start.
+            start = when(m.get("event_start"))
+            if not start or abs((start - event["start"]).total_seconds()) > 7200:
+                continue
+            outcomes = m.get("outcomes") or []
+            if len(outcomes) != 2:
+                continue
+            first = [i for i, x in enumerate(outcomes) if _contains_team(home, x, league)]
+            second = [i for i, x in enumerate(outcomes) if _contains_team(away, x, league)]
+            if len(first) != 1 or len(second) != 1 or first[0] == second[0]:
+                continue
+            item = dict(m)
+            item["verified_yes_team"] = home
+            item["mapped_outcomes"] = {home: item["outcome_prices"][first[0]],
+                                        away: item["outcome_prices"][second[0]]}
+        else:
             continue
         end = when(m.get("end"))
         if end and end < event["start"] - timedelta(hours=1):
             continue
-        item = dict(m)
-        item["verified_yes_team"] = home if yes_home else away
-        item["match_status"] = "Game, league, date and YES team matched; settlement rules not independently verified"
-        verified.append(item)
-    by_team = {}
-    for m in verified:
-        by_team.setdefault(norm(m["verified_yes_team"]), []).append(m)
-    # Prefer a unique exact game market. Multiple candidates for a team remain ambiguous.
-    return [group[0] for group in by_team.values() if len(group) == 1]
+        found.append(item)
+    # Avoid displaying conflicting duplicate outcome contracts on the same platform.
+    unique = {}
+    for m in found:
+        key = (m["platform"], norm(m.get("verified_yes_team", "")))
+        unique.setdefault(key, []).append(m)
+    return [group[0] for group in unique.values() if len(group) == 1]
 
 
 def price_tiles(m):
@@ -535,39 +590,41 @@ if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.4 · Kalshi-first verified-data Top 5 · Live scores + team records · PAPER ONLY")
+st.caption("V2.5 · Kalshi + Polymarket · ESPN-first live games · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Top 5")
-st.caption("Best researched opportunities first. Live games win ties. Kalshi-only market discovery; no unverified BUY signals.")
+st.caption("K = Kalshi · P = Polymarket · K + P = both. Only confirmed contract matches enter the Top 5.")
 
 if st.button("🔄 Refresh sports and markets"):
     scoreboard.clear()
     markets_scan.clear()
     kalshi_scan.clear()
+    polymarket_scan.clear()
     st.rerun()
 
 key = odds_key()
-# Limit free quota: user selects leagues; Odds API cache is 15 minutes and refresh button does not clear it.
-with st.expander("⚙️ League coverage & free API usage", expanded=False):
-    leagues = st.multiselect("Sportsbook leagues to check", list(LEAGUES), default=["NBA", "NFL", "NCAAB", "NCAAF"],
-                             help="Each selected league can use Odds API quota. NBA and NFL are the conservative default.")
-    st.caption("Odds API calls are cached for 15 minutes. Refresh does not force new paid-quota requests.")
-
+with st.expander("⚙️ League coverage & API usage", expanded=False):
+    leagues = st.multiselect("Leagues", list(LEAGUES), default=list(LEAGUES))
+    st.caption("Sportsbook odds are cached for 15 minutes to conserve API quota.")
 odds, odds_errors, quota = sportsbook(key, tuple(leagues)) if key and leagues else ([], [], None)
 if not key:
-    st.warning("ODDS_API_KEY not configured. Market discovery and ESPN scores can still work, but no probability comparisons are possible.")
+    st.caption("Sportsbook consensus unavailable: ODDS_API_KEY is not configured. Contract discovery can still work.")
 
-with st.spinner("Checking sports schedules, scores and available contracts..."):
+with st.spinner("Checking Kalshi, Polymarket and ESPN..."):
     contracts, market_errors, series_count = markets_scan()
 
 now = datetime.now(timezone.utc)
 games_by_league = {}
 for league in leagues:
-    games_by_league[league] = []
-    for day in sorted({(now + timedelta(days=i)).strftime("%Y%m%d") for i in (-1, 0, 1, 2)}):
+    unique = {}
+    for day in sorted({(now + timedelta(days=i)).astimezone(CENTRAL).strftime("%Y%m%d") for i in (-1, 0, 1, 2)}):
         try:
-            games_by_league[league].extend(scoreboard(league, day))
-        except (requests.RequestException, ValueError, KeyError):
+            for game in scoreboard(league, day):
+                if game.get("start"):
+                    identity = game.get("id") or (game["start"].isoformat(), tuple(sorted(norm(t["name"]) for t in game["teams"])))
+                    unique[identity] = game
+        except (requests.RequestException, ValueError, KeyError, TypeError):
             pass
+    games_by_league[league] = list(unique.values())
 
 try:
     with paper_db() as con:
@@ -576,62 +633,76 @@ except (sqlite3.Error, OSError):
     pass
 
 rows = []
-for event in odds:
-    if not now - timedelta(hours=8) <= event["start"] <= now + timedelta(days=2):
-        continue
-    game = matching_game(event, games_by_league.get(event["league"], []))
-    state = game["state"] if game else ("pre" if event["start"] > now else "unknown")
-    if state == "post":
-        continue
-    matched = match_contract(event, contracts)
-    # Ranking is research relevance only; never label an unverified value as edge.
-    score = (30 if state == "in" else 20 if event["start"] <= now + timedelta(hours=12) else 10)
-    score += min(10, event["books"]) + (8 if matched else 0)
-    rows.append({"event": event, "game": game, "state": state, "markets": matched, "rank": score})
+for league in leagues:
+    for game in games_by_league.get(league, []):
+        start_time = game.get("start")
+        if not start_time or not now - timedelta(hours=8) <= start_time <= now + timedelta(days=2):
+            continue
+        if game["state"] == "post":
+            continue
+        teams = game["teams"]
+        event = {"league": league, "home": teams[0]["name"], "away": teams[1]["name"],
+                 "start": start_time, "books": 0, "probs": {}}
+        # Compare the ESPN matchup against sportsbook events, not vice versa.
+        matching_odds = [o for o in odds if o["league"] == league and
+                         matching_game(o, [game]) is not None]
+        if len(matching_odds) == 1:
+            benchmark = matching_odds[0]
+            event["books"] = benchmark["books"]
+            event["probs"] = benchmark["probs"]
+        matched = match_contract(event, contracts)
+        if not matched:
+            continue
+        platforms = {m["platform"] for m in matched}
+        score = (50 if game["state"] == "in" else 30 if start_time <= now + timedelta(hours=12) else 15)
+        score += 12 if len(platforms) == 2 else 0
+        score += min(event["books"], 10)
+        rows.append({"event": event, "game": game, "state": game["state"],
+                     "markets": matched, "rank": score})
 rows.sort(key=lambda x: (-x["rank"], x["event"]["start"]))
 
 if not rows:
-    st.info("⏳ WAIT — No supported games with valid sportsbook benchmarks in the selected leagues and time window. Queen won't manufacture picks.")
+    st.info("⏳ No verified open Kalshi or Polymarket game-winner contracts matched ESPN games in the selected leagues. Check scanner diagnostics below; no prices are invented.")
 else:
+    if len(rows) < 5:
+        st.caption(f"Only {len(rows)} verified games available; empty Top 5 positions are not filled with unrelated games.")
     for index, row in enumerate(rows[:5], 1):
         e, game, state = row["event"], row["game"], row["state"]
-        status = "🔴 LIVE NOW" if state == "in" else "🟣 STARTING SOON" if e["start"] > now else "⚪ STATUS UNVERIFIED"
+        platforms = {m["platform"] for m in row["markets"]}
+        marker = "K + P" if len(platforms) == 2 else "K" if "Kalshi" in platforms else "P"
+        status = "🔴 LIVE NOW" if state == "in" else "🟣 UPCOMING" if e["start"] > now else "⚪ STATUS UNVERIFIED"
         with st.container(border=True):
-            st.markdown(f"**👑 {index}. {escape(e['away'])} @ {escape(e['home'])}**")
-            league_logo = safe_logo(game.get("league_logo")) if game else None
-            if league_logo:
-                logo_col, info_col = st.columns([1, 16], vertical_alignment="center", gap="small")
-                with logo_col:
-                    st.image(league_logo, width=24)
-                with info_col:
-                    st.caption(f"{e['league']} · {status} · {local(e['start'])}")
+            st.markdown(f"**👑 {index}. {escape(e['away'])} @ {escape(e['home'])}** · **[{marker}]**")
+            logo = safe_logo(game.get("league_logo"))
+            if logo:
+                st.image(logo, width=25)
+            st.caption(f"{e['league']} · {status} · {local(e['start'])}")
+            left, right = st.columns(2, gap="small")
+            with left:
+                compact_team(game["teams"][0], live=state == "in")
+            with right:
+                compact_team(game["teams"][1], live=state == "in")
+            if state == "in":
+                st.caption(game.get("detail") or "Game in progress")
+            if e["probs"]:
+                st.caption("Pregame sportsbook consensus (not live): " + " · ".join(
+                    f"{team} {prob:.1%}" for team, prob in e["probs"].items()) + f" · {e['books']} books")
             else:
-                st.caption(f"{e['league']} · {status} · {local(e['start'])}")
-            if game:
-                left, right = st.columns(2, gap="small")
-                with left:
-                    compact_team(game["teams"][0], live=state == "in")
-                with right:
-                    compact_team(game["teams"][1], live=state == "in")
-                if state == "in":
-                    st.caption(game["detail"])
-            else:
-                st.caption("ESPN matchup, records or rankings not confirmed; unavailable rather than guessed.")
-            st.caption("Sportsbook consensus snapshot (NOT synchronized in-play odds): " + " · ".join(
-                f"{team} {prob:.1%}" for team, prob in e["probs"].items()) + f" · {e['books']} books")
-            if row["markets"]:
-                for m in row["markets"]:
-                    st.markdown(f"**{escape(m['platform'])}** · {escape(m['title'])}")
+                st.caption("Sportsbook consensus unavailable for this matchup.")
+            for m in row["markets"]:
+                letter = "K" if m["platform"] == "Kalshi" else "P"
+                st.markdown(f"**[{letter}] {escape(m['platform'])}** · {escape(m['title'])}")
+                if letter == "K":
+                    st.caption("YES outcome: " + m["verified_yes_team"])
                     price_tiles(m)
-                    st.caption(m["quote_kind"] + " · YES outcome: " + m["verified_yes_team"] + ". " + m["match_status"])
-                    if m["url"]:
-                        st.link_button("View market", m["url"], key=f"top_{index}_{m['platform']}_{m['id']}")
-            else:
-                st.caption("Kalshi: No matching open contract found in the bounded sports scan. Price unavailable.")
-            reason = ("LIVE ODDS UNAVAILABLE — pregame consensus cannot price an in-play contract." if state == "in" else
-                      "Game status unconfirmed; live pricing cannot be assessed." if state == "unknown" else
-                      "Matched Kalshi game prices are research-only. Settlement rules, fees, fillable depth and an independent probability edge are not verified.")
-            st.markdown("**⏳ WAIT** — Queen's Reason: " + reason)
+                else:
+                    st.caption("Indicative outcome prices: " + " · ".join(
+                        f"{team} {fmt(value)}" for team, value in m["mapped_outcomes"].items()))
+                st.caption(m["quote_kind"] + " · Fees, liquidity and settlement rules require checking.")
+                if m.get("url"):
+                    st.link_button(f"Open {m['platform']} market", m["url"],
+                                   key=f"top_{index}_{letter}_{m['id']}")
+            st.markdown("**⏳ WAIT** — Quotes are research snapshots, not verified executable value or BUY signals.")
 
 st.markdown("#### 💜 Royal Paper Bankroll")
 try:
@@ -642,13 +713,21 @@ except (sqlite3.Error, OSError) as exc:
     st.warning("Paper ledger unavailable: " + str(exc)[:120])
 
 st.markdown("#### 📡 Queen's Live Activity")
-st.info("KALSHI RESEARCH / WAIT — Public market discovery and ask snapshots are active. Automated BUY remains disabled until exact outcome, settlement, fees, order-book depth and synchronized probabilities are verified.")
+st.info("KALSHI + POLYMARKET RESEARCH / WAIT — Public market snapshots are available when matched. Automated BUY remains disabled until exact outcome, settlement, fees, order-book depth and synchronized probabilities are verified.")
 
 st.markdown("#### 👑 Royal Paper Parlays")
-st.caption("Research simulation only. These are NOT verified BUY signals, actual sportsbook odds, or executable Kalshi parlays.")
+st.caption("Research simulation only. These are NOT verified BUY signals, actual sportsbook odds, or executable platform parlays.")
 leg_count = st.select_slider("Parlay legs", options=[2, 3, 5, 10], value=2)
 stake = st.select_slider("Paper stake ($)", options=[5, 10, 20], value=10)
-candidates = paper_parlay_candidates(rows, now)
+# Keep paper-parlay research independent of the contract-verified Top 5.
+parlay_research_rows = []
+for o in odds:
+    if not now < o["start"] <= now + timedelta(days=2):
+        continue
+    linked = matching_game(o, games_by_league.get(o["league"], []))
+    if linked and linked["state"] == "pre":
+        parlay_research_rows.append({"event": o, "state": "pre", "game": linked})
+candidates = paper_parlay_candidates(parlay_research_rows, now)
 selected = []
 used = set()
 for item in candidates:
@@ -737,15 +816,18 @@ with st.expander("🔴 Live Sports Scoreboard", expanded=False):
             st.caption("No confirmed live games returned.")
 
 with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
-    st.caption(f"Scanned {len(contracts)} markets from {series_count} Kalshi sports series (up to 3 pages per series). Bounded scan; not exhaustive.")
-    st.caption("Kalshi only in V2.4. Market snapshots are not guaranteed executable fills.")
+    st.caption(f"Scanned {sum(m['platform']=='Kalshi' for m in contracts)} Kalshi and {sum(m['platform']=='Polymarket' for m in contracts)} Polymarket markets. Bounded scans; not exhaustive.")
+    st.caption("Both platforms scanned. Market snapshots are not guaranteed executable fills.")
     search = st.text_input("Search team or market")
-    platform = "Kalshi"
-    filtered = [m for m in contracts if (m["platform"] == platform)
+    platform = st.selectbox("Platform", ["All", "Kalshi", "Polymarket"])
+    filtered = [m for m in contracts if (platform == "All" or m["platform"] == platform)
                 and norm(search) in norm(m["title"] + " " + m["context"])]
     for m in filtered[:15]:
         st.markdown(f"**{escape(m['platform'])} — {escape(m['title'])}**")
-        price_tiles(m)
+        if m["platform"] == "Kalshi":
+            price_tiles(m)
+        else:
+            st.caption(" · ".join(f"{x}: {fmt(v)}" for x,v in zip(m.get("outcomes", []),m.get("outcome_prices", []))))
         st.caption(m["quote_kind"])
         if m["url"]:
             st.markdown(f"[Open market]({m['url']})")
@@ -794,4 +876,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(exc)[:120])
     st.caption("Streamlit Community Cloud local SQLite storage is not durable; page refreshes are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.4 · PAPER ONLY · NO REAL ORDERS")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.2 · PAPER ONLY · NO REAL ORDERS")
