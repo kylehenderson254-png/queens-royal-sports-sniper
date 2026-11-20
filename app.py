@@ -192,66 +192,107 @@ def matching_game(event, games):
     return matches[0] if len(matches) == 1 else None
 
 
-@st.cache_data(ttl=180, show_spinner=False)
-def kalshi_scan():
-    """Kalshi-only, paginated sports discovery with bounded public API requests."""
-    results, seen = [], set()
-    series, _ = get_json(f"{KALSHI}/series", {"category": "Sports"})
-    candidates = [x for x in series.get("series", []) if str(x.get("category", "")).lower() == "sports"]
-    # Prioritize leagues in our sportsbook coverage, not alphabetical unrelated sports.
-    terms = ("nba", "nfl", "ncaab", "ncaaf", "basketball", "football", "college")
-    candidates.sort(key=lambda x: (0 if any(t in norm(str(x.get("ticker", "")) + " " + str(x.get("title", ""))) for t in terms) else 1, str(x.get("ticker", ""))))
-    checked = 0
-    for series_info in candidates[:75]:
-        ticker = str(series_info.get("ticker") or "")
-        if not ticker:
-            continue
-        checked += 1
-        cursor = None
-        for page in range(3):
-            params = {"series_ticker": ticker, "status": "open", "limit": 200}
-            if cursor:
-                params["cursor"] = cursor
-            try:
-                data, _ = get_json(f"{KALSHI}/markets", params)
-            except (requests.RequestException, ValueError, TypeError):
-                break
-            for m in data.get("markets", []):
-                mid = str(m.get("ticker") or "")
-                if not mid or mid in seen:
-                    continue
-                seen.add(mid)
-                # YES and NO are prices for the exact outcome described by the market.
-                title = str(m.get("title") or "")
-                subtitle = str(m.get("subtitle") or "")
-                outcome = str(m.get("yes_sub_title") or "")
-                context = " ".join([str(series_info.get("title") or ""), ticker, title,
-                                    subtitle, outcome, str(m.get("no_sub_title") or "")])
-                results.append({"platform": "Kalshi", "id": mid, "title": title or subtitle,
-                                "context": context, "outcome": outcome,
-                                "yes": price(m.get("yes_ask_dollars")) or price(m.get("yes_ask"), True),
-                                "no": price(m.get("no_ask_dollars")) or price(m.get("no_ask"), True),
-                                "volume": float(m.get("volume") or 0),
-                                "end": m.get("close_time"), "event_ticker": m.get("event_ticker"),
-                                "url": "https://kalshi.com/markets/" + quote(ticker.lower()),
-                                "quote_kind": "Public Kalshi ask snapshot; depth, fees and fill not guaranteed"})
-            cursor = data.get("cursor")
-            if not cursor:
-                break
-    return results, checked
+# Explicitly scoped game-winner series. No Olympics, futures, or unrelated sports.
+GAME_SERIES = {
+    "NBA": ("KXNBAGAME",),
+    "NFL": ("KXNFLGAME",),
+    "NCAAB": ("KXNCAABGAME", "KXNCAAMBGAME"),
+    "NCAAF": ("KXNCAAFGAME", "KXNCAAFBGAME"),
+}
+
+def game_series_for(series):
+    ticker = str(series.get("ticker") or "").upper()
+    title = norm(series.get("title") or "")
+    for league, tickers in GAME_SERIES.items():
+        if ticker in tickers:
+            return league
+    # Discovery fallback is deliberately narrow: require both league and
+    # single-game winner terminology, never broad 'basketball'/'football'.
+    league_words = {"NBA": ("nba",), "NFL": ("nfl",),
+                    "NCAAB": ("ncaab", "college basketball", "mens college basketball"),
+                    "NCAAF": ("ncaaf", "college football")}
+    for league, words in league_words.items():
+        if any(w in title for w in words) and any(
+            w in title for w in ("game winner", "game winners", "game result", "moneyline", "match winner")
+        ) and not any(w in title for w in ("season", "championship", "futures", "olympic", "award")):
+            return league
+    return None
 
 
-@st.cache_data(ttl=180, show_spinner=False)
-def markets_scan():
+@st.cache_data(ttl=300, show_spinner=False)
+def kalshi_scan(active_leagues):
+    """Scan only game-winner series for the four selected leagues."""
+    results, seen, errors = [], set(), []
+    catalog = []
     try:
-        batch, count = kalshi_scan()
-        return batch, [], count
+        payload, _ = get_json(f"{KALSHI}/series", {"category": "Sports"})
+        catalog = payload.get("series") or []
+    except (requests.RequestException, ValueError, TypeError) as exc:
+        errors.append("Series directory: " + str(exc)[:110])
+    targets = {league: set(GAME_SERIES[league]) for league in active_leagues}
+    for entry in catalog:
+        league = game_series_for(entry)
+        if league in targets:
+            targets[league].add(str(entry.get("ticker") or "").upper())
+    checked = 0
+    # Explicit series first; cap pages to protect public API usage.
+    for league in active_leagues:
+        for ticker in sorted(targets[league]):
+            if not ticker:
+                continue
+            cursor = None
+            got_page = False
+            for page in range(4):
+                params = {"series_ticker": ticker, "status": "open", "limit": 200}
+                if cursor:
+                    params["cursor"] = cursor
+                try:
+                    data, _ = get_json(f"{KALSHI}/markets", params)
+                except (requests.RequestException, ValueError, TypeError) as exc:
+                    if not got_page:
+                        errors.append(f"{league}/{ticker}: {str(exc)[:85]}")
+                    break
+                got_page = True
+                if page == 0:
+                    checked += 1
+                for m in data.get("markets", []):
+                    mid = str(m.get("ticker") or "")
+                    if not mid or mid in seen:
+                        continue
+                    title = str(m.get("title") or "")
+                    subtitle = str(m.get("subtitle") or "")
+                    yes_outcome = str(m.get("yes_sub_title") or "")
+                    context = " ".join((title, subtitle, yes_outcome, str(m.get("no_sub_title") or "")))
+                    if any(w in norm(context) for w in ("2028 olympic", "season champion", "championship winner")):
+                        continue
+                    seen.add(mid)
+                    results.append({
+                        "platform": "Kalshi", "league": league, "series": ticker,
+                        "id": mid, "title": title or subtitle, "context": context,
+                        "outcome": yes_outcome,
+                        "yes": price(m.get("yes_ask_dollars")) or price(m.get("yes_ask"), True),
+                        "no": price(m.get("no_ask_dollars")) or price(m.get("no_ask"), True),
+                        "volume": float(m.get("volume") or 0),
+                        "end": m.get("close_time"), "event_ticker": m.get("event_ticker"),
+                        "url": "https://kalshi.com/markets/" + quote(ticker.lower()),
+                        "quote_kind": "Public Kalshi ask snapshot; fees, depth and fills unverified"
+                    })
+                cursor = data.get("cursor")
+                if not cursor:
+                    break
+    return results, checked, errors
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def markets_scan(active_leagues):
+    try:
+        batch, count, errors = kalshi_scan(active_leagues)
+        return batch, errors, count
     except (requests.RequestException, ValueError, TypeError) as exc:
         return [], ["Kalshi: " + str(exc)[:140]], 0
 
 
 def team_aliases(team):
-    """Full name and distinctive last token; aliases are for discovery, not trade verification."""
     full = norm(team)
     parts = full.split()
     aliases = {full}
@@ -261,19 +302,22 @@ def team_aliases(team):
 
 
 def match_contract(event, contracts):
-    """Match BOTH participants; never interpret a loose text match as a verified contract."""
+    """League-specific two-team match; exclude contracts with ambiguous dates."""
     left, right = team_aliases(event["home"]), team_aliases(event["away"])
     candidates = []
     for m in contracts:
+        if m.get("league") != event["league"]:
+            continue
         content = " " + norm(m["title"] + " " + m["context"]) + " "
         def has_alias(aliases):
             return any(" " + alias + " " in content for alias in aliases)
         if not (has_alias(left) and has_alias(right)):
             continue
         end = when(m.get("end"))
-        if end and end < event["start"] - timedelta(hours=1):
+        if end is None or not (event["start"] - timedelta(hours=2) <= end <= event["start"] + timedelta(days=3)):
             continue
         candidates.append(m)
+    # This is still a DISCOVERY match, not verified settlement or YES-side mapping.
     return sorted(candidates, key=lambda m: -(m["volume"] or 0))[:3]
 
 
@@ -421,9 +465,9 @@ if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.0 · Kalshi-first verified-data Top 5 · Live scores + team records · PAPER ONLY")
+st.caption("V2.1 · Four-league game scanner · Kalshi-first verified-data Top 5 · Live scores + team records · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Top 5")
-st.caption("Best researched opportunities first. Live games win ties. Kalshi-only market discovery; no unverified BUY signals.")
+st.caption("Best researched opportunities first. Live games win ties. NFL · NBA · NCAAF · NCAAB only. No futures or unverified BUY signals.")
 
 if st.button("🔄 Refresh sports and markets"):
     scoreboard.clear()
@@ -434,7 +478,7 @@ if st.button("🔄 Refresh sports and markets"):
 key = odds_key()
 # Limit free quota: user selects leagues; Odds API cache is 15 minutes and refresh button does not clear it.
 with st.expander("⚙️ League coverage & free API usage", expanded=False):
-    leagues = st.multiselect("Sportsbook leagues to check", list(LEAGUES), default=["NBA", "NFL"],
+    leagues = st.multiselect("Sportsbook leagues to check", list(LEAGUES), default=list(LEAGUES),
                              help="Each selected league can use Odds API quota. NBA and NFL are the conservative default.")
     st.caption("Odds API calls are cached for 15 minutes. Refresh does not force new paid-quota requests.")
 
@@ -443,7 +487,7 @@ if not key:
     st.warning("ODDS_API_KEY not configured. Market discovery and ESPN scores can still work, but no probability comparisons are possible.")
 
 with st.spinner("Checking sports schedules, scores and available contracts..."):
-    contracts, market_errors, series_count = markets_scan()
+    contracts, market_errors, series_count = markets_scan(tuple(leagues))
 
 now = datetime.now(timezone.utc)
 games_by_league = {}
@@ -623,8 +667,8 @@ with st.expander("🔴 Live Sports Scoreboard", expanded=False):
             st.caption("No confirmed live games returned.")
 
 with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
-    st.caption(f"Scanned {len(contracts)} markets from {series_count} Kalshi sports series (up to 3 pages per series). Bounded scan; not exhaustive.")
-    st.caption("Kalshi only in V2.0. Market snapshots are not guaranteed executable fills.")
+    st.caption(f"Scanned {len(contracts)} game-winner markets from {series_count} responding Kalshi series across selected leagues. Bounded scan; not exhaustive.")
+    st.caption("Kalshi only in V2.1. Market snapshots are not guaranteed executable fills.")
     search = st.text_input("Search team or market")
     platform = "Kalshi"
     filtered = [m for m in contracts if (m["platform"] == platform)
@@ -644,13 +688,13 @@ with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
 with st.expander("📊 Royal Tracking Center — Paper Trades & History", expanded=False):
     try:
         with paper_db() as con:
+            parlay_tables(con)
             positions = [dict(x) for x in con.execute("SELECT opened_at,platform,title,side,grade,contracts,entry_price,status,realized_pnl FROM paper_trades ORDER BY opened_at DESC LIMIT 100")]
             activity = [dict(x) for x in con.execute("SELECT created_at,action,details FROM paper_activity ORDER BY event_id DESC LIMIT 100")]
-        parlay_tables(con)
-        parlays = [dict(x) for x in con.execute(
+            parlays = [dict(x) for x in con.execute(
             "SELECT created_at,legs,stake,decimal_odds,status,payout,pnl,note FROM royal_parlays ORDER BY created_at DESC LIMIT 100")]
-        legs_history = [dict(x) for x in con.execute(
-            "SELECT parlay_id,selection,league,start,status FROM royal_parlay_legs ORDER BY start DESC LIMIT 200")]
+            legs_history = [dict(x) for x in con.execute(
+                "SELECT parlay_id,selection,league,start,status FROM royal_parlay_legs ORDER BY start DESC LIMIT 200")]
         st.markdown("**👑 Parlay history**")
         if parlays:
             st.dataframe(parlays, use_container_width=True, hide_index=True)
@@ -679,4 +723,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(exc)[:120])
     st.caption("Streamlit Community Cloud local SQLite storage is not durable; page refreshes are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.0 · PAPER ONLY · NO REAL ORDERS")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.1 · PAPER ONLY · NO REAL ORDERS")
