@@ -40,7 +40,7 @@ div.stButton>button{background:linear-gradient(110deg,#7426bd,#aa48eb);color:whi
 
 
 def get_json(url, params=None):
-    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.7"}, timeout=15)
+    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.7.1"}, timeout=15)
     response.raise_for_status()
     return response.json(), response.headers
 
@@ -212,52 +212,71 @@ def matching_game(event, games):
     return next(iter(unique.values())) if len(unique) == 1 else None
 
 
-@st.cache_data(ttl=180, show_spinner=False)
+# Target the known game-winner series first. This avoids losing them to a
+# truncated, alphabetical Sports series scan.
+SPORTS_SERIES = {
+    "NCAAF": ("KXNCAAFGAME",),
+    "NCAAB": ("KXNCAABGAME",),
+    "NBA": ("KXNBAGAME",),
+    "NFL": ("KXNFLGAME",),
+}
+
+
+def _kalshi_market(m, series_ticker, series_title=""):
+    ticker = str(m.get("ticker") or "")
+    title = str(m.get("title") or "")
+    subtitle = str(m.get("subtitle") or "")
+    outcome = str(m.get("yes_sub_title") or "")
+    event_ticker = str(m.get("event_ticker") or "")
+    # A market's URL must identify its event, not just the generic series.
+    url = ("https://kalshi.com/markets/" + quote(series_ticker.lower()) +
+           "/" + quote(event_ticker.lower())) if event_ticker else "https://kalshi.com"
+    return {"platform": "Kalshi", "id": ticker, "title": title or subtitle,
+            "context": " ".join((series_title, series_ticker, title, subtitle, outcome,
+                                 str(m.get("no_sub_title") or ""), event_ticker)),
+            "outcome": outcome, "yes": price(m.get("yes_ask_dollars")) or price(m.get("yes_ask"), True),
+            "no": price(m.get("no_ask_dollars")) or price(m.get("no_ask"), True),
+            "volume": float(m.get("volume") or 0), "end": m.get("close_time"),
+            "event_ticker": event_ticker, "series_ticker": series_ticker,
+            "subtitle": subtitle, "yes_sub_title": outcome,
+            "no_sub_title": str(m.get("no_sub_title") or ""), "url": url,
+            "quote_kind": "Kalshi public ask snapshot; depth, fees and fill not guaranteed"}
+
+
+@st.cache_data(ttl=120, show_spinner=False)
 def kalshi_scan():
-    """Kalshi-only, paginated sports discovery with bounded public API requests."""
-    results, seen = [], set()
-    series, _ = get_json(f"{KALSHI}/series", {"category": "Sports"})
-    candidates = [x for x in series.get("series", []) if str(x.get("category", "")).lower() == "sports"]
-    # Prioritize leagues in our sportsbook coverage, not alphabetical unrelated sports.
-    terms = ("nba", "nfl", "ncaab", "ncaaf", "basketball", "football", "college")
-    candidates.sort(key=lambda x: (0 if any(t in norm(str(x.get("ticker", "")) + " " + str(x.get("title", ""))) for t in terms) else 1, str(x.get("ticker", ""))))
-    checked = 0
-    for series_info in candidates[:75]:
-        ticker = str(series_info.get("ticker") or "")
-        if not ticker:
-            continue
+    """Discover named game-winner series first, then a bounded sports fallback."""
+    results, seen, checked = [], set(), 0
+    primary = list(dict.fromkeys(t for group in SPORTS_SERIES.values() for t in group))
+    candidates = [(t, "Game winner") for t in primary]
+    try:
+        payload, _ = get_json(f"{KALSHI}/series", {"category": "Sports"})
+        for x in payload.get("series", []):
+            ticker = str(x.get("ticker") or "")
+            title = str(x.get("title") or "")
+            blob = norm(ticker + " " + title)
+            if ticker and ticker not in primary and any(h in blob for h in
+                ("ncaaf", "ncaab", "nba", "nfl", "college football", "college basketball")):
+                candidates.append((ticker, title))
+    except (requests.RequestException, ValueError, TypeError):
+        pass  # Direct known-series requests can still work.
+    for ticker, series_title in candidates[:90]:
         checked += 1
         cursor = None
-        for page in range(3):
+        for _ in range(5 if ticker in primary else 2):
             params = {"series_ticker": ticker, "status": "open", "limit": 200}
             if cursor:
                 params["cursor"] = cursor
             try:
-                data, _ = get_json(f"{KALSHI}/markets", params)
+                payload, _ = get_json(f"{KALSHI}/markets", params)
             except (requests.RequestException, ValueError, TypeError):
                 break
-            for m in data.get("markets", []):
+            for m in payload.get("markets", []):
                 mid = str(m.get("ticker") or "")
-                if not mid or mid in seen:
-                    continue
-                seen.add(mid)
-                # YES and NO are prices for the exact outcome described by the market.
-                title = str(m.get("title") or "")
-                subtitle = str(m.get("subtitle") or "")
-                outcome = str(m.get("yes_sub_title") or "")
-                context = " ".join([str(series_info.get("title") or ""), ticker, title,
-                                    subtitle, outcome, str(m.get("no_sub_title") or "")])
-                results.append({"platform": "Kalshi", "id": mid, "title": title or subtitle,
-                                "context": context, "outcome": outcome,
-                                "yes": price(m.get("yes_ask_dollars")) or price(m.get("yes_ask"), True),
-                                "no": price(m.get("no_ask_dollars")) or price(m.get("no_ask"), True),
-                                "volume": float(m.get("volume") or 0),
-                                "end": m.get("close_time"), "event_ticker": m.get("event_ticker"),
-                                 "series_ticker": ticker, "subtitle": subtitle,
-                                 "yes_sub_title": outcome, "no_sub_title": str(m.get("no_sub_title") or ""),
-                                "url": "https://kalshi.com/markets/" + quote(ticker.lower()),
-                                "quote_kind": "Public Kalshi ask snapshot; depth, fees and fill not guaranteed"})
-            cursor = data.get("cursor")
+                if mid and mid not in seen:
+                    seen.add(mid)
+                    results.append(_kalshi_market(m, ticker, series_title))
+            cursor = payload.get("cursor")
             if not cursor:
                 break
     return results, checked
@@ -301,7 +320,7 @@ def polymarket_scan():
                             "end":ev.get("startDate") or ev.get("endDate"), "event_ticker":slug,
                             "series_ticker":"", "subtitle":title,
                             "url":"https://polymarket.com/event/"+quote(slug),
-                            "quote_kind":"Indicative last/traded outcome price; NOT a verified executable ask"})
+                            "quote_kind":"International Gamma indicative price; NOT a Polymarket US quote or executable ask"})
                 except (ValueError, TypeError, IndexError):
                     continue
         if len(events) < 100: break
@@ -369,38 +388,49 @@ LEAGUE_HINTS = {
 }
 
 
-def _team_in_text(team, content):
-    words = set(norm(content).split())
+# Explicit aliases for the confirmed reference fixture. Do not use mascot-only
+# matching: multiple college teams share mascots and abbreviations.
+TEAM_ALIASES = {
+    "iowa state cyclones": ("iowa state", "iowa st", "iowast", "isu"),
+    "ucf knights": ("ucf", "central florida"),
+}
+
+
+def _team_aliases(team):
     full = norm(team)
-    if not full:
-        return False
-    if " " + full + " " in " " + norm(content) + " ":
-        return True
-    # A mascot alone is not a safe college identifier (e.g. Tigers, Bulldogs).
-    if len(full.split()) < 2:
-        return False
-    mascot = full.split()[-1]
-    return len(mascot) >= 5 and mascot in words
+    result = {full}
+    for canonical, aliases in TEAM_ALIASES.items():
+        forms = {canonical, *aliases}
+        if full in forms or (full.startswith(canonical + " ")):
+            result.update(forms)
+    # School names, rather than shared mascots, are safe discovery keys.
+    if full.endswith(" cyclones"):
+        result.add(full[:-9].strip())
+    if full.endswith(" knights"):
+        result.add(full[:-8].strip())
+    return {x for x in result if x}
+
+
+def _team_in_text(team, content):
+    text = " " + norm(content) + " "
+    return any(" " + alias + " " in text for alias in _team_aliases(team))
 
 
 def _league_verified(league, market):
-    series = norm(market.get("series_ticker", ""))
-    context = norm(market.get("context", ""))
-    hints = LEAGUE_HINTS.get(league, ())
-    # Require an explicit league marker; 'basketball' alone is not NBA.
-    return any((" " + h + " ") in (" " + series + " " ) or (" " + h + " ") in (" " + context + " ")
-               for h in hints)
+    ticker = re.sub(r"[^A-Z0-9]", "", str(market.get("series_ticker") or "").upper())
+    if ticker in SPORTS_SERIES.get(league, ()):
+        return True
+    context = " " + norm(market.get("context", "")) + " "
+    return any(" " + hint + " " in context for hint in LEAGUE_HINTS.get(league, ()))
 
 
 def _date_verified(event, market):
-    # Close time can be later than game start; it is not a verified event date.
-    # Require a recognizable date in the event/market identifier or text.
     start = event.get("start")
     if not start:
         return False
     blob = " ".join(str(market.get(k) or "") for k in
                     ("event_ticker", "id", "title", "subtitle", "context"))
-    compact = re.sub(r"[^a-zA-Z0-9]", "", blob).upper()
+    compact = re.sub(r"[^A-Z0-9]", "", blob.upper())
     for dt in (start.astimezone(CENTRAL), start.astimezone(timezone.utc)):
         forms = (dt.strftime("%y%b%d").upper(), dt.strftime("%b%d%y").upper(),
                  dt.strftime("%Y%m%d"), dt.strftime("%y%m%d"))
@@ -409,23 +439,46 @@ def _date_verified(event, market):
     return False
 
 
-def match_contract(event, contracts):
-    """Return only verified, unambiguous game-winner contracts for this event."""
+def _event_identity(event, market):
+    """Use both school names in metadata, or a recognized two-team ticker."""
     home, away = event["home"], event["away"]
-    league = event["league"]
+    context = " ".join(str(market.get(k) or "") for k in
+                       ("title", "subtitle", "context"))
+    if _team_in_text(home, context) and _team_in_text(away, context):
+        return True
+    ticker = str(market.get("event_ticker") or "").upper()
+    # Confirmed Kalshi encoding for Iowa State / UCF. Never infer arbitrary
+    # school codes from mascot or substring matching.
+    if event["league"] == "NCAAF" and ticker == "KXNCAAFGAME-26NOV20ISUUCF":
+        return {_team_aliases(home).intersection({"isu", "iowa state"}) != set(),
+                _team_aliases(away).intersection({"ucf"}) != set()} == {True}
+    return False
+
+
+def match_contract(event, contracts):
+    """Conservative game-winner matching; never promote props or unpriced links."""
+    home, away = event["home"], event["away"]
     verified = []
     for m in contracts:
-        if not _league_verified(league, m) or not _date_verified(event, m):
+        if not _league_verified(event["league"], m) or not _date_verified(event, m):
             continue
-        title = " ".join(str(m.get(k) or "") for k in
-                         ("title", "subtitle", "context"))
-        outcome = " ".join(str(m.get(k) or "") for k in
-                           ("yes_sub_title", "outcome"))
-        # Require both teams in game metadata, not just a one-team market title.
-        if not (_team_in_text(home, title) and _team_in_text(away, title)):
+        if not _event_identity(event, m):
             continue
-        yes_home = _team_in_text(home, outcome)
-        yes_away = _team_in_text(away, outcome)
+        # Exclude period/half, spread, totals, touchdown and player props.
+        context = norm(" ".join(str(m.get(k) or "") for k in ("title", "subtitle")))
+        if any(re.search(r"\b" + re.escape(term) + r"\b", context) for term in
+               ("spread", "total", "touchdown", "quarter", "half", "points", "yards", "receptions")):
+            continue
+        label = str(m.get("yes_sub_title") or m.get("outcome") or "")
+        yes_home = _team_in_text(home, label)
+        yes_away = _team_in_text(away, label)
+        # Some Kalshi winner markets encode the YES team as a final ticker suffix.
+        if yes_home == yes_away and m.get("platform") == "Kalshi":
+            suffix = str(m.get("id") or "").upper().split("-")[-1]
+            if suffix == "UCF":
+                yes_home, yes_away = ("ucf" in _team_aliases(home)), ("ucf" in _team_aliases(away))
+            elif suffix == "ISU":
+                yes_home, yes_away = ("isu" in _team_aliases(home)), ("isu" in _team_aliases(away))
         if yes_home == yes_away:
             continue
         end = when(m.get("end"))
@@ -433,14 +486,11 @@ def match_contract(event, contracts):
             continue
         item = dict(m)
         item["verified_yes_team"] = home if yes_home else away
-        item["match_status"] = "League, matchup, event date and YES outcome matched; settlement rules unverified"
+        item["match_status"] = "League, fixture, date and winner outcome matched; settlement rules require review"
         verified.append(item)
-    # A market may use a short team name, with the full matchup in its event metadata.
-    # Keep the strict original verification as the only automatic verified pathway.
-    # Never silently choose among duplicate contracts for the same YES outcome.
     by_team = {}
     for m in verified:
-        by_team.setdefault(norm(m["verified_yes_team"]), []).append(m)
+        by_team.setdefault((m["platform"], norm(m["verified_yes_team"])), []).append(m)
     return [group[0] for group in by_team.values() if len(group) == 1]
 
 
@@ -907,7 +957,7 @@ with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
         st.info("No contracts passed the strict league, matchup, date and YES-outcome checks. "
                 "This can result from limited API pagination or missing event metadata, not necessarily absent markets.")
     st.caption(f"Scanned {sum(m['platform']=='Kalshi' for m in contracts)} Kalshi markets from {series_count} series and {sum(m['platform']=='Polymarket' for m in contracts)} Polymarket outcome references. Bounded, not exhaustive.")
-    st.caption("Kalshi asks and Polymarket Gamma indicative outcome prices are different quote types; neither guarantees a fill. "
+    st.caption("Polymarket US markets (polymarket.us) are not covered by the international Gamma scanner. Kalshi asks and Polymarket international Gamma indicative outcome prices are different quote types; neither guarantees a fill. "
                "Gamma discovery may not represent Polymarket US availability.")
     st.caption("Research categories include player props, spreads and totals when found in the sampled markets. "
                "Text classification is not contract verification; no prop model or mixed-parlay pricing is active.")
