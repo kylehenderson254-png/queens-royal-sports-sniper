@@ -1,12 +1,13 @@
-import os, re, sqlite3, hashlib, html
+import os, re, sqlite3, hashlib, html, math
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from urllib.parse import quote
+from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -47,13 +48,23 @@ def db():
       last_bid REAL, last_seen TEXT, game_state TEXT,
       status TEXT DEFAULT 'OPEN', settled_at TEXT, pnl REAL,
       note TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS royal_predictions_v34 (
+      id TEXT PRIMARY KEY, event_id TEXT, slug TEXT, sport TEXT, title TEXT,
+      selection TEXT, opponent TEXT, phase TEXT, model TEXT, model_probability REAL,
+      confidence TEXT, evidence TEXT, quote_ask REAL, created_at TEXT,
+      result TEXT DEFAULT 'PENDING', graded_at TEXT, grade_note TEXT,
+      UNIQUE(event_id,slug,phase))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS royal_paper_v34 (
+      id TEXT PRIMARY KEY, prediction_id TEXT UNIQUE, event_id TEXT, slug TEXT,
+      sport TEXT, selection TEXT, stake REAL, entry_ask REAL, entry_at TEXT,
+      last_bid REAL, status TEXT DEFAULT 'OPEN', pnl REAL, graded_at TEXT, note TEXT)""")
     c.commit()
     return c
 
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.3"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.4"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -84,7 +95,9 @@ def score_index(sports):
                 if len(names) < 2: continue
                 status = e.get("status", {}).get("type", {})
                 record = {"state":status.get("state", "unknown"), "detail":status.get("shortDetail", ""), "date":e.get("date"), "teams":names,
-                          "scores": {t.get("team", {}).get("displayName", ""):t.get("score") for t in teams}, "winner": next((t.get("team", {}).get("displayName", "") for t in teams if t.get("winner") is True), None), "logos":{t.get("team", {}).get("displayName", ""):t.get("team", {}).get("logo", "") for t in teams}}
+                          "scores": {t.get("team", {}).get("displayName", ""):t.get("score") for t in teams}, "winner": next((t.get("team", {}).get("displayName", "") for t in teams if t.get("winner") is True), None), "logos":{t.get("team", {}).get("displayName", ""):t.get("team", {}).get("logo", "") for t in teams},
+                           "records": {t.get("team", {}).get("displayName", ""): (t.get("records") or []) for t in teams},
+                           "home": next((t.get("team",{}).get("displayName", "") for t in teams if t.get("homeAway")=="home"), "") }
                 result[(sport, frozenset(clean(n) for n in names))] = record
     return result
 
@@ -96,7 +109,21 @@ def event_score(sport, event, index):
             if name and clean(name) not in [clean(n) for n in names]: names.append(name)
     if len(names) != 2: return None
     key = (sport, frozenset(clean(n) for n in names))
-    return index.get(key)
+    exact = index.get(key)
+    if exact: return exact
+    # Strict unique fuzzy matching, using both competitors, to help college nicknames.
+    candidates = [v for (league, _), v in index.items() if league == sport]
+    matched = []
+    for game in candidates:
+        a,b = game["teams"][:2]
+        pairs = [(names[0],a,names[1],b),(names[0],b,names[1],a)]
+        best = max(min(SequenceMatcher(None,clean(x),clean(y)).ratio(),
+                       SequenceMatcher(None,clean(z),clean(w)).ratio()) for x,y,z,w in pairs)
+        if best >= .89: matched.append((best,game))
+    matched.sort(key=lambda v:v[0],reverse=True)
+    if matched and (len(matched)==1 or matched[0][0]-matched[1][0] >= .07):
+        return matched[0][1]
+    return None
 
 def identify_yes_team(market):
     """Fail closed: map YES only with an explicit contract-side assertion.
@@ -235,8 +262,146 @@ def safe_logo(url):
     return url if isinstance(url,str) and url.startswith("https://") and ("espncdn.com" in url or "espn.com" in url) else None
 
 def game_logos(x):
-    g=x.get("score_game") or {}
-    return [safe_logo(v) for v in (g.get("logos") or {}).values() if safe_logo(v)][:2]
+    game=x.get("score_game") or {}
+    direct=[safe_logo(v) for v in (game.get("logos") or {}).values() if safe_logo(v)]
+    if direct: return direct[:2]
+    catalog=st.session_state.get("royal_logo_catalog",{}).get(x.get("sport"),{})
+    result=[]
+    for name in competitors(x):
+        exact=catalog.get(clean(name))
+        if exact: result.append(exact);continue
+        candidates=sorted(((SequenceMatcher(None,clean(name),key).ratio(),url) for key,url in catalog.items()),reverse=True)
+        if candidates and candidates[0][0]>=.91 and (len(candidates)==1 or candidates[0][0]-candidates[1][0]>=.06):
+            result.append(candidates[0][1])
+    return result[:2]
+
+def competitors(x):
+    names=[]
+    for side in x.get("raw_sides") or []:
+        name=str((side.get("team") or {}).get("name") or "").strip()
+        if name and clean(name) not in [clean(v) for v in names]: names.append(name)
+    return names if len(names)==2 else []
+
+def win_record(records):
+    for rec in records or []:
+        summary=str(rec.get("summary") or "")
+        m=re.fullmatch(r"(\d+)-(\d+)(?:-\d+)?",summary)
+        if m:
+            w,l=int(m.group(1)),int(m.group(2))
+            if w+l>=3: return w,l
+    return None
+
+def choose_prediction(x):
+    """Simple transparent records baseline, otherwise labeled market baseline.
+    Never call either a validated edge; avoid unsupported invented statistics."""
+    names=competitors(x)
+    if len(names)!=2: return None
+    game=x.get("score_game")
+    if game:
+        mapped=[]
+        for n in names:
+            hits=[t for t in game["teams"] if clean(t)==clean(n)]
+            if len(hits)!=1: break
+            mapped.append(hits[0])
+        if len(mapped)==2:
+            records=[win_record(game.get("records",{}).get(n)) for n in mapped]
+            if all(records):
+                # Smoothed season win-rate difference + small home advantage.
+                rates=[(w+5)/(w+l+10) for w,l in records]
+                margin=1.65*(rates[0]-rates[1]) + (.10 if mapped[0]==game.get("home") else -.10 if mapped[1]==game.get("home") else 0)
+                p=1/(1+math.exp(-margin))
+                winner=0 if p>=.5 else 1
+                confidence="MODEL · LIMITED" if abs(p-.5)>=.06 else "MODEL · CLOSE"
+                return {"selection":names[winner],"opponent":names[1-winner],"prob":p if winner==0 else 1-p,
+                        "model":"Season-record baseline", "confidence":confidence,
+                        "evidence":f"Records: {names[0]} {records[0][0]}-{records[0][1]}, {names[1]} {records[1][0]}-{records[1][1]}; modest home adjustment. Not calibrated."}
+    # When team statistics are missing, still lock a directional baseline, not an asserted model edge.
+    q=x.get("quote")
+    yes=x.get("selection") if x.get("verified_side") else None
+    if yes and q and q.get("valid") and clean(yes) in [clean(n) for n in names]:
+        chosen=next(n for n in names if clean(n)==clean(yes))
+        other=next(n for n in names if clean(n)!=clean(yes))
+        if q["ask"] < .5: chosen,other=other,chosen
+        return {"selection":chosen,"opponent":other,"prob":None,"model":"Market-favorite baseline",
+                "confidence":"BASELINE · NO INDEPENDENT EDGE",
+                "evidence":"Market price used to choose the favored side; not an independent sports prediction or evidence of value."}
+    return {"selection":names[0],"opponent":names[1],"prob":None,"model":"Uninformed baseline",
+            "confidence":"BASELINE · NO STATS", "evidence":"No usable verified team statistics or quote. First named competitor used solely as a tracked baseline."}
+
+def lock_predictions(items):
+    now=utc().isoformat()
+    with db() as c:
+        for x in items:
+            # Never create a new prediction after the match has ended.
+            game=x.get("score_game")
+            if game and game["state"]=="post": continue
+            pred=choose_prediction(x)
+            if not pred: continue
+            phase="LIVE" if x.get("live") else "PREGAME"
+            pid=hashlib.sha256((x["event_id"]+"|"+x["slug"]+"|"+phase).encode()).hexdigest()[:32]
+            q=x.get("quote")
+            ask=q["ask"] if q and q.get("valid") and x.get("verified_side") and clean(x["selection"])==clean(pred["selection"]) else None
+            c.execute("""INSERT OR IGNORE INTO royal_predictions_v34
+                (id,event_id,slug,sport,title,selection,opponent,phase,model,model_probability,confidence,evidence,quote_ask,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (pid,x["event_id"],x["slug"],x["sport"],x["title"],pred["selection"],pred["opponent"],phase,pred["model"],pred["prob"],pred["confidence"],pred["evidence"],ask,now))
+            # $100 paper entry only when Queen's chosen side IS the verified YES contract.
+            # No pretending a NO-side prediction has an executable quoted YES ask.
+            if ask is not None and q["ask"]-q["bid"]<=.03 and "OPEN" in q["state"].upper() and .05<=ask<=.95:
+                paperid=hashlib.sha256(("paper|"+pid).encode()).hexdigest()[:32]
+                c.execute("""INSERT OR IGNORE INTO royal_paper_v34
+                   (id,prediction_id,event_id,slug,sport,selection,stake,entry_ask,entry_at,last_bid,note)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                   (paperid,pid,x["event_id"],x["slug"],x["sport"],pred["selection"],100.0,ask,now,q["bid"],"Indicative paper fill; no actual order, fees excluded"))
+            if q and q.get("valid"):
+                c.execute("UPDATE royal_paper_v34 SET last_bid=? WHERE prediction_id=? AND status='OPEN'",(q["bid"],pid))
+        c.commit()
+
+def grade_predictions(items):
+    # A completed scoreboard can grade the chosen winner, not necessarily the
+    # exchange's official payout (retirement, postponement etc. need separate checks).
+    with db() as c:
+        for x in items:
+            game=x.get("score_game")
+            if not game or game.get("state")!="post" or not game.get("winner"): continue
+            winner=clean(game["winner"])
+            teams=[clean(n) for n in game["teams"]]
+            if winner not in teams: continue
+            rows=c.execute("SELECT * FROM royal_predictions_v34 WHERE event_id=? AND result='PENDING'",(x["event_id"],)).fetchall()
+            for r in rows:
+                # Match both competitor names to scoreboard, not merely winner substring.
+                if clean(r["selection"]) not in teams or clean(r["opponent"]) not in teams: continue
+                result="WIN" if clean(r["selection"])==winner else "LOSS"
+                c.execute("UPDATE royal_predictions_v34 SET result=?,graded_at=?,grade_note=? WHERE id=?",
+                          (result,utc().isoformat(),"Provisional ESPN result; check exchange settlement",r["id"]))
+                paper=c.execute("SELECT * FROM royal_paper_v34 WHERE prediction_id=? AND status='OPEN'",(r["id"],)).fetchone()
+                if paper:
+                    pnl=paper["stake"]*(1/paper["entry_ask"]-1) if result=="WIN" else -paper["stake"]
+                    c.execute("UPDATE royal_paper_v34 SET status=?,pnl=?,graded_at=? WHERE id=?",(result,round(pnl,2),utc().isoformat(),paper["id"]))
+        c.commit()
+
+def prediction_lookup():
+    with db() as c:
+        return {(r["event_id"],r["slug"],r["phase"]):dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34")}
+
+def prediction_panel():
+    st.subheader("👑 Queen's Locked Picks")
+    with db() as c:
+        rows=c.execute("SELECT * FROM royal_predictions_v34 ORDER BY created_at DESC LIMIT 150").fetchall()
+        papers=c.execute("SELECT * FROM royal_paper_v34 ORDER BY entry_at DESC LIMIT 100").fetchall()
+    wins=sum(r["result"]=="WIN" for r in rows); losses=sum(r["result"]=="LOSS" for r in rows)
+    pw=sum(r["status"]=="WIN" for r in papers); pl=sum(r["status"]=="LOSS" for r in papers)
+    a,b,c,d=st.columns(4)
+    a.metric("Locked picks",len(rows)); b.metric("Pick accuracy",f"{100*wins/(wins+losses):.0f}%" if wins+losses else "—")
+    c.metric("$100 paper entries",len(papers));d.metric("Settled paper P&L",f"${sum(r['pnl'] or 0 for r in papers):+,.2f}")
+    st.caption(f"Predictions {wins}W / {losses}L · Paper trades {pw}W / {pl}L. Baselines are tracked separately from limited-statistics model picks. ESPN grades provisional; no real trades.")
+    for r in rows[:12]:
+        st.markdown(f"**{SPORT_ICON.get(r['sport'],'🏆')} {r['selection']} to WIN** · {r['result']} · {r['sport']}")
+        st.caption(f"{r['phase']} · {r['model']} · locked {local(r['created_at'])} · {r['title']}")
+    with st.expander("All locked picks and paper entries"):
+        if rows: st.dataframe([dict(r) for r in rows],use_container_width=True,hide_index=True)
+        if papers: st.dataframe([dict(r) for r in papers],use_container_width=True,hide_index=True)
+    st.caption("Streamlit Community Cloud local SQLite is ephemeral. Configure a persistent database before relying on historical records across restarts or redeploys.")
 
 def display_row(x, number=None):
     q = x.get("quote")
@@ -248,7 +413,8 @@ def display_row(x, number=None):
     valid = bool(q and q.get("valid"))
     verified = bool(x.get("verified_side"))
     state = "🔴 LIVE" if x.get("live") else "UPCOMING"
-    # A price is not a prediction. Never label an unidentified YES as a named team.
+    locked = st.session_state.get("royal_locked",{}).get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"))
+    # Predictions are distinct from verified contract quotes and recommended trades.
     if valid and verified:
         action = "WATCH"
         main = f"YES: {html.escape(str(x['selection']))}"
@@ -261,6 +427,10 @@ def display_row(x, number=None):
         action = "WAIT"
         main = "No verified quote"
         secondary = "Price unavailable"
+    if locked:
+        action = "PICK LOCKED" if locked["result"]=="PENDING" else locked["result"]
+        main = f"👑 PICK: {html.escape(locked['selection'])} to WIN"
+        secondary = f"{html.escape(locked['confidence'])} · {secondary}"
     with st.container(border=True):
         st.markdown(f'''<div class="royal-game">
           <div class="royal-game-head"><span class="sport-icon">{icon}</span>
@@ -280,7 +450,12 @@ def display_row(x, number=None):
                 st.write(f"Observed YES ask {q['ask']:.0%}, bid {q['bid']:.0%}")
                 if verified:
                     st.write(f"If YES wins, hypothetical $100 settlement profit: ${money_profit(q['ask'],100):,.2f} before fees")
-            st.write("Automatic paper test:", paper_reason(x))
+            if locked:
+                st.write("Locked pick:",locked["selection"])
+                st.write("Prediction method:",locked["model"])
+                st.write("Why:",locked["evidence"])
+                st.write("Prediction status:",locked["result"])
+            st.write("Legacy paper-test rule:", paper_reason(x))
             st.caption("WATCH means monitor, not buy. These prices are not independent win probabilities.")
 
 def paper_reason(x):
@@ -435,7 +610,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.3 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
+st.caption("V3.4 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
@@ -455,6 +630,11 @@ priority = ["NCAAB", "NCAAF", "NBA", "NFL", "NHL", "Tennis", "MLB", "WNBA", "MLS
 selected = priority[:max_leagues] if sport == "All Sports" else [sport]
 with st.spinner("Finding Polymarket US sports events and checking market quotes..."):
     index = score_index(selected)
+    logo_catalog={}
+    for (league,_),game in index.items():
+        for team,url in game.get("logos",{}).items():
+            if safe_logo(url): logo_catalog.setdefault(league,{})[clean(team)]=url
+    st.session_state["royal_logo_catalog"]=logo_catalog
     all_events, errors = [], []
     for s in selected:
         items, err = events_for(s)
@@ -509,7 +689,13 @@ for x in checked:
     x["quote"], x["error"] = bbo(x["slug"])
     if x["quote"] and x["quote"]["valid"]: quoted += 1
 observations(checked)
-paper_update(checked)
+# Lock all discovered eligible named two-competitor markets, including those beyond
+# the quote budget. Paper entries require actual checked valid quotes.
+lock_predictions(rows)
+grade_predictions(rows)
+st.session_state["royal_locked"] = prediction_lookup()
+# Keep historical V3.3 paper tests intact; new pick-linked paper tests live in V3.4 tables.
+
 
 
 
@@ -527,9 +713,9 @@ with st.expander("🔎 Why paper entries are skipped", expanded=False):
         st.json({"event":sample["title"], "market_slug":sample["slug"], "market_type":sample["market_type"],
                  "marketSides":sample.get("raw_sides"), "market_metadata":sample.get("market_raw"), "mapping_result":sample.get("side_reason")}, expanded=False)
 
-st.subheader("👑 Queen’s Top 10 · Market Watch")
-watch = [x for x in checked if x.get("quote") and x["quote"]["valid"] and "OPEN" in x["quote"]["state"].upper()]
-watch.sort(key=lambda x:(not x["verified_side"], x["quote"]["ask"]-x["quote"]["bid"], x["quote"]["ask"]))
+st.subheader("👑 Queen’s Top 10 · Locked Picks")
+watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
+watch.sort(key=lambda x:(not x["verified_side"], not bool(x.get("score_game")), not bool(x.get("quote") and x["quote"].get("valid")), parse_date(x["start"]) or datetime.max.replace(tzinfo=timezone.utc)))
 # Diversify Top 10 across sports before filling remaining slots.
 unique, seen = [], set()
 for league in selected:
@@ -550,9 +736,11 @@ for offset in range(0, min(len(unique), 10), 2):
         with right_card:
             display_row(unique[offset + 1], offset + 2)
 if not unique: st.info("No valid open two-sided quotes in this scan. Queen says WAIT. Try Today or Next 3 Days and check the feed diagnostics.")
-st.caption("Top 10 includes different leagues when possible. WATCH is not a buy recommendation; no independent win-probability model is validated yet.")
+st.caption("Locked picks are directional forecasts, not automatically recommended trades. Season-record models are uncalibrated; market and no-stat baselines are not independent predictions.")
 
-paper_panel()
+prediction_panel()
+with st.expander("🧪 Previous V3.3 paper history"):
+    paper_panel()
 
 with st.expander("📡 Market feed & scan details",expanded=False):
     a,b,c,d=st.columns(4)
@@ -572,7 +760,7 @@ with left:
     st.info("Parlay calculations paused until compatible Polymarket US combo pricing and each leg's settlement rules are verified. No fabricated combined odds.")
 with right:
     st.subheader("🔥 Underdog Watch")
-    dogs = [x for x in watch if x.get("verified_side") and x["quote"]["ask"] < .5]
+    dogs = [x for x in watch if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"] < .5]
     if dogs:
         for x in dogs[:4]: st.write(f"**{x['selection']}** · {x['sport']} · YES ask {x['quote']['ask']:.0%} · WATCH ONLY")
     else: st.info("No lower-priced outcomes with verified quotes in this scan.")
