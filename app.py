@@ -8,11 +8,11 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
-LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
-ESPN = {"NBA":"basketball/nba", "NFL":"football/nfl", "NCAAB":"basketball/mens-college-basketball", "NCAAF":"football/college-football", "NHL":"hockey/nhl", "MLB":"baseball/mlb", "WNBA":"basketball/wnba", "MLS":"soccer/usa.1", "EPL":"soccer/eng.1", "Tennis":"tennis"}
+LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
+ESPN = {"NBA":"basketball/nba", "NFL":"football/nfl", "NCAAB":"basketball/mens-college-basketball", "NCAAF":"football/college-football", "NHL":"hockey/nhl", "MLB":"baseball/mlb", "WNBA":"basketball/wnba", "MLS":"soccer/usa.1", "EPL":"soccer/eng.1", "Tennis":"tennis/all"}
 DB = Path(os.getenv("ROYAL_DB_PATH", "royal_sports_history.db"))
 DB.parent.mkdir(parents=True, exist_ok=True)
 
@@ -109,25 +109,44 @@ def _tennis_sets(comp):
             parts.append(str(int(number)) if number is not None and number.is_integer() else str(value))
     return parts
 
-def _score_record(event, sport):
-    competitions=event.get("competitions") or []
-    if not competitions: return None
-    comp=competitions[0]
-    participants=comp.get("competitors") or []
-    if len(participants)!=2: return None
-    names=[_score_competitor_name(p) for p in participants]
-    if not all(names) or clean(names[0])==clean(names[1]): return None
-    status=event.get("status") or {}
-    typ=status.get("type") or {}
-    detail=str(typ.get("shortDetail") or typ.get("detail") or status.get("displayClock") or "").strip()
-    scores={n:p.get("score") for n,p in zip(names,participants)}
-    sets={n:_tennis_sets(p) for n,p in zip(names,participants)} if sport=="Tennis" else {}
-    return {"state":typ.get("state","unknown"),"detail":detail,"date":event.get("date"),"teams":names,
-            "scores":scores,"sets":sets,"winner":next((n for n,p in zip(names,participants) if p.get("winner") is True),None),
+def _score_record(event, sport, competition=None):
+    """Normalize either a team game or a tennis match nested in a tournament."""
+    comp = competition or ((event.get("competitions") or [None])[0])
+    if not isinstance(comp, dict): return None
+    participants = comp.get("competitors") or []
+    if len(participants) != 2: return None
+    names = [_score_competitor_name(p) for p in participants]
+    if not all(names) or clean(names[0]) == clean(names[1]): return None
+    status = comp.get("status") or event.get("status") or {}
+    typ = status.get("type") or {}
+    state = typ.get("state") or "unknown"
+    detail = str(typ.get("shortDetail") or typ.get("detail") or typ.get("description") or status.get("displayClock") or "").strip()
+    scores = {n:p.get("score") for n,p in zip(names,participants)}
+    sets = {n:_tennis_sets(p) for n,p in zip(names,participants)} if sport == "Tennis" else {}
+    return {"state":state,"detail":detail,"date":comp.get("date") or event.get("date"),
+            "teams":names,"scores":scores,"sets":sets,
+            "winner":next((n for n,p in zip(names,participants) if p.get("winner") is True),None),
             "logos":{n:(p.get("team") or {}).get("logo","") for n,p in zip(names,participants)},
             "records":{n:p.get("records") or [] for n,p in zip(names,participants)},
             "home":next((n for n,p in zip(names,participants) if p.get("homeAway")=="home"),""),
-            "event_id":str(event.get("id") or "")}
+            "event_id":str(comp.get("id") or event.get("id") or ""),
+            "source":"ESPN", "completed":bool(typ.get("completed"))}
+
+def _score_records(event, sport):
+    """ESPN tennis events are tournaments; matches live inside groupings."""
+    if sport != "Tennis":
+        item = _score_record(event,sport)
+        return [item] if item else []
+    competitions = list(event.get("competitions") or [])
+    for grouping in event.get("groupings") or []:
+        competitions.extend(grouping.get("competitions") or [])
+    if not competitions and len(event.get("competitors") or []) == 2:
+        competitions = [event]
+    records = []
+    for comp in competitions:
+        item = _score_record(event,sport,comp)
+        if item: records.append(item)
+    return records
 
 def _name_tokens(name):
     """Normalize common scoreboard abbreviations without guessing the winner."""
@@ -178,9 +197,13 @@ def score_index(sports, extra_dates=None):
             try: events=future.result()
             except Exception: continue
             for event in events:
-                game=_score_record(event,sport)
-                if game:
-                    result[(sport,str(game['event_id']))]=game
+                for game in _score_records(event,sport):
+                    key = (sport,str(game['event_id']) or clean(''.join(game['teams'])))
+                    existing = result.get(key)
+                    # Prefer a completed/live snapshot over an older pregame one.
+                    priority = {'post':3,'in':2,'pre':1}
+                    if not existing or priority.get(game['state'],0) >= priority.get(existing['state'],0):
+                        result[key] = game
     return result
 
 def _match_saved_game(row, index):
@@ -201,6 +224,11 @@ def _match_saved_game(row, index):
         if created and start and start>created+timedelta(days=8): continue
         matches.append((strength,game))
     matches.sort(key=lambda v:v[0],reverse=True)
+    if matches:
+        unique = {}
+        for strength,game in matches:
+            unique[(game.get('event_id'), tuple(sorted(game['teams'])))]=(strength,game)
+        matches=sorted(unique.values(),key=lambda v:v[0],reverse=True)
     if matches and (len(matches)==1 or matches[0][0]-matches[1][0]>=.06):
         return matches[0][1]
     return None
@@ -509,16 +537,12 @@ def refresh_saved_results():
             try: events=future.result()
             except Exception: continue
             for e in events:
-                comp=(e.get('competitions') or [{}])[0]
-                teams=comp.get('competitors') or []
-                if len(teams)!=2: continue
-                status=e.get('status',{}).get('type',{})
-                if status.get('state')!='post' or not status.get('completed'): continue
-                names=[_score_competitor_name(t) for t in teams]
-                winner=next((_score_competitor_name(t) for t in teams if t.get('winner') is True),None)
-                game_date=parse_date(e.get('date'))
-                if winner and game_date:
-                    completed[sp].append((frozenset(clean(n) for n in names),clean(winner),game_date,str(e.get('id') or '')))
+                for game in _score_records(e,sp):
+                    if game['state']!='post' or not game.get('completed') or not game.get('winner'): continue
+                    game_date=parse_date(game.get('date'))
+                    if game_date:
+                        completed[sp].append((frozenset(clean(n) for n in game['teams']),
+                                              clean(game['winner']),game_date,game['event_id']))
     changed=0
     with db() as c:
         for r in pending:
@@ -704,7 +728,7 @@ def _saved_game_banner(game, result):
     if game and game.get("state")=="in": return "🔴 LIVE · IN PROGRESS", "#e11d48"
     if game and game.get("state")=="post": return "🏁 FINAL · AWAITING GRADING", "#d97706"
     if game and game.get("state")=="pre": return "📅 UPCOMING · NOT STARTED", "#64748b"
-    return "⏳ PENDING · LIVE STATUS UNVERIFIED", "#a16207"
+    return "⏳ PENDING · SCORE STATUS UNVERIFIED", "#a16207"
 
 def _render_saved_score(game, row):
     if not game:
@@ -799,6 +823,14 @@ def prediction_panel():
     history_scores=score_index(sorted(history_sports), [r.get("created_at") for r in shown]) if history_sports else {}
     for r in shown:
         _pick_card(r,paper_by_prediction.get(r["id"]),history_scores)
+    with st.expander("🔎 Score Feed Diagnostics (optional)", expanded=False):
+        st.caption("ESPN score data is separate from Polymarket prices. Unmatched does not mean a game is over or canceled.")
+        for sport in sorted(history_sports):
+            found=[g for (league,_),g in history_scores.items() if league==sport]
+            visible=[r for r in shown if r.get('sport')==sport]
+            matched=sum(_match_saved_game(r,history_scores) is not None for r in visible)
+            st.write(f"{sport}: {len(found)} score records · {matched}/{len(visible)} visible picks matched")
+        st.caption("Tennis coverage may exclude Challenger tournaments. A verified provider is required before grading an unmatched match.")
     if len(filtered)>limit:
         if st.button("Show 20 more saved picks",use_container_width=True):
             st.session_state["royal_history_limit"]=limit+20
@@ -835,6 +867,8 @@ def royal_game_clock(game, start=None):
 
 def royal_score_line(game, selection=None):
     if not game or game.get("state") not in ("in","post"): return None
+    if game.get("sets") and game.get("source") == "ESPN":
+        return None  # Tennis set scores are displayed separately, never as team points.
     teams=game.get("teams") or []
     if len(teams)!=2: return None
     a,b=teams
@@ -1096,7 +1130,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.5 · IMPROVED LIVE SCORE MATCHING & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.6 · IMPROVED LIVE SCORE MATCHING & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
