@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -58,13 +58,21 @@ def db():
       id TEXT PRIMARY KEY, prediction_id TEXT UNIQUE, event_id TEXT, slug TEXT,
       sport TEXT, selection TEXT, stake REAL, entry_ask REAL, entry_at TEXT,
       last_bid REAL, status TEXT DEFAULT 'OPEN', pnl REAL, graded_at TEXT, note TEXT)""")
+    c.execute("""CREATE TABLE IF NOT EXISTS royal_parlays_v37 (
+      id TEXT PRIMARY KEY, session_key TEXT, leg_count INTEGER, created_at TEXT,
+      status TEXT DEFAULT 'PENDING', wins INTEGER DEFAULT 0, losses INTEGER DEFAULT 0,
+      note TEXT, UNIQUE(session_key,leg_count))""")
+    c.execute("""CREATE TABLE IF NOT EXISTS royal_parlay_legs_v37 (
+      parlay_id TEXT NOT NULL, leg_number INTEGER NOT NULL, prediction_id TEXT NOT NULL,
+      event_id TEXT, sport TEXT, title TEXT, selection TEXT, model TEXT,
+      PRIMARY KEY(parlay_id,leg_number))""")
     c.commit()
     return c
 
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.6"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.7"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -720,7 +728,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.6 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
+st.caption("V3.7 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
@@ -887,13 +895,115 @@ with st.expander("📡 Market feed & scan details",expanded=False):
     st.caption("Open market is not the same as a live game. Quotes are indicative.")
     for x in checked: display_row(x)
 
-with st.expander("🎯 Parlays & 🔥 Underdog Research",expanded=False):
-    left,right=st.columns(2)
-    with left:
-        st.markdown("**🎯 Royal Parlays**")
-        st.caption("Paused: verified combination pricing and settlement rules are not available. No fabricated parlay odds.")
-    with right:
-        st.markdown("**🔥 Underdog Watch**")
+# V3.7: Separate, automatically locked prediction combinations. They are NOT
+# exchange parlay contracts, verified quotes, simulated fills, or priced trades.
+def royal_parlay_candidates():
+    candidates = []
+    seen = set()
+    for x in sorted(watch, key=evidence_rank):
+        phase = "LIVE" if x.get("live") else "PREGAME"
+        r = st.session_state["royal_locked"].get((x["event_id"], x["slug"], phase))
+        if not r or r.get("result") != "PENDING" or r.get("model") == "Uninformed baseline":
+            continue
+        # One side of one game per parlay. Do not put contradictory or repeated
+        # markets for the same event into the same ticket.
+        if x["event_id"] in seen: continue
+        seen.add(x["event_id"])
+        candidates.append(dict(r))
+    return candidates
+
+def royal_lock_parlays(candidates, session_key):
+    """Create each available size once per session; no reroll on rescans."""
+    created = []
+    with db() as c:
+        for n in (2,3,5,10):
+            if len(candidates) < n: continue
+            pid = hashlib.sha256(("royal-parlay-v37|"+session_key+"|"+str(n)).encode()).hexdigest()[:32]
+            before = c.total_changes
+            c.execute("INSERT OR IGNORE INTO royal_parlays_v37 (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)",
+                      (pid,session_key,n,utc().isoformat(),"Automatic paper-only prediction combo. No executable parlay price, payout or edge verified."))
+            if c.total_changes == before: continue
+            for i,r in enumerate(candidates[:n],1):
+                c.execute("""INSERT OR IGNORE INTO royal_parlay_legs_v37
+                   (parlay_id,leg_number,prediction_id,event_id,sport,title,selection,model)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                   (pid,i,r["id"],r["event_id"],r["sport"],r["title"],r["selection"],r["model"]))
+            created.append(n)
+        c.commit()
+    return created
+
+def royal_grade_parlays():
+    """Link each leg to the original immutable prediction's graded result."""
+    with db() as c:
+        ids=[r["id"] for r in c.execute("SELECT id FROM royal_parlays_v37 WHERE status='PENDING'")]
+        for pid in ids:
+            results=[r[0] for r in c.execute("""SELECT COALESCE(p.result,'PENDING')
+                FROM royal_parlay_legs_v37 l LEFT JOIN royal_predictions_v34 p ON p.id=l.prediction_id
+                WHERE l.parlay_id=? ORDER BY l.leg_number""",(pid,))]
+            if not results: continue
+            wins=results.count("WIN")
+            losses=results.count("LOSS")
+            # One lost leg loses the combo, even if other legs are pending.
+            # A fully won combo requires every leg to have a WIN grade.
+            status="LOSS" if losses else "WIN" if wins==len(results) else "PENDING"
+            c.execute("UPDATE royal_parlays_v37 SET wins=?,losses=?,status=? WHERE id=?",(wins,losses,status,pid))
+        c.commit()
+
+def royal_parlay_history():
+    with db() as c:
+        tickets=[dict(r) for r in c.execute("SELECT * FROM royal_parlays_v37 ORDER BY created_at DESC")]
+        legs={}
+        for r in c.execute("""SELECT l.*,COALESCE(p.result,'PENDING') AS leg_result
+              FROM royal_parlay_legs_v37 l LEFT JOIN royal_predictions_v34 p ON p.id=l.prediction_id
+              ORDER BY l.parlay_id,l.leg_number"""):
+            legs.setdefault(r["parlay_id"],[]).append(dict(r))
+    return tickets,legs
+
+# Session is local calendar date + scan window + sport selector; a repeated scan
+# never changes the picks already locked for that session.
+royal_session=f"{current.isoformat()}|{window}|{sport}"
+royal_candidates=royal_parlay_candidates()
+royal_new=royal_lock_parlays(royal_candidates,royal_session)
+royal_grade_parlays()
+royal_tickets,royal_legs=royal_parlay_history()
+
+st.subheader("🎯 Queen’s Royal Parlays")
+with st.container():
+    st.markdown("**👑 Automatic Royal Parlay Builder**")
+    st.caption("Queen automatically locks the best available tracked predictions once per scan session. Choose a bubble to view your ticket. No manual picking required.")
+    selected_legs=st.radio("Choose your parlay",[2,3,5,10],horizontal=True,
+                           format_func=lambda n:{2:"👑 2 Legs",3:"👑 3 Legs",5:"👑 5 Legs",10:"🎰 10 Lotto"}[n],
+                           key="royal_parlay_size_v37")
+    if selected_legs==10:
+        st.caption("🎰 Royal Lotto: all 10 selections must win. High-risk experimental combination.")
+    ticket=next((t for t in royal_tickets if t["session_key"]==royal_session and t["leg_count"]==selected_legs),None)
+    if ticket:
+        tlegs=royal_legs.get(ticket["id"],[])
+        status=ticket["status"]
+        st.markdown(f"**{'🟢 WON' if status=='WIN' else '🔴 LOST' if status=='LOSS' else '🟡 PENDING'} · {selected_legs}-leg {'Royal Lotto' if selected_legs==10 else 'Royal Parlay'}**")
+        st.caption(f"🔒 Locked {local(ticket['created_at'])} · {ticket['wins']} won · {ticket['losses']} lost · {len(tlegs)-ticket['wins']-ticket['losses']} pending")
+        for leg in tlegs:
+            icon=SPORT_ICON.get(leg["sport"],"🏆")
+            st.markdown(f"{icon} **{leg['selection']} to WIN** · {leg['leg_result']}")
+            st.caption(f"{leg['sport']} · {leg['title']} · {leg['model']}")
+    else:
+        st.info(f"Only {len(royal_candidates)} eligible tracked games in this scan; {selected_legs} different games are required. Queen won't invent extra legs.")
+    st.caption("These are locked *prediction combinations*, not purchasable Polymarket US parlays. Combined odds, paper P&L and payout are intentionally omitted until verified combo pricing and settlement are supported. Season-record estimates are not calibrated and market-favorite baselines are not independent edges.")
+    with st.expander(f"📜 Saved Royal Parlay History ({len(royal_tickets)})",expanded=False):
+        if not royal_tickets: st.caption("No parlay combinations locked yet.")
+        for t in royal_tickets[:30]:
+            label="🎰 LOTTO" if t["leg_count"]==10 else f"{t['leg_count']}-LEG"
+            with st.expander(f"{label} · {t['status']} · {local(t['created_at'])}",expanded=False):
+                for leg in royal_legs.get(t["id"],[]):
+                    st.write(f"{SPORT_ICON.get(leg['sport'],'🏆')} {leg['selection']} · {leg['leg_result']} · {leg['title']}")
+    with st.expander("💾 Download Royal Parlay Backups",expanded=False):
+        with db() as c:
+            pr=[dict(r) for r in c.execute("SELECT * FROM royal_parlays_v37")]
+            pl=[dict(r) for r in c.execute("SELECT * FROM royal_parlay_legs_v37")]
+        st.download_button("⬇️ Parlay tickets CSV",_csv_bytes(pr),"royal_parlays_v37_backup.csv","text/csv",disabled=not pr,use_container_width=True)
+        st.download_button("⬇️ Parlay legs CSV",_csv_bytes(pl),"royal_parlay_legs_v37_backup.csv","text/csv",disabled=not pl,use_container_width=True)
+        st.caption("Download both files for safekeeping. Parlay records also use the host's nonpersistent local SQLite database. Existing prediction/paper backups remain in the All locked picks section.")
+    with st.expander("🔥 Underdog Watch",expanded=False):
         dogs=[x for x in watch if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"]<.5]
         if dogs:
             for x in dogs[:4]: st.caption(f"{x['selection']} · {x['sport']} · {x['quote']['ask']:.0%} YES ask · WATCH ONLY")
