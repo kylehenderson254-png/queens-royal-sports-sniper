@@ -6,11 +6,11 @@ from urllib.parse import quote
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.0 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
-ESPN = {"NBA":"basketball/nba", "NFL":"football/nfl", "NCAAB":"basketball/mens-college-basketball", "NCAAF":"football/college-football", "NHL":"hockey/nhl", "MLB":"baseball/mlb", "WNBA":"basketball/wnba", "MLS":"soccer/usa.1", "EPL":"soccer/eng.1"}
+ESPN = {"NBA":"basketball/nba", "NFL":"football/nfl", "NCAAB":"basketball/mens-college-basketball", "NCAAF":"football/college-football", "NHL":"hockey/nhl", "MLB":"baseball/mlb", "WNBA":"basketball/wnba", "MLS":"soccer/usa.1", "EPL":"soccer/eng.1", "Tennis":"tennis"}
 DB = Path(os.getenv("ROYAL_DB_PATH", "royal_sports_history.db"))
 DB.parent.mkdir(parents=True, exist_ok=True)
 
@@ -53,7 +53,7 @@ def db():
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.0"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.1"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -119,10 +119,33 @@ def identify_yes_team(market):
     return None, f"Ambiguous: {len(sides)} sides, no unique explicit YES team"
 
 def events_for(sport):
-    payload, error = api(f"/v2/leagues/{LEAGUES[sport]}/events", {"limit":50, "offset":0})
-    if error: return [], error
-    items = payload if isinstance(payload, list) else payload.get("events", []) if isinstance(payload, dict) else []
-    return [e for e in items if isinstance(e, dict)], None
+    # Different league identifiers may appear across Polymarket US surfaces.
+    # Try a fallback only when the canonical league returned no usable events.
+    aliases = {
+        "NCAAB": ["ncaab", "cbb"],
+        "NCAAF": ["ncaaf", "cfb"],
+        "WNBA": ["wnba", "wcbb"],
+        "Tennis": ["tennis", "atp", "wta"],
+    }
+    found, seen, failures = [], set(), []
+    for league in aliases.get(sport, [LEAGUES[sport]]):
+        # Two pages prevent the first 50 events from hiding upcoming games.
+        for offset in (0, 50):
+            payload, error = api(f"/v2/leagues/{league}/events", {"limit":50, "offset":offset})
+            if error:
+                failures.append(f"{league}: {error}")
+                break
+            items = payload if isinstance(payload, list) else payload.get("events", []) if isinstance(payload, dict) else []
+            if not isinstance(items, list): break
+            for event in items:
+                if not isinstance(event, dict): continue
+                ident = str(event.get("id") or event.get("slug") or "")
+                if ident and ident not in seen:
+                    seen.add(ident)
+                    found.append(event)
+            if len(items) < 50: break
+        if found and sport not in ("Tennis",): break
+    return found, ("; ".join(failures) if not found and failures else None)
 
 def bbo(slug):
     if not slug or not re.fullmatch(r"[A-Za-z0-9_-]+", str(slug)): return None, "Invalid market slug"
@@ -164,30 +187,48 @@ def game_logos(x):
     return [safe_logo(v) for v in (g.get("logos") or {}).values() if safe_logo(v)][:2]
 
 def display_row(x, number=None):
-    q=x.get("quote")
-    live=x.get("live")
-    sport=x.get("sport", "Sports")
-    icon=SPORT_ICON.get(sport,"🏆")
-    name=html.escape(str(x.get("title") or "Sports match"))
-    price=f"{q['ask']*100:.0f}¢" if q and q.get("valid") else "—"
-    status="🔴 LIVE" if live else "📅 UPCOMING"
-    logos=game_logos(x)
-    logo_html="".join(f'<img src="{html.escape(u,quote=True)}" class="team-logo" alt="team logo">' for u in logos)
-    badge="WATCH" if q and q.get("valid") else "WAIT"
-    line=f"{icon} {sport} · {status} · {html.escape(str(x.get('market_type','Market')))}"
-    selection=html.escape(str(x['selection'])) if x.get('verified_side') else "Outcome not verified"
+    q = x.get("quote")
+    sport = x.get("sport", "Sports")
+    icon = SPORT_ICON.get(sport, "🏆")
+    title = html.escape(str(x.get("title") or "Sports match"))
+    logos = game_logos(x)
+    logo_html = "".join(f'<img src="{html.escape(u,quote=True)}" class="team-logo" alt="team logo">' for u in logos)
+    valid = bool(q and q.get("valid"))
+    verified = bool(x.get("verified_side"))
+    state = "🔴 LIVE" if x.get("live") else "UPCOMING"
+    # A price is not a prediction. Never label an unidentified YES as a named team.
+    if valid and verified:
+        action = "WATCH"
+        main = f"YES: {html.escape(str(x['selection']))}"
+        secondary = f"Buy {q['ask']*100:.0f}¢ · Sell {q['bid']*100:.0f}¢"
+    elif valid:
+        action = "WAIT"
+        main = "Team/outcome not verified"
+        secondary = f"Contract YES {q['ask']*100:.0f}¢ · not a team pick"
+    else:
+        action = "WAIT"
+        main = "No verified quote"
+        secondary = "Price unavailable"
     with st.container():
-        st.markdown(f'''<div class="royal-game"><div class="royal-game-head"><span class="sport-icon">{icon}</span><span class="royal-match">{f'{number}. ' if number else ''}{name}</span><span class="logos">{logo_html}</span></div><div class="royal-meta">{line}</div><div class="royal-game-bottom"><div><div class="royal-ask">{price} <span>buy YES</span></div><div class="royal-selection">{selection}</div></div><div class="royal-watch">{badge}</div></div></div>''',unsafe_allow_html=True)
-        with st.expander("Why WATCH? · Price and paper check"):
-            st.write("Game:", x.get('score_detail') or ("Live event" if live else local(x.get('start'))))
-            st.write("YES side:", x['selection'] if x.get('verified_side') else "Not verified")
-            st.write("Contract mapping:",x.get('side_reason','Unknown'))
-            st.write("Market:",x['slug'])
-            if q and q.get('valid'):
-                st.write(f"Observed buy YES: {q['ask']:.0%} · observed sell YES: {q['bid']:.0%}")
-                st.write(f"$100 hypothetical settlement profit if YES wins: ${money_profit(q['ask'],100):,.2f}, excluding fees")
-            st.write("Automatic paper test:",paper_reason(x))
-            st.caption("Observed market prices are not Queen's independent winning probabilities or guaranteed fills.")
+        st.markdown(f'''<div class="royal-game">
+          <div class="royal-game-head"><span class="sport-icon">{icon}</span>
+          <span class="royal-match">{f'{number}. ' if number else ''}{title}</span>
+          <span class="logos">{logo_html}</span></div>
+          <div class="royal-game-bottom"><div class="royal-game-text">
+          <div class="royal-meta">{html.escape(sport)} · {state} · {html.escape(str(x.get('market_type','Market')))}</div>
+          <div class="royal-selection">{main}</div><div class="royal-price">{secondary}</div></div>
+          <span class="royal-watch">{action}</span></div></div>''', unsafe_allow_html=True)
+        with st.expander("Why this status? · Contract details"):
+            st.write("Game:", x.get("score_detail") or local(x.get("start")))
+            st.write("Verified YES outcome:", x["selection"] if verified else "Not established by contract metadata")
+            st.write("Mapping check:", x.get("side_reason", "Unknown"))
+            st.write("Market slug:", x.get("slug"))
+            if valid:
+                st.write(f"Observed YES ask {q['ask']:.0%}, bid {q['bid']:.0%}")
+                if verified:
+                    st.write(f"If YES wins, hypothetical $100 settlement profit: ${money_profit(q['ask'],100):,.2f} before fees")
+            st.write("Automatic paper test:", paper_reason(x))
+            st.caption("WATCH means monitor, not buy. These prices are not independent win probabilities.")
 
 def paper_reason(x):
     q = x.get('quote')
@@ -284,35 +325,36 @@ def paper_panel():
 
 
 st.markdown("""<style>
-.block-container{padding-top:.65rem;max-width:1060px;padding-left:.75rem;padding-right:.75rem}
-h1,h2,h3{color:#bd86f4!important;letter-spacing:-.025em}
-h2{font-size:clamp(1.12rem,3vw,1.55rem)!important}
-[data-testid="stMetric"]{background:linear-gradient(130deg,#25172e,#1a1423);padding:.55rem;border-radius:13px;border:1px solid #342342}
-[data-testid="stMetricLabel"]{font-size:.75rem}
-[data-testid="stMetricValue"]{font-size:1.32rem}
-.stButton>button{border-radius:25px;min-height:2.7rem}
-[data-testid="stExpander"]{border-radius:12px;border-color:#362a3d}
-.royal-game{border-bottom:1px solid #392b43;padding:.65rem .25rem .42rem;margin-top:.2rem}
-.royal-game-head{display:flex;align-items:center;gap:.55rem;min-width:0}
-.sport-icon{font-size:1.45rem;flex-shrink:0}
-.royal-match{font-size:1rem;font-weight:750;color:#f2eafa;flex:1;min-width:0;line-height:1.25}
-.logos{display:flex;gap:4px;align-items:center}
-.team-logo{height:27px;width:27px;object-fit:contain}
-.royal-meta{font-size:.79rem;color:#b3a6c0;margin:.26rem 0 .32rem 2rem}
-.royal-game-bottom{display:flex;align-items:center;justify-content:space-between;gap:.7rem;margin-left:2rem}
-.royal-ask{font-size:1.2rem;font-weight:800;color:#e4c5ff}
-.royal-ask span{font-size:.73rem;font-weight:400;color:#a99cb1}
-.royal-selection{font-size:.75rem;color:#a99cb1}
-.royal-watch{font-size:.8rem;font-weight:750;color:#f3c978;border:1px solid #59462d;border-radius:20px;padding:.25rem .7rem}
-[data-testid="stVerticalBlockBorderWrapper"]{border-radius:12px!important}
+.block-container{padding-top:.5rem;max-width:1050px;padding-left:.75rem;padding-right:.75rem}
+h1,h2,h3{color:#c493ff!important;letter-spacing:-.025em}
+h2{font-size:clamp(1.15rem,3vw,1.5rem)!important}
+[data-testid="stMetric"]{background:#1c1424;padding:.45rem;border-radius:11px;border:1px solid #352541}
+[data-testid="stMetricLabel"]{font-size:.72rem}
+[data-testid="stMetricValue"]{font-size:1.2rem}
+.stButton>button{border-radius:22px;min-height:2.55rem}
+[data-testid="stExpander"]{border-radius:10px;border-color:#352b3a}
+.royal-game{border-bottom:1px solid #33263b;padding:.42rem .1rem .32rem;margin:0}
+.royal-game-head{display:flex;align-items:center;gap:.45rem;min-width:0}
+.sport-icon{font-size:1.2rem;flex-shrink:0}
+.royal-match{font-size:.97rem;font-weight:700;color:#f2eafa;flex:1;min-width:0;line-height:1.22}
+.logos{display:flex;gap:3px;align-items:center;flex-shrink:0}
+.team-logo{height:24px;width:24px;object-fit:contain}
+.royal-game-bottom{display:flex;align-items:center;justify-content:space-between;gap:.4rem;margin-left:1.65rem;padding-top:.12rem}
+.royal-game-text{min-width:0}
+.royal-meta{font-size:.72rem;color:#b3a6c0;margin:0 0 .12rem}
+.royal-selection{font-size:.87rem;font-weight:700;color:#e9d3ff;line-height:1.2}
+.royal-price{font-size:.73rem;color:#a99cb1;margin-top:.1rem}
+.royal-watch{font-size:.7rem;font-weight:750;color:#f3c978;border:1px solid #59462d;border-radius:18px;padding:.18rem .5rem;white-space:nowrap}
+[data-testid="stVerticalBlockBorderWrapper"]{border-radius:10px!important}
 @media(max-width:650px){
- .block-container{padding-left:.6rem;padding-right:.6rem}
+ .block-container{padding-left:.55rem;padding-right:.55rem}
  [data-testid="stHorizontalBlock"]{gap:.3rem!important}
  [data-testid="column"]{min-width:calc(50% - .3rem)!important;flex:1 1 calc(50% - .3rem)!important}
- [data-testid="stMetric"]{padding:.4rem}
- [data-testid="stMetricValue"]{font-size:1.1rem}
- .royal-match{font-size:.96rem}
- .team-logo{width:22px;height:22px}
+ [data-testid="stMetric"]{padding:.35rem}
+ [data-testid="stMetricValue"]{font-size:1.05rem}
+ .royal-match{font-size:.9rem}
+ .team-logo{width:21px;height:21px}
+ .royal-game{padding:.36rem .05rem .25rem}
 }
 </style>""",unsafe_allow_html=True)
 
@@ -330,13 +372,13 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.0 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
+st.caption("V3.1 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
 with st.expander("⚙️ Scan settings & important notes"):
-    max_leagues = st.slider("Maximum leagues in All Sports", 1, len(LEAGUES), 6)
-    max_quotes = st.slider("Maximum contracts to price per scan", 5, 100, 35, step=5)
+    max_leagues = st.slider("Maximum leagues in All Sports", 1, len(LEAGUES), len(LEAGUES))
+    max_quotes = st.slider("Maximum contracts to price per scan", 10, 120, 60, step=5)
     st.caption("The public Polymarket US API is used without an account key. Quotes are cached for two minutes. Game scores come from ESPN and may lag.")
     st.caption("Paper entries are simulated at the observed ask; the experimental entry filter is NOT a validated prediction or positive-edge strategy. Existing history is preserved separately.")
 
@@ -346,7 +388,8 @@ if not st.session_state.get("royal_scan"):
     st.info("Press Scan Polymarket US to discover games and request available market prices.")
     st.stop()
 
-selected = (list(LEAGUES)[:max_leagues] + (["Tennis"] if "Tennis" not in list(LEAGUES)[:max_leagues] else [])) if sport == "All Sports" else [sport]
+priority = ["NCAAB", "NCAAF", "NBA", "NFL", "NHL", "Tennis", "MLB", "WNBA", "MLS", "EPL", "UFC"]
+selected = priority[:max_leagues] if sport == "All Sports" else [sport]
 with st.spinner("Finding Polymarket US sports events and checking market quotes..."):
     index = score_index(selected)
     all_events, errors = [], []
@@ -387,19 +430,29 @@ for s, e in all_events:
                      "live":is_live, "game_state":game["state"] if game else "unknown",
                      "score_detail":game["detail"] if game else "", "score_game":game, "quote":None, "error":None})
 
-# Prefer games already underway, then the earliest scheduled. Bound API calls.
+# Give every league a fair share of quote requests; one busy league cannot crowd out college sports.
 rows.sort(key=lambda x:(not x["live"], parse_date(x["start"]) or datetime.max.replace(tzinfo=timezone.utc)))
-for x in rows[:max_quotes]:
+from collections import defaultdict
+buckets = defaultdict(list)
+for row in rows:
+    buckets[row["sport"]].append(row)
+checked = []
+while len(checked) < max_quotes and any(buckets.values()):
+    for league in selected:
+        if len(checked) >= max_quotes: break
+        if buckets[league]:
+            checked.append(buckets[league].pop(0))
+for x in checked:
     x["quote"], x["error"] = bbo(x["slug"])
     if x["quote"] and x["quote"]["valid"]: quoted += 1
-observations(rows[:max_quotes])
-paper_update(rows[:max_quotes])
+observations(checked)
+paper_update(checked)
 
 
 
 with st.expander("🔎 Why paper entries are skipped", expanded=False):
     from collections import Counter
-    reasons = Counter(paper_reason(x) for x in rows[:max_quotes])
+    reasons = Counter(paper_reason(x) for x in checked)
     if not reasons:
         st.write("No markets checked in this game window.")
     for reason, count in reasons.most_common():
@@ -412,17 +465,22 @@ with st.expander("🔎 Why paper entries are skipped", expanded=False):
                  "marketSides":sample.get("raw_sides"), "mapping_result":sample.get("side_reason")}, expanded=False)
 
 st.subheader("👑 Queen’s Top 10 · Market Watch")
-watch = [x for x in rows[:max_quotes] if x.get("quote") and x["quote"]["valid"] and "OPEN" in x["quote"]["state"].upper()]
-watch.sort(key=lambda x:(x["quote"]["ask"]-x["quote"]["bid"], x["quote"]["ask"]))
+watch = [x for x in checked if x.get("quote") and x["quote"]["valid"] and "OPEN" in x["quote"]["state"].upper()]
+watch.sort(key=lambda x:(not x["verified_side"], x["quote"]["ask"]-x["quote"]["bid"], x["quote"]["ask"]))
+# Diversify Top 10 across sports before filling remaining slots.
 unique, seen = [], set()
+for league in selected:
+    candidate = next((x for x in watch if x["sport"] == league and x["event_id"] not in seen), None)
+    if candidate:
+        unique.append(candidate); seen.add(candidate["event_id"])
 for x in watch:
     if x["event_id"] in seen: continue
     unique.append(x); seen.add(x["event_id"])
 if window == "🔴 Live":
     st.caption("Showing only markets marked live by the event feed or matched scoreboard. Tennis is included when the US feed provides it.")
 for i,x in enumerate(unique[:10], 1): display_row(x, i)
-if not unique: st.info("No verified open two-sided quotes in this scan. Queen says WAIT.")
-st.caption("Sorted by market spread, not predicted wins. WATCH is not a recommendation; Queen needs verified outcomes and tested probabilities before VALUE PICK signals.")
+if not unique: st.info("No valid open two-sided quotes in this scan. Queen says WAIT. Try Today or Next 3 Days and check the feed diagnostics.")
+st.caption("Top 10 includes different leagues when possible. WATCH is not a buy recommendation; no independent win-probability model is validated yet.")
 
 paper_panel()
 
@@ -431,8 +489,11 @@ with st.expander("📡 Market feed & scan details",expanded=False):
     a.metric("Events",len(all_events));b.metric("Markets",len(rows));c.metric("Quotes",quoted);d.metric("Live",live_count)
     if errors:
         for err in errors: st.caption(err)
+    st.write("Events discovered by sport:")
+    for league in selected:
+        st.caption(f"{league}: {sum(1 for a,b in all_events if a == league)} events · {sum(1 for x in checked if x['sport'] == league)} quotes requested")
     st.caption("Open market is not the same as a live game. Quotes are indicative.")
-    for x in rows[:max_quotes]: display_row(x)
+    for x in checked: display_row(x)
 
 left,right = st.columns(2)
 with left:
@@ -441,9 +502,9 @@ with left:
     st.info("Parlay calculations paused until compatible Polymarket US combo pricing and each leg's settlement rules are verified. No fabricated combined odds.")
 with right:
     st.subheader("🔥 Underdog Watch")
-    dogs = [x for x in watch if x["quote"]["ask"] < .5]
+    dogs = [x for x in watch if x.get("verified_side") and x["quote"]["ask"] < .5]
     if dogs:
-        for x in dogs[:4]: st.write(f"**{x['selection']}** · {x['sport']} · ask {x['quote']['ask']:.0%} · WATCH ONLY")
+        for x in dogs[:4]: st.write(f"**{x['selection']}** · {x['sport']} · YES ask {x['quote']['ask']:.0%} · WATCH ONLY")
     else: st.info("No lower-priced outcomes with verified quotes in this scan.")
     st.caption("A low price does not prove an upset opportunity or positive expected value.")
 
