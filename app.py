@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.0 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -698,6 +698,35 @@ def prediction_panel():
             else: st.success(f"Restored {count} missing paper trades. Existing entries unchanged.")
     st.caption("Important: Streamlit Community Cloud local SQLite can be lost on restart or redeploy. This code does not delete saved history, but cannot guarantee that the host retains its database. Backups or persistent storage are necessary.")
 
+def royal_game_clock(game, start=None):
+    if not game:
+        when=local(start)
+        return "📅 Scheduled · "+when if when!="Time unconfirmed" else "🕒 Start time unconfirmed"
+    state=game.get("state")
+    detail=str(game.get("detail") or "").strip()
+    when=local(game.get("date") or start)
+    if state=="in": return "🔴 LIVE"+(" · "+detail if detail else " · Clock unavailable")
+    if state=="post": return "🏁 FINAL"+(" · "+detail if detail.lower() not in ("","final") else "")
+    if state=="pre": return "📅 "+when
+    return "🕒 "+when+" · Status unconfirmed"
+
+def royal_score_line(game, selection=None):
+    if not game or game.get("state") not in ("in","post"): return None
+    teams=game.get("teams") or []
+    if len(teams)!=2: return None
+    a,b=teams
+    scores=game.get("scores") or {}
+    sa,sb=scores.get(a),scores.get(b)
+    if sa is None or sb is None or str(sa).strip()=="" or str(sb).strip()=="": return None
+    line=f"🏟️ {a} {sa} — {sb} {b}"
+    if selection and game.get("state")=="in":
+        try:
+            aa,bb=float(sa),float(sb)
+            delta=(aa-bb) if clean(selection)==clean(a) else (bb-aa) if clean(selection)==clean(b) else None
+            if delta is not None: line += " · Queen's team "+("LEADING" if delta>0 else "TRAILING" if delta<0 else "TIED")
+        except (ValueError,TypeError): pass
+    return line
+
 def display_row(x, number=None):
     q = x.get("quote")
     sport = x.get("sport", "Sports")
@@ -735,6 +764,11 @@ def display_row(x, number=None):
         elif units>0:
             secondary+=" · payout unverified"
     with st.container(border=True):
+        game=x.get("score_game")
+        st.markdown(f"**{royal_game_clock(game, x.get('start'))}**")
+        score_line=royal_score_line(game,locked.get("selection") if locked else None)
+        if score_line: st.markdown(score_line)
+        elif game and game.get("state")=="in": st.caption("Live scoreboard connected · score currently unavailable")
         st.markdown(f'''<div class="royal-game">
           <div class="royal-game-head"><span class="sport-icon">{icon}</span>
           <span class="royal-match">{f'{number}. ' if number else ''}{title}</span>
@@ -913,7 +947,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.0 · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.1 · LIVE GAME TRACKER · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
@@ -931,7 +965,7 @@ if st.button("👑 Refresh Queen", type="primary", use_container_width=True):
     api.clear()
     scores.clear()
     st.rerun()
-st.caption("Queen checks markets and completed games automatically while this page is active (about every 10 minutes). No background monitoring when the app sleeps.")
+st.caption("Live games and markets refresh about every 2 minutes while the page is active; saved final results are checked about every 10 minutes. Updates pause when Streamlit sleeps. Tap Refresh Queen for a manual check.")
 
 @st.fragment(run_every="600s")
 def royal_auto_results():
@@ -963,7 +997,7 @@ max_leagues = len(LEAGUES)
 sport = "All Sports"
 window = "Next 3 Days"
 
-@st.fragment(run_every="600s")
+@st.fragment(run_every="120s")
 def royal_auto_scan():
     priority = ["NCAAB", "NCAAF", "NBA", "NFL", "NHL", "Tennis", "MLB", "WNBA", "MLS", "EPL", "UFC"]
     selected = priority[:max_leagues] if sport == "All Sports" else [sport]
@@ -987,8 +1021,9 @@ def royal_auto_scan():
     current = utc().astimezone(CT).date()
     def in_window(s, e, game):
         live = bool(e.get("live") or (e.get("eventState") or {}).get("live") or str(e.get("status", "")).lower() in ("live", "in_progress", "inprogress") or (game and game["state"] == "in"))
+        if live: return True
         if window == "🔴 Live": return live
-        date = parse_date(e.get("eventDate") or e.get("startTime") or e.get("startDate"))
+        date = parse_date(e.get("eventDate") or e.get("startTime") or e.get("startDate") or (game.get("date") if game else None))
         if not date: return False
         d = date.astimezone(CT).date()
         if window == "📅 Today": return d == current
@@ -1013,7 +1048,7 @@ def royal_auto_scan():
             market_type = str(m.get("sportsMarketTypeV2") or m.get("sportsMarketType") or "Market").replace("SPORTS_MARKET_TYPE_", "").replace("_", " ").title()
             rows.append({"event_id":str(e.get("id")), "sport":s, "title":str(e.get("title") or "Sports event"),
                          "slug":str(slug), "selection":str(selection), "market_type":market_type, "verified_side":bool(verified_team), "side_reason":side_reason, "mapping_source":mapping_source, "raw_sides":sides, "market_raw":m, "event_raw":e,
-                         "start":e.get("eventDate") or e.get("startTime") or e.get("startDate"),
+                         "start":(game.get("date") if game else None) or e.get("eventDate") or e.get("startTime") or e.get("startDate"),
                          "live":is_live, "game_state":game["state"] if game else "unknown",
                          "score_detail":game["detail"] if game else "", "score_game":game, "quote":None, "error":None})
 
@@ -1216,9 +1251,15 @@ def royal_auto_scan():
             pu,preason=royal_parlay_units(tlegs)
             st.markdown(f"**👑 Experimental parlay paper stake: {pu:g} U · ${pu*BASE_UNIT:.2f} | Potential profit: unavailable**")
             st.caption(preason + " · This is a research budget, not a recommendation to wager. No purchasable parlay or combined payout verified.")
+            game_by_event={x["event_id"]:x for x in rows if x.get("score_game")}
             for leg in tlegs:
                 icon=SPORT_ICON.get(leg["sport"],"🏆")
-                st.caption(f"{icon} {leg['selection']} to WIN · {leg['leg_result']}")
+                matched=game_by_event.get(str(leg.get("event_id")))
+                game=matched.get("score_game") if matched else None
+                timing=royal_game_clock(game,matched.get("start")) if matched else "🕒 Schedule not confirmed in current scan"
+                st.caption(f"{icon} {leg['selection']} to WIN · {leg['leg_result']} · {timing}")
+                score_line=royal_score_line(game,leg["selection"])
+                if score_line: st.caption(score_line)
         else:
             st.info(f"Only {len(royal_candidates)} eligible tracked games in this scan; {selected_legs} different games are required. Queen won't invent extra legs.")
         st.caption("These are locked *prediction combinations*, not purchasable Polymarket US parlays. Combined odds, paper P&L and payout are intentionally omitted until verified combo pricing and settlement are supported. Season-record estimates are not calibrated and market-favorite baselines are not independent edges.")
