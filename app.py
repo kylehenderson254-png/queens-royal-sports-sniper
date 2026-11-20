@@ -40,7 +40,7 @@ div.stButton>button{background:linear-gradient(110deg,#7426bd,#aa48eb);color:whi
 
 
 def get_json(url, params=None):
-    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.3"}, timeout=15)
+    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.4"}, timeout=15)
     response.raise_for_status()
     return response.json(), response.headers
 
@@ -140,8 +140,8 @@ def scoreboard(league, day):
             logos = team.get("logos") or []
             team_logo = team.get("logo") or (logos[0].get("href") if logos and isinstance(logos[0], dict) else None)
             teams.append({"name": team.get("displayName", ""), "short": team.get("shortDisplayName", ""),
-                          "location": team.get("location", ""), "abbreviation": team.get("abbreviation", ""),
-                          "homeAway": c.get("homeAway", ""),
+                           "abbreviation": team.get("abbreviation", ""),
+                           "location": team.get("location", ""), "nickname": team.get("name", ""),
                           "record": record, "rank": rank if isinstance(rank, int) and 1 <= rank <= 25 else None,
                           "score": c.get("score", "–"), "logo": team_logo})
         if len(teams) != 2:
@@ -150,7 +150,7 @@ def scoreboard(league, day):
         league_info = (data.get("leagues") or [{}])[0]
         league_logos = league_info.get("logos") or []
         league_logo = league_logos[0].get("href") if league_logos and isinstance(league_logos[0], dict) else None
-        output.append({"id": event.get("id"), "start": when(event.get("date")), "teams": teams, "league_logo": league_logo,
+        output.append({"start": when(event.get("date")), "teams": teams, "league_logo": league_logo,
                        "state": status.get("state", ""), "detail": status.get("shortDetail") or status.get("description", "")})
     return output
 
@@ -161,7 +161,7 @@ def safe_logo(url):
         return None
     parsed = urlparse(url)
     return url if parsed.scheme == "https" and (
-        parsed.hostname in ("espncdn.com", "a.espncdn.com") or (parsed.hostname or "").endswith(".espncdn.com")
+        parsed.hostname == "espncdn.com" or (parsed.hostname or "").endswith(".espncdn.com")
     ) else None
 
 
@@ -182,53 +182,49 @@ def compact_team(team, live=False):
 
 
 def team_names(team):
-    """ESPN naming variants, keeping ambiguous single mascots out of college matches."""
-    names = {norm(team.get(k, "")) for k in ("name", "short", "location", "abbreviation")}
-    if team.get("location") and team.get("short"):
-        names.add(norm(team["location"] + " " + team["short"]))
-    return {x for x in names if x}
+    """Use several ESPN identifiers without matching by a generic college mascot."""
+    if isinstance(team, dict):
+        raw = [team.get(k, "") for k in ("name", "short", "abbreviation", "location", "nickname")]
+    else:
+        raw = [team]
+    aliases = {norm(x) for x in raw if x}
+    aliases.discard("")
+    return aliases
 
 
-def equivalent_team(name, team, league):
-    target = norm(name)
-    names = team_names(team)
-    if not target:
-        return False
-    if target in names:
+def same_team(sportsbook_name, espn_team, league=""):
+    target = norm(sportsbook_name)
+    aliases = team_names(espn_team)
+    if target in aliases:
         return True
-    # NBA/NFL: full city + mascot vs ESPN city or mascot; never use mascot-only
-    # identification for college teams (Tigers/Bulldogs recur widely).
-    if league in ("NBA", "NFL"):
-        parts = target.split()
-        if len(parts) >= 2 and any(target.endswith(" " + n) for n in names if len(n.split()) == 1 and len(n) >= 5):
-            return True
+    # A full school/city name plus a mascot is distinctive; a mascot by itself is not.
+    target_words = target.split()
+    if len(target_words) >= 2:
+        return any(len(alias.split()) >= 2 and
+                   (target in alias or alias in target) and
+                   min(len(alias), len(target)) >= 7 for alias in aliases)
+    if league in ("NBA", "NFL") and len(target.split()) >= 2:
+        mascot = target.split()[-1]
+        return len(mascot) >= 5 and mascot == norm(espn_team.get("nickname", ""))
     return False
 
 
 def matching_game(event, games):
-    """Unique ESPN matchup, preserving home/away identities and kickoff time."""
-    start = event.get("start")
-    if not start:
+    """Match a single ESPN event by both teams, regardless of home/away order."""
+    if not event.get("start"):
         return None
-    league = event.get("league", "")
     matches = []
     for game in games:
-        if not game.get("start") or abs((game["start"] - start).total_seconds()) > 7200:
+        if not game.get("start") or abs((game["start"] - event["start"]).total_seconds()) > 7200:
             continue
         teams = game.get("teams", [])
         if len(teams) != 2:
             continue
-        home = next((t for t in teams if t.get("homeAway") == "home"), None)
-        away = next((t for t in teams if t.get("homeAway") == "away"), None)
-        if home and away:
-            valid = equivalent_team(event["home"], home, league) and equivalent_team(event["away"], away, league)
-        else:
-            valid = ((equivalent_team(event["home"], teams[0], league) and equivalent_team(event["away"], teams[1], league)) or
-                     (equivalent_team(event["home"], teams[1], league) and equivalent_team(event["away"], teams[0], league)))
-        if valid:
+        if ((same_team(event["home"], teams[0], event.get("league", "")) and same_team(event["away"], teams[1], event.get("league", ""))) or
+            (same_team(event["home"], teams[1], event.get("league", "")) and same_team(event["away"], teams[0], event.get("league", "")))):
             matches.append(game)
-    # Deduplicate ESPN's same event from adjacent date requests.
-    unique = {g.get("id") or (g["start"], tuple(t["name"] for t in g["teams"])): g for g in matches}
+    # Deduplicate ESPN events repeated across queried dates.
+    unique = {(g["start"], tuple(sorted(norm(t["name"]) for t in g["teams"]))): g for g in matches}
     return next(iter(unique.values())) if len(unique) == 1 else None
 
 
@@ -242,7 +238,7 @@ def kalshi_scan():
     terms = ("nba", "nfl", "ncaab", "ncaaf", "basketball", "football", "college")
     candidates.sort(key=lambda x: (0 if any(t in norm(str(x.get("ticker", "")) + " " + str(x.get("title", ""))) for t in terms) else 1, str(x.get("ticker", ""))))
     checked = 0
-    for series_info in candidates[:75]:
+    for series_info in candidates[:100]:
         ticker = str(series_info.get("ticker") or "")
         if not ticker:
             continue
@@ -269,6 +265,8 @@ def kalshi_scan():
                                     subtitle, outcome, str(m.get("no_sub_title") or "")])
                 results.append({"platform": "Kalshi", "id": mid, "title": title or subtitle,
                                 "context": context, "outcome": outcome,
+                                "series_title": str(series_info.get("title") or ""),
+                                "event_title": "", "event_subtitle": "",
                                 "yes": price(m.get("yes_ask_dollars")) or price(m.get("yes_ask"), True),
                                 "no": price(m.get("no_ask_dollars")) or price(m.get("no_ask"), True),
                                 "volume": float(m.get("volume") or 0),
@@ -280,6 +278,26 @@ def kalshi_scan():
             cursor = data.get("cursor")
             if not cursor:
                 break
+    # Fetch event-level matchup names for game-winner markets; many individual
+    # market titles mention only the YES team, so market text alone is insufficient.
+    # Bound event lookups and cache the whole scan to protect rate limits.
+    event_ids = list(dict.fromkeys(str(m.get("event_ticker") or "") for m in results
+                                  if m.get("event_ticker") and any(
+                                      str(m.get("series_ticker") or "").upper().startswith(prefix)
+                                      for prefixes in LEAGUE_SERIES.values() for prefix in prefixes)))[:40]
+    events = {}
+    for event_id in event_ids:
+        try:
+            data, _ = get_json(f"{KALSHI}/events/{quote(event_id, safe='')}")
+            info = data.get("event") or {}
+            events[event_id] = (str(info.get("title") or ""),
+                                str(info.get("sub_title") or info.get("subtitle") or ""))
+        except (requests.RequestException, ValueError, TypeError):
+            continue
+    for m in results:
+        title, subtitle = events.get(str(m.get("event_ticker") or ""), ("", ""))
+        m["event_title"], m["event_subtitle"] = title, subtitle
+        m["context"] += " " + title + " " + subtitle
     return results, checked
 
 
@@ -292,102 +310,71 @@ def markets_scan():
         return [], ["Kalshi: " + str(exc)[:140]], 0
 
 
-def team_aliases(team):
-    """Full name and distinctive last token; aliases are for discovery, not trade verification."""
-    full = norm(team)
-    parts = full.split()
-    aliases = {full}
-    if len(parts) >= 2 and len(parts[-1]) >= 4:
-        aliases.add(parts[-1])
-    return aliases
-
-
-# Kalshi outcome names often appear on one-team market titles; the *event*
-# supplies the opposing team. Do not require both in a single market title.
 LEAGUE_SERIES = {
-    "NBA": ("KXNBAGAME", "NBA"),
-    "NFL": ("KXNFLGAME", "NFL"),
-    "NCAAB": ("KXNCAABGAME", "NCAAB", "KXNCAAMBGAME", "KXNCAAMGAME"),
-    "NCAAF": ("KXNCAAFGAME", "NCAAF", "KXNCAAFBGAME"),
+    "NBA": ("KXNBAGAME", "KXNBA"),
+    "NFL": ("KXNFLGAME", "KXNFL"),
+    "NCAAB": ("KXNCAABGAME", "KXNCAAMB", "KXNCAAB"),
+    "NCAAF": ("KXNCAAFGAME", "KXNCAAF"),
 }
 
 
-def league_market(league, m):
-    series = str(m.get("series_ticker") or "").upper()
-    return any(series.startswith(prefix) for prefix in LEAGUE_SERIES.get(league, ())) and "GAME" in series
+def _league_verified(league, market):
+    ticker = str(market.get("series_ticker") or "").upper()
+    title = norm(market.get("series_title") or "")
+    markers = LEAGUE_SERIES.get(league, ())
+    if any(ticker.startswith(marker) for marker in markers):
+        return True
+    # Require a clear league marker, not just the word football or basketball.
+    hints = {"NBA": ("nba",), "NFL": ("nfl",),
+             "NCAAB": ("ncaab", "college basketball", "mens college basketball"),
+             "NCAAF": ("ncaaf", "college football")}
+    return any(h in title.split() or h in title for h in hints.get(league, ()))
 
 
-def market_day(event, m):
-    """Recognize dated Kalshi tickers, never infer the game day from close_time."""
-    dt = event.get("start")
-    if not dt:
+def _date_verified(event, market):
+    start = event.get("start")
+    if not start:
         return False
-    ticker = str(m.get("event_ticker") or m.get("id") or "").upper()
-    compact = re.sub(r"[^A-Z0-9]", "", ticker)
-    for d in (dt.astimezone(CENTRAL), dt.astimezone(timezone.utc)):
-        for delta in (-1, 0, 1):
-            day = d + timedelta(days=delta)
-            if any(form in compact for form in (
-                day.strftime("%y%b%d").upper(), day.strftime("%Y%m%d"),
-                day.strftime("%y%m%d"))):
-                return True
+    blob = " ".join(str(market.get(k) or "") for k in ("event_ticker", "id", "event_title"))
+    compact = re.sub(r"[^A-Za-z0-9]", "", blob).upper()
+    for dt in (start.astimezone(CENTRAL), start.astimezone(timezone.utc)):
+        forms = (dt.strftime("%y%b%d").upper(), dt.strftime("%b%d%y").upper(),
+                 dt.strftime("%Y%m%d"), dt.strftime("%y%m%d"),
+                 dt.strftime("%b%d").upper())
+        if any(form in compact for form in forms):
+            return True
     return False
 
 
-@st.cache_data(ttl=180, show_spinner=False)
-def kalshi_event_info(ticker):
-    """Fetch public event title/metadata once per ticker; missing data fails closed."""
-    if not ticker:
-        return {}
-    try:
-        data, _ = get_json(f"{KALSHI}/events/{quote(str(ticker), safe='')}")
-        return data.get("event") or {}
-    except (requests.RequestException, ValueError, TypeError):
-        return {}
-
-
-def _full_team_in_text(team, text, league):
+def _mentions_team(team, content, league):
+    content = " " + norm(content) + " "
     full = norm(team)
-    content = " " + norm(text) + " "
-    if not full:
-        return False
-    if " " + full + " " in content:
+    if len(full) >= 5 and " " + full + " " in content:
         return True
-    # For professional teams only, mascot can identify an outcome when the
-    # event metadata already uniquely identifies both full team names.
+    # Pro mascots are generally unique; never use mascot-only for college games.
     if league in ("NBA", "NFL"):
-        parts = full.split()
-        return len(parts) > 1 and len(parts[-1]) >= 5 and (" " + parts[-1] + " ") in content
+        mascot = full.split()[-1]
+        return len(mascot) >= 5 and " " + mascot + " " in content
     return False
 
 
 def match_contract(event, contracts):
-    """Match game-winner event + date + exact YES team, without guessing."""
-    league = event["league"]
-    home, away = event["home"], event["away"]
-    # Limit event-detail calls: prefilter series/date before remote lookups.
-    eligible = [m for m in contracts if league_market(league, m) and market_day(event, m)]
+    """Identify game-winner YES outcomes only when league, date and teams agree."""
+    home, away, league = event["home"], event["away"], event["league"]
     verified = []
-    for m in eligible[:120]:
-        meta = kalshi_event_info(m.get("event_ticker"))
-        event_title = " ".join(str(meta.get(k) or "") for k in ("title", "sub_title"))
-        # Some feeds have a complete matchup in market title instead.
-        matchup = event_title + " " + str(m.get("title") or "")
-        if not (_full_team_in_text(home, matchup, league) and
-                _full_team_in_text(away, matchup, league)):
+    for m in contracts:
+        if not _league_verified(league, m) or not _date_verified(event, m):
             continue
-        # Check that the contract is for a winner, not a spread or total.
-        series = str(m.get("series_ticker") or "").upper()
-        if "GAME" not in series:
+        context = " ".join(str(m.get(k) or "") for k in
+                           ("event_title", "event_subtitle", "title", "subtitle"))
+        if not (_mentions_team(home, context, league) and _mentions_team(away, context, league)):
             continue
-        outcome = " ".join(str(m.get(k) or "") for k in ("yes_sub_title", "outcome", "subtitle"))
-        yes_home = _full_team_in_text(home, outcome, league)
-        yes_away = _full_team_in_text(away, outcome, league)
-        if yes_home == yes_away:
-            # Some Kalshi markets have YES team only in the ticker suffix.
-            suffix = str(m.get("id") or "").split("-")[-1]
-            yes_home = _full_team_in_text(home, suffix, league)
-            yes_away = _full_team_in_text(away, suffix, league)
+        # A market title like 'Will the Lakers win?' may be its own YES outcome.
+        outcome = str(m.get("yes_sub_title") or "")
+        if not outcome:
+            outcome = str(m.get("title") or "")
+        yes_home = _mentions_team(home, outcome, league)
+        yes_away = _mentions_team(away, outcome, league)
         if yes_home == yes_away:
             continue
         end = when(m.get("end"))
@@ -395,13 +382,13 @@ def match_contract(event, contracts):
             continue
         item = dict(m)
         item["verified_yes_team"] = home if yes_home else away
-        item["match_status"] = "Event matchup, league, date and YES team matched; settlement terms not independently checked"
+        item["match_status"] = "Game, league, date and YES team matched; settlement rules not independently verified"
         verified.append(item)
-    # Multiple market IDs with the same outcome are ambiguous: don't pick one.
     by_team = {}
     for m in verified:
         by_team.setdefault(norm(m["verified_yes_team"]), []).append(m)
-    return [items[0] for items in by_team.values() if len(items) == 1]
+    # Prefer a unique exact game market. Multiple candidates for a team remain ambiguous.
+    return [group[0] for group in by_team.values() if len(group) == 1]
 
 
 def price_tiles(m):
@@ -548,7 +535,7 @@ if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.3 · Kalshi-first verified-data Top 5 · Live scores + team records · PAPER ONLY")
+st.caption("V2.4 · Kalshi-first verified-data Top 5 · Live scores + team records · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Top 5")
 st.caption("Best researched opportunities first. Live games win ties. Kalshi-only market discovery; no unverified BUY signals.")
 
@@ -629,7 +616,7 @@ else:
                 if state == "in":
                     st.caption(game["detail"])
             else:
-                st.caption("ESPN matchup not uniquely matched; records and logos unavailable rather than guessed.")
+                st.caption("ESPN matchup, records or rankings not confirmed; unavailable rather than guessed.")
             st.caption("Sportsbook consensus snapshot (NOT synchronized in-play odds): " + " · ".join(
                 f"{team} {prob:.1%}" for team, prob in e["probs"].items()) + f" · {e['books']} books")
             if row["markets"]:
@@ -640,7 +627,7 @@ else:
                     if m["url"]:
                         st.link_button("View market", m["url"], key=f"top_{index}_{m['platform']}_{m['id']}")
             else:
-                st.caption("Kalshi: No uniquely verified game-winner contract found in this scan. Price unavailable.")
+                st.caption("Kalshi: No matching open contract found in the bounded sports scan. Price unavailable.")
             reason = ("LIVE ODDS UNAVAILABLE — pregame consensus cannot price an in-play contract." if state == "in" else
                       "Game status unconfirmed; live pricing cannot be assessed." if state == "unknown" else
                       "Matched Kalshi game prices are research-only. Settlement rules, fees, fillable depth and an independent probability edge are not verified.")
@@ -751,7 +738,7 @@ with st.expander("🔴 Live Sports Scoreboard", expanded=False):
 
 with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
     st.caption(f"Scanned {len(contracts)} markets from {series_count} Kalshi sports series (up to 3 pages per series). Bounded scan; not exhaustive.")
-    st.caption("Kalshi only in V2.3. Market snapshots are not guaranteed executable fills.")
+    st.caption("Kalshi only in V2.4. Market snapshots are not guaranteed executable fills.")
     search = st.text_input("Search team or market")
     platform = "Kalshi"
     filtered = [m for m in contracts if (m["platform"] == platform)
@@ -807,4 +794,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(exc)[:120])
     st.caption("Streamlit Community Cloud local SQLite storage is not durable; page refreshes are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.3 · PAPER ONLY · NO REAL ORDERS")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.4 · PAPER ONLY · NO REAL ORDERS")
