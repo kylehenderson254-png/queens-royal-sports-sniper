@@ -40,7 +40,7 @@ div.stButton>button{background:linear-gradient(110deg,#7426bd,#aa48eb);color:whi
 
 
 def get_json(url, params=None):
-    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.5.1"}, timeout=15)
+    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.6"}, timeout=15)
     response.raise_for_status()
     return response.json(), response.headers
 
@@ -264,12 +264,59 @@ def kalshi_scan():
 
 
 @st.cache_data(ttl=180, show_spinner=False)
+def polymarket_scan():
+    """Bounded Gamma sports discovery; quotes are indicative, not executable asks."""
+    found, seen, errors = [], set(), []
+    for offset in range(0, 1000, 100):
+        try:
+            events, _ = get_json(f"{POLY}/events", {"active": "true", "closed": "false", "limit": 100, "offset": offset})
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            errors.append("Polymarket: " + str(exc)[:100])
+            break
+        if not isinstance(events, list) or not events:
+            break
+        for ev in events:
+            title = str(ev.get("title") or "")
+            slug = str(ev.get("slug") or "")
+            context = " ".join([title, slug, str(ev.get("description") or "")[:250]])
+            if not any(word in norm(context).split() for word in ("nba", "nfl", "ncaab", "ncaaf", "basketball", "football")):
+                continue
+            for m in ev.get("markets") or []:
+                mid = str(m.get("id") or "")
+                if not mid or mid in seen or m.get("closed") or not m.get("active", True):
+                    continue
+                seen.add(mid)
+                try:
+                    outcomes = m.get("outcomes") or []
+                    values = m.get("outcomePrices") or []
+                    if isinstance(outcomes, str): outcomes = json.loads(outcomes)
+                    if isinstance(values, str): values = json.loads(values)
+                    if len(outcomes) != 2 or len(values) != 2: continue
+                    for ix, outcome in enumerate(outcomes):
+                        if norm(outcome) in ("draw", "tie"): continue
+                        found.append({"platform":"Polymarket", "id":mid+":"+str(ix),
+                            "title":str(m.get("question") or title), "context":context+" "+str(m.get("question") or ""),
+                            "outcome":str(outcome), "yes_sub_title":str(outcome), "no_sub_title":"",
+                            "yes":price(values[ix]), "no":None, "volume":float(m.get("volumeNum") or 0),
+                            "end":ev.get("startDate") or ev.get("endDate"), "event_ticker":slug,
+                            "series_ticker":"", "subtitle":title,
+                            "url":"https://polymarket.com/event/"+quote(slug),
+                            "quote_kind":"Indicative last/traded outcome price; NOT a verified executable ask"})
+                except (ValueError, TypeError, IndexError):
+                    continue
+        if len(events) < 100: break
+    return found, errors
+
+
+@st.cache_data(ttl=180, show_spinner=False)
 def markets_scan():
+    results, errors, count = [], [], 0
     try:
-        batch, count = kalshi_scan()
-        return batch, [], count
+        results, count = kalshi_scan()
     except (requests.RequestException, ValueError, TypeError) as exc:
-        return [], ["Kalshi: " + str(exc)[:140]], 0
+        errors.append("Kalshi: " + str(exc)[:140])
+    poly, poly_errors = polymarket_scan()
+    return results + poly, errors + poly_errors, count
 
 
 def team_aliases(team):
@@ -311,7 +358,7 @@ def _league_verified(league, market):
     context = norm(market.get("context", ""))
     hints = LEAGUE_HINTS.get(league, ())
     # Require an explicit league marker; 'basketball' alone is not NBA.
-    return any(h in series.split() or (" " + h + " ") in (" " + context + " ")
+    return any((" " + h + " ") in (" " + series + " " ) or (" " + h + " ") in (" " + context + " ")
                for h in hints)
 
 
@@ -509,14 +556,15 @@ if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.5.1 · Kalshi-first verified-data Top 5 · Live scores + team records · PAPER ONLY")
+st.caption("V2.6 · ESPN-first Top 5 · Kalshi + Polymarket research · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Top 5")
-st.caption("Best researched opportunities first. Live games win ties. Kalshi-only market discovery; no unverified BUY signals.")
+st.caption("Team lean and contract decision are separate. LIVE games remain visible even when markets are unavailable.")
 
 if st.button("🔄 Refresh sports and markets"):
     scoreboard.clear()
     markets_scan.clear()
     kalshi_scan.clear()
+    polymarket_scan.clear()
     st.rerun()
 
 key = odds_key()
@@ -631,11 +679,39 @@ else:
                     if m["url"]:
                         st.link_button("View market", m["url"], key=f"top_{index}_{m['platform']}_{m['id']}")
             else:
-                st.caption("Kalshi: No matching open contract found in the bounded sports scan. Price unavailable.")
-            reason = ("LIVE ODDS UNAVAILABLE — pregame consensus cannot price an in-play contract." if state == "in" else
-                      "Game status unconfirmed; live pricing cannot be assessed." if state == "unknown" else
-                      "Matched Kalshi game prices are research-only. Settlement rules, fees, fillable depth and an independent probability edge are not verified.")
-            st.markdown("**⏳ WAIT** — Queen's Reason: " + reason)
+                st.caption("K / P: No safely verified matching contract found in the bounded scans. Prices unavailable.")
+            favored, confidence, call, reason = queen_call(row)
+            if favored:
+                st.markdown(f"**👑 Queen favors: {escape(favored)}** · sportsbook benchmark {confidence:.1%}")
+            st.markdown(f"**{'👀' if call == 'WATCH' else '⏳'} {call}** — Queen's Reason: " + reason)
+            if row["markets"]:
+                st.caption("K = Kalshi · P = Polymarket · Prices are platform-specific and may not be executable. No automatic trades.")
+
+def queen_call(row):
+    """Separate team lean from trade: sportsbook consensus is a benchmark, not proof of edge."""
+    e = row["event"]
+    if not e.get("probs"):
+        return None, None, "WAIT", "No matched sportsbook benchmark to assess this game."
+    team, prob = max(e["probs"].items(), key=lambda pair: pair[1])
+    if row["state"] != "pre":
+        return team, prob, "WAIT", "Live or uncertain game state; pregame consensus cannot support an in-play trade."
+    options = []
+    for m in row["markets"]:
+        if norm(m["verified_yes_team"]) != norm(team) or m.get("yes") is None:
+            continue
+        # A Polymarket last/traded price is not an executable ask; never issue BUY from it.
+        if m["platform"] != "Kalshi": continue
+        gap = prob - m["yes"]
+        options.append((gap, m))
+    if not options:
+        return team, prob, "WAIT", "No verified Kalshi YES ask for Queen's favored team; Polymarket reference prices are not executable asks."
+    gap, best = max(options, key=lambda item: item[0])
+    if e.get("books", 0) < 3:
+        return team, prob, "WAIT", "Too few sportsbook observations to compare prices responsibly."
+    if gap >= 0.10:
+        return team, prob, "WATCH", f"Indicative {gap:.1%} benchmark-versus-ask gap on Kalshi; fees, liquidity, settlement and independent edge are unverified."
+    return team, prob, "WAIT", f"Benchmark-versus-ask gap {gap:.1%}; no independently established value after costs."
+
 
 st.markdown("#### 💜 Royal Paper Bankroll")
 try:
@@ -646,7 +722,7 @@ except (sqlite3.Error, OSError) as exc:
     st.warning("Paper ledger unavailable: " + str(exc)[:120])
 
 st.markdown("#### 📡 Queen's Live Activity")
-st.info("KALSHI RESEARCH / WAIT — Public market discovery and ask snapshots are attempted when available. Automated BUY remains disabled until exact outcome, settlement, fees, order-book depth and synchronized probabilities are verified.")
+st.info("K + P RESEARCH — Queen identifies the favored team and can flag WATCH on an indicative price gap. BUY remains disabled without validated fees, liquidity, settlement and independent edge.")
 
 st.markdown("#### 👑 Royal Paper Parlays")
 st.caption("Research simulation only. These are NOT verified BUY signals, actual sportsbook odds, or executable Kalshi parlays.")
@@ -667,8 +743,13 @@ for item in candidates:
     used.add(item["key"])
     if len(selected) == leg_count:
         break
-if len(selected) < leg_count:
-    st.info(f"⏳ Only {len(selected)} eligible pregame research legs found; {leg_count} requested. No simulated parlay assembled.")
+# Conservative auto-size: require at least 60% benchmark and >= 4 books per leg.
+selected = [x for x in selected if x["p"] >= 0.60 and x["event"]["books"] >= 4]
+if len(selected) >= 2:
+    selected = selected[:min(leg_count, 3)]
+    st.caption(f"👑 Queen recommends {len(selected)} research legs (requested maximum {leg_count}); fewer legs limit compounded uncertainty.")
+if len(selected) < 2:
+    st.info(f"⏳ Only {len(selected)} sufficiently supported research legs found. Queen recommends WAIT rather than forcing a parlay.")
 else:
     combined_probability = 1.0
     for item in selected:
@@ -715,7 +796,7 @@ else:
                         con.execute("""INSERT INTO royal_parlays
                            (parlay_id,created_at,legs,stake,decimal_odds,status,note)
                            VALUES (?,?,?,?,?,'OPEN',?)""",
-                           (parlay_id, stamp, leg_count, float(stake), example_odds,
+                           (parlay_id, stamp, len(selected), float(stake), example_odds,
                             "HYPOTHETICAL fair-odds proxy, not an executable parlay"))
                         for i, item in enumerate(selected):
                             e = item["event"]
@@ -746,11 +827,11 @@ with st.expander("🔴 Live Sports Scoreboard", expanded=False):
             st.caption("No confirmed live games returned.")
 
 with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
-    st.caption(f"Scanned {len(contracts)} markets from {series_count} Kalshi sports series (up to 3 pages per series). Bounded scan; not exhaustive.")
-    st.caption("Kalshi only in this version. Market snapshots are not guaranteed executable fills.")
+    st.caption(f"Scanned {sum(m['platform']=='Kalshi' for m in contracts)} Kalshi markets from {series_count} series and {sum(m['platform']=='Polymarket' for m in contracts)} Polymarket outcome references. Bounded, not exhaustive.")
+    st.caption("Kalshi asks and Polymarket indicative outcome prices are different quote types; neither guarantees a fill.")
     search = st.text_input("Search team or market")
-    platform = "Kalshi"
-    filtered = [m for m in contracts if (m["platform"] == platform)
+    platform = st.radio("Platform", ["All", "Kalshi", "Polymarket"], horizontal=True)
+    filtered = [m for m in contracts if (platform == "All" or m["platform"] == platform)
                 and norm(search) in norm(m["title"] + " " + m["context"])]
     for m in filtered[:15]:
         st.markdown(f"**{escape(m['platform'])} — {escape(m['title'])}**")
@@ -803,4 +884,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(exc)[:120])
     st.caption("Streamlit Community Cloud local SQLite storage is not durable; page refreshes are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.5.1 · PAPER ONLY · NO REAL ORDERS")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.6 · PAPER ONLY · NO REAL ORDERS")
