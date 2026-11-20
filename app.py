@@ -1,4 +1,4 @@
-import os, re, sqlite3, hashlib, html, math
+import os, re, sqlite3, hashlib, html, math, csv, io
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -64,7 +64,7 @@ def db():
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.4"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.5"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -384,24 +384,131 @@ def prediction_lookup():
     with db() as c:
         return {(r["event_id"],r["slug"],r["phase"]):dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34")}
 
+def _csv_bytes(rows):
+    if not rows: return b""
+    out=io.StringIO()
+    writer=csv.DictWriter(out, fieldnames=list(rows[0].keys()))
+    writer.writeheader()
+    writer.writerows([dict(r) for r in rows])
+    return out.getvalue().encode("utf-8-sig")
+
+
+def _restore_history(upload, table):
+    """Import only known fields into the existing tables; never overwrite saved rows."""
+    allowed={"royal_predictions_v34", "royal_paper_v34"}
+    if table not in allowed: return 0, "Unknown history table"
+    try:
+        raw=upload.getvalue().decode("utf-8-sig")
+        records=list(csv.DictReader(io.StringIO(raw)))
+        if len(records)>20000: return 0, "Too many rows in one import"
+        with db() as c:
+            columns={r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+            required={"id","event_id","slug","selection"}
+            if table=="royal_paper_v34": required={"id","prediction_id","event_id","slug","selection","stake","entry_ask"}
+            if not records or not required.issubset(set(records[0])): return 0, "This doesn't look like the correct V3.4 history CSV"
+            count=0
+            for row in records:
+                data={k:(v if v!="" else None) for k,v in row.items() if k in columns and k!=""}
+                if not all(data.get(k) for k in required): continue
+                keys=list(data)
+                marks=",".join("?" for _ in keys)
+                cols=",".join('"'+k+'"' for k in keys)
+                before=c.total_changes
+                c.execute(f"INSERT OR IGNORE INTO {table} ({cols}) VALUES ({marks})",[data[k] for k in keys])
+                count+=c.total_changes-before
+            c.commit()
+        return count, None
+    except (UnicodeError, ValueError, sqlite3.Error, csv.Error) as exc:
+        return 0, f"Could not import CSV: {type(exc).__name__}"
+
+
+def _pick_card(r, paper=None):
+    sport=r["sport"] or "Sports"
+    status=r["result"] or "PENDING"
+    icon=SPORT_ICON.get(sport,"🏆")
+    paper_status=paper["status"] if paper else None
+    with st.container(border=True):
+        left,right=st.columns([3,1],gap="small")
+        with left:
+            st.markdown(f"**{icon} {r['title'] or (r['selection']+' vs. '+str(r['opponent'] or 'Opponent'))}**")
+            st.caption(f"{sport} · {r['phase'] or 'PREGAME'} · Moneyline prediction")
+        with right:
+            if status=="WIN": st.success("WON")
+            elif status=="LOSS": st.error("LOST")
+            else: st.warning("PENDING")
+        st.markdown(f"**👑 QUEEN'S PICK: {r['selection']} TO WIN**")
+        st.caption(f"🔒 Locked {local(r['created_at'])} · {r['model'] or 'Prediction method not saved'}")
+        if paper:
+            price=paper["entry_ask"]
+            price_text=f" · Entry {price*100:.1f}¢" if price is not None else ""
+            st.markdown(f"💰 **$100 PAPER TRADE: {paper_status}**{price_text}")
+            if paper_status in ("WIN","LOSS") and paper["pnl"] is not None:
+                st.markdown(f"**Simulated P&L: ${paper['pnl']:+,.2f}**")
+            elif paper_status=="OPEN":
+                st.caption("Paper result pending · indicative entry, not a real order")
+        else:
+            st.caption("📝 Prediction tracked · No qualifying $100 paper trade for this pick")
+        with st.expander("Why Queen picked this · More details"):
+            st.write("Prediction method:",r["model"] or "Not recorded")
+            st.write("Reason saved at lock:",r["evidence"] or "No explanation saved")
+            if r["model_probability"] is not None:
+                st.write("Uncalibrated model estimate:",f"{r['model_probability']:.1%}")
+            st.write("Market:",r["slug"])
+            st.write("Locked prediction result:",status)
+            if paper:
+                st.write("Paper contract:",paper["slug"])
+                st.write("Paper entry:",f"${paper['stake']:.2f} at {paper['entry_ask']:.4f}" if paper["entry_ask"] is not None else "Unavailable")
+                st.write("Paper note:",paper["note"] or "No note")
+            if r["grade_note"]: st.caption(r["grade_note"])
+
+
 def prediction_panel():
-    st.subheader("👑 Queen's Locked Picks")
+    st.subheader("👑 Queen's Locked Pick History")
     with db() as c:
-        rows=c.execute("SELECT * FROM royal_predictions_v34 ORDER BY created_at DESC LIMIT 150").fetchall()
-        papers=c.execute("SELECT * FROM royal_paper_v34 ORDER BY entry_at DESC LIMIT 100").fetchall()
-    wins=sum(r["result"]=="WIN" for r in rows); losses=sum(r["result"]=="LOSS" for r in rows)
-    pw=sum(r["status"]=="WIN" for r in papers); pl=sum(r["status"]=="LOSS" for r in papers)
+        # No 150-row limit on statistics: historical totals must reflect all saved picks.
+        totals=c.execute("SELECT COUNT(*), SUM(result='WIN'), SUM(result='LOSS') FROM royal_predictions_v34").fetchone()
+        ptotals=c.execute("SELECT COUNT(*), SUM(status='WIN'), SUM(status='LOSS'), COALESCE(SUM(pnl),0) FROM royal_paper_v34").fetchone()
+        rows=[dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 ORDER BY created_at DESC, id DESC")]
+        papers=[dict(r) for r in c.execute("SELECT * FROM royal_paper_v34 ORDER BY entry_at DESC, id DESC")]
+    wins,losses=totals[1] or 0,totals[2] or 0
+    pw,pl=ptotals[1] or 0,ptotals[2] or 0
     a,b,c,d=st.columns(4)
-    a.metric("Locked picks",len(rows)); b.metric("Pick accuracy",f"{100*wins/(wins+losses):.0f}%" if wins+losses else "—")
-    c.metric("$100 paper entries",len(papers));d.metric("Settled paper P&L",f"${sum(r['pnl'] or 0 for r in papers):+,.2f}")
-    st.caption(f"Predictions {wins}W / {losses}L · Paper trades {pw}W / {pl}L. Baselines are tracked separately from limited-statistics model picks. ESPN grades provisional; no real trades.")
-    for r in rows[:12]:
-        st.markdown(f"**{SPORT_ICON.get(r['sport'],'🏆')} {r['selection']} to WIN** · {r['result']} · {r['sport']}")
-        st.caption(f"{r['phase']} · {r['model']} · locked {local(r['created_at'])} · {r['title']}")
-    with st.expander("All locked picks and paper entries"):
-        if rows: st.dataframe([dict(r) for r in rows],use_container_width=True,hide_index=True)
-        if papers: st.dataframe([dict(r) for r in papers],use_container_width=True,hide_index=True)
-    st.caption("Streamlit Community Cloud local SQLite is ephemeral. Configure a persistent database before relying on historical records across restarts or redeploys.")
+    a.metric("Locked picks",totals[0]);b.metric("Pick accuracy",f"{100*wins/(wins+losses):.0f}%" if wins+losses else "—")
+    c.metric("$100 paper entries",ptotals[0]);d.metric("Settled paper P&L",f"${ptotals[3]:+,.2f}")
+    st.caption(f"Predictions: {wins} won / {losses} lost · Paper trades: {pw} won / {pl} lost · Results are provisional until exchange settlement is checked.")
+    filter_choice=st.radio("Show history",["All Picks","Paper Trades","Results"],horizontal=True,key="royal_history_filter")
+    paper_by_prediction={r["prediction_id"]:r for r in papers}
+    if filter_choice=="Paper Trades":
+        filtered=[r for r in rows if r["id"] in paper_by_prediction]
+    elif filter_choice=="Results":
+        filtered=[r for r in rows if r["result"] in ("WIN","LOSS","VOID","PUSH")]
+    else:
+        filtered=rows
+    st.caption(f"Showing {min(len(filtered),st.session_state.get('royal_history_limit',12))} of {len(filtered)} saved picks · Newest first")
+    limit=st.session_state.get("royal_history_limit",12)
+    for r in filtered[:limit]:
+        _pick_card(r,paper_by_prediction.get(r["id"]))
+    if len(filtered)>limit:
+        if st.button("Show 20 more saved picks",use_container_width=True):
+            st.session_state["royal_history_limit"]=limit+20
+            st.rerun()
+    if not filtered: st.info("No picks in this filter yet. Try All Picks.")
+    with st.expander("💾 Back up or restore locked picks — no deletions",expanded=False):
+        st.write("Save both CSV files to your phone or computer. These contain the original locked predictions and paper trades, including entry prices and timestamps.")
+        st.download_button("⬇️ Download all locked picks (CSV)",_csv_bytes(rows),"royal_locked_picks_v34_backup.csv","text/csv",disabled=not rows,use_container_width=True)
+        st.download_button("⬇️ Download all paper trades (CSV)",_csv_bytes(papers),"royal_paper_trades_v34_backup.csv","text/csv",disabled=not papers,use_container_width=True)
+        st.caption("Restore adds missing original records without changing existing saved picks. Upload the picks CSV first, then paper trades CSV.")
+        up1=st.file_uploader("Restore locked picks CSV",type=["csv"],key="restore_royal_predictions")
+        if up1 is not None and st.button("Import missing locked picks",key="restore_preds"):
+            count,err=_restore_history(up1,"royal_predictions_v34")
+            if err: st.error(err)
+            else: st.success(f"Restored {count} missing picks. Existing picks unchanged.")
+        up2=st.file_uploader("Restore paper trades CSV",type=["csv"],key="restore_royal_papers")
+        if up2 is not None and st.button("Import missing paper trades",key="restore_papers"):
+            count,err=_restore_history(up2,"royal_paper_v34")
+            if err: st.error(err)
+            else: st.success(f"Restored {count} missing paper trades. Existing entries unchanged.")
+    st.caption("Important: Streamlit Community Cloud local SQLite can be lost on restart or redeploy. This code does not delete saved history, but cannot guarantee that the host retains its database. Backups or persistent storage are necessary.")
 
 def display_row(x, number=None):
     q = x.get("quote")
@@ -610,7 +717,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.4 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
+st.caption("V3.5 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
