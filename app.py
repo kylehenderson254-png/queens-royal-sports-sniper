@@ -6,7 +6,7 @@ from collections import defaultdict
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V2.9.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT=ZoneInfo("America/Chicago")
 SPORTS={
  "NBA":("basketball_nba","basketball/nba"),"NFL":("americanfootball_nfl","football/nfl"),
@@ -66,7 +66,7 @@ def odds_feed(sport,key):
   r.raise_for_status(); return r.json(),None,r.headers.get('x-requests-remaining','?')
  except Exception as e: return [],str(e),'?'
 
-@st.cache_data(ttl=300,show_spinner=False)
+@st.cache_data(ttl=60,show_spinner=False)
 def scoreboard(path,date):
  try:
   r=requests.get(f'https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard',params={'dates':date,'limit':500},timeout=12)
@@ -194,7 +194,7 @@ def settle_picks(games_by_sport):
   c.commit()
 
 def parlay_ideas(picks,n):
- eligible=sorted([p for p in picks if p['signal']=='VALUE PICK' and p['state']=='pre'],key=lambda p:p['edge'],reverse=True)
+ eligible=sorted([p for p in picks if p['signal']=='MODEL LEAN' and p['state']=='pre'],key=lambda p:p['edge'],reverse=True)
  chosen=[];used=set()
  for p in eligible:
   if p['event_id'] in used:continue
@@ -206,23 +206,119 @@ def payout(p,stake=100):return stake*(decimal(p['odds'])-1)
 
 def display_pick(p,i):
  with st.container(border=True):
-  a,b=st.columns([.7,6])
+  a,b,c,d=st.columns([.65,4.5,2.1,1.8],vertical_alignment='center')
   with a:
-   if p.get('logo','').startswith('https://'):st.image(p['logo'],width=44)
-   else:st.markdown('🏆')
+   if p.get('logo','').startswith('https://'):st.image(p['logo'],width=36)
+   else:st.write('🏆')
   with b:
-   st.markdown(f"**{i}. {p['selection']}** · {p['sport']} · {p['market']}"+(f" {p['point']:+g}" if p['point'] is not None else ''))
-   st.caption(f"{p['away']} @ {p['home']} · {local(p['event_time'])} · {p['book']}")
-  c1,c2,c3=st.columns(3)
-  c1.metric('Royal Signal',p['signal'])
-  c2.metric('$100 Potential Profit',money(payout(p)))
-  c3.metric('Odds',american(p['odds']))
-  if p['probability'] is not None:
-   st.caption(f"Experimental win estimate: {p['probability']:.0%} · Book implied: {implied(p['odds']):.0%} · Estimated edge: {p['edge']:+.1%}")
-  else:st.caption('Win probability unavailable — WATCH only')
-  with st.expander('Why Queen picked / watched this',expanded=False):
+   st.markdown(f"**#{i} · {p['selection']}** · {p['sport']}")
+   st.caption(f"{p['market']}"+(f" {p['point']:+g}" if p['point'] is not None else '')+f" · {local(p['event_time'])}")
+  with c:
+   st.markdown(f"**+{money(payout(p))}**")
+   st.caption('Potential profit / $100')
+  with d:
+   st.markdown(f"**{p['signal']}**")
+   st.caption(f"Model {p['probability']:.0%}" if p['probability'] is not None else 'No estimate')
+  with st.expander('Why? · Experimental only',expanded=False):
+   st.write(f"QUEEN'S MODEL LEAN: {p['selection']} {p['market']}. Book: {p['book']} · Odds: {american(p['odds'])}.")
    st.write(p['reason'])
-   st.write('This is a basic, unvalidated estimate. It does not account for injuries, lineups, schedule strength or detailed team performance. No real wager is recommended.')
+   st.warning('Unvalidated record model. MODEL LEAN is NOT a verified value bet. No new $100 bets are automatically recorded from this model.')
+
+# LIVE WATCH: independent ESPN discovery; never depends on sportsbook events.
+def espn_live_games(sports):
+ found=[]
+ for sport in sports:
+  path=SPORTS[sport][1]
+  if not path:continue
+  today=now().astimezone(CT).date()
+  for day in [today-timedelta(days=1),today,today+timedelta(days=1)]:
+   for e in scoreboard(path,day.strftime('%Y%m%d')):
+    comp=(e.get('competitions') or [{}])[0]
+    teams=comp.get('competitors') or []
+    if len(teams)<2:continue
+    sides={t.get('homeAway'):t for t in teams}
+    h=sides.get('home');a=sides.get('away')
+    if not h or not a:continue
+    status=e.get('status',{}).get('type',{})
+    def parse_team(t):
+     tm=t.get('team') or {}; rec=None
+     for r in t.get('records') or []:
+      parts=str(r.get('summary','')).split('-')
+      if len(parts)>=2 and parts[0].isdigit() and parts[1].isdigit():
+       w,l=int(parts[0]),int(parts[1]);rec=(w,l);break
+     return {'name':tm.get('displayName',''), 'logo':tm.get('logo',''), 'score':safe_float(t.get('score')), 'record':rec}
+    found.append({'id':str(e.get('id')),'sport':sport,'date':e.get('date'),
+     'state':status.get('state','pre'),'detail':status.get('shortDetail',''),
+     'home':parse_team(h),'away':parse_team(a)})
+ dedup={f"{x['sport']}:{x['id']}":x for x in found}
+ return list(dedup.values())
+
+def live_lean(g):
+ h,a=g['home'],g['away'];hs,ass=h['score'],a['score']
+ if hs is None or ass is None:return None,None,'Score unavailable'
+ # Explicitly a weak, score-only heuristic, not a probability model.
+ if hs==ass:return None,None,'Tied game — WAIT for a lead'
+ side=h if hs>ass else a
+ return side['name'],None,f"{side['name']} currently leads {int(max(hs,ass))}–{int(min(hs,ass))}. Score-only lean; no calibrated win probability or verified live price."
+
+def live_id(g):return hashlib.sha256(f"live|{g['sport']}|{g['id']}".encode()).hexdigest()[:24]
+
+def update_live_history(games):
+ # Save one immutable prediction per game, only if currently in progress.
+ with conn() as c:
+  for g in games:
+   ident=live_id(g)
+   if g['state']=='in':
+    selection,confidence,why=live_lean(g)
+    if selection:
+     c.execute("""INSERT OR IGNORE INTO live_predictions
+      (id,sport,event_id,event_time,home,away,selection,home_score,away_score,period,predicted_at,confidence,rationale)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+      (ident,g['sport'],g['id'],g['date'],g['home']['name'],g['away']['name'],selection,
+       g['home']['score'],g['away']['score'],g['detail'],now().isoformat(),confidence,why))
+   if g['state']=='post':
+    h,a=g['home']['score'],g['away']['score']
+    if h is None or a is None:continue
+    winner=g['home']['name'] if h>a else g['away']['name'] if a>h else None
+    if winner:
+     c.execute("""UPDATE live_predictions SET status='SETTLED',result=?,final_home=?,final_away=?,settled_at=?
+      WHERE id=? AND status='OPEN' """,
+      ('WIN' if c.execute('SELECT selection FROM live_predictions WHERE id=?',(ident,)).fetchone() and
+       c.execute('SELECT selection FROM live_predictions WHERE id=?',(ident,)).fetchone()['selection']==winner else 'LOSS',h,a,now().isoformat(),ident))
+  c.commit()
+
+def live_panel():
+ st.subheader('🔴 Live Game Watch · Independent Score Feed')
+ st.caption('Auto-refreshes every 60 seconds while this page is open. ESPN score updates can lag. Predictions are experimental and score-only, NOT priced live market picks.')
+ scan_sports=[s for s in (choices if sport=='All Sports' else [sport]) if SPORTS[s][1]]
+ if not scan_sports:
+  st.info('No supported scoreboard for this sport.');return
+ games=espn_live_games(scan_sports)
+ update_live_history(games)
+ live=[g for g in games if g['state']=='in']
+ with conn() as c:
+  summary=c.execute("SELECT COUNT(*) n, SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) w, SUM(CASE WHEN result='LOSS' THEN 1 ELSE 0 END) l FROM live_predictions").fetchone()
+  hist=c.execute('SELECT * FROM live_predictions ORDER BY predicted_at DESC LIMIT 15').fetchall()
+ m1,m2,m3=st.columns(3)
+ m1.metric('Live Games Found',len(live));m2.metric('Live Predictions',summary['n'] or 0);m3.metric('Live Correct / Wrong',f"{summary['w'] or 0} / {summary['l'] or 0}")
+ if not live:st.info('No games currently in progress on the available ESPN scoreboards for the selected sport(s). This does not mean no sports markets are trading.')
+ for g in live[:25]:
+  selection,_,why=live_lean(g)
+  with st.container(border=True):
+   left,right=st.columns([4,2])
+   with left:
+    st.markdown(f"**{g['sport']} · {g['away']['name']} @ {g['home']['name']}**")
+    st.caption(g['detail'])
+    st.markdown(f"**{g['away']['score'] if g['away']['score'] is not None else '—'} — {g['home']['score'] if g['home']['score'] is not None else '—'}**")
+   with right:
+    st.markdown(f"**QUEEN SAYS: {selection or 'WAIT'}**")
+    st.caption('Experimental live lean · NO live odds')
+   with st.expander('Why Queen says this',expanded=False):st.write(why)
+ with st.expander('📊 Timestamped Live Prediction History',expanded=False):
+  if not hist:st.caption('No live predictions yet. Queen records one automatically when a supported game is in progress and has a non-tied score.')
+  for r in hist:
+   st.write(f"{r['sport']} · {r['selection']} · {r['status']} · {r['result'] or 'Pending'} · At {local(r['predicted_at'])} · Score {r['away_score']:g}–{r['home_score']:g}")
+ st.caption('Live price / profit: unavailable until verified in-play quotes are integrated. Local SQLite history on Streamlit Cloud may be erased by restart or redeploy.')
 
 st.markdown('''<style>
 .block-container{padding-top:1rem;max-width:1350px}.stButton>button{border-radius:22px!important}
@@ -233,7 +329,12 @@ h1,h2,h3{color:#ae74ed!important}div[data-testid="stVerticalBlock"]{gap:.5rem}
 banner=next((x for x in ['royal_banner.png','banner.png','sports_banner.png','queens_banner.png'] if Path(x).exists()),None)
 if banner:st.image(banner,use_container_width=True)
 else:st.title('👑 QUEEN’S EDGE | 254 — ROYAL SPORTS SNIPER')
-st.caption('ALL-SPORTS VALUE HUNTER · EXPERIMENTAL PAPER TESTING · NO REAL ORDERS')
+st.caption('V2.9.1 LIVE WATCH · EXPERIMENTAL PAPER TESTING · NO REAL ORDERS')
+
+# Refresh the live panel independently of the pregame market scanner.
+@st.fragment(run_every='60s')
+def live_fragment():
+ live_panel()
 
 key=get_key()
 if not key:
@@ -255,7 +356,7 @@ with st.expander('⚙️ Scanner settings & data notes',expanded=False):
  st.caption('Each sport request can consume multiple API credits. Cached results refresh approximately every 15 minutes; pressing Scan does not bypass the cache.')
  max_sports=st.slider('Maximum sports to scan in All Sports',1,len(choices),len(choices))
  st.caption('To scan every available sport, move the slider to the maximum. Only currently active sports appear in the selector.')
- st.caption('The Odds API supports pregame markets here. ESPN provides scores for supported leagues. Live in-game odds are NOT connected; live games are watch-only.')
+ st.caption('ESPN provides independent live score discovery. Live in-game market odds are NOT connected. Score-based predictions have no hypothetical betting P&L.')
  st.caption('On Streamlit Community Cloud, local SQLite may be lost on restart or redeploy. Use persistent database storage before relying on long-term results.')
 
 if 'scan' not in st.session_state:st.session_state.scan=False
@@ -263,7 +364,7 @@ if st.button('👑 Scan Royal Markets',type='primary',use_container_width=True):
 if not st.session_state.scan:
  st.info('Press **Scan Royal Markets** to load available matchups and paper-test qualifying pregame picks.');st.stop()
 
-selected=choices[:max_sports] if sport=='All Sports' else [sport]
+selected=(choices[:max_sports] if sport=='All Sports' else [sport]) if st.session_state.scan else []
 all_picks=[];games_by_sport={};errors=[];remaining='?'
 with st.spinner('Queen is checking available games and prices…'):
  for s in selected:
@@ -293,15 +394,17 @@ with conn() as c:
 m1,m2,m3,m4=st.columns(4)
 m1.metric('Paper Picks',stats['n']);m2.metric('Wins',stats['w'] or 0);m3.metric('Losses',stats['l'] or 0);m4.metric('Paper P&L',money(stats['pnl']))
 
-st.subheader(f"👑 Queen's Top 10 — {sport}")
-ranked=sorted([p for p in shown if p['signal']=='VALUE PICK'],key=lambda p:(p['edge'],p['probability']),reverse=True)
+live_fragment()
+
+st.subheader(f"👑 Queen's Top 10 — {sport} (experimental)")
+ranked=sorted([p for p in shown if p['signal']=='MODEL LEAN'],key=lambda p:(p['edge'],p['probability']),reverse=True)
 # Keep one pick per game in the visible recommendations.
 unique=[];used=set()
 for p in ranked:
  if p['event_id'] not in used:unique.append(p);used.add(p['event_id'])
 for i,p in enumerate(unique[:10],1):display_pick(p,i)
 if not unique:
- st.info('No qualifying VALUE PICK in this view. Queen will not invent recommendations to fill the Top 10.')
+ st.info('No experimental model leans in this view. Queen will not invent picks.')
  if period=='🔴 Live':st.caption('Live scores can be viewed, but this version does not have a verified live-odds feed. No live entries are generated.')
 
 left,right=st.columns(2)
@@ -316,7 +419,7 @@ with left:
   st.caption(f'Experimental joint win estimate: {estimate:.1%}. Assumes independence; not validated. Indicative quotes from different books may not be available together as one parlay.')
   for p in legs:st.caption(f"• {p['sport']}: {p['selection']} {p['market']} ({american(p['odds'])})")
  else:st.info(f'Not enough qualifying, distinct games for a {leg_count}-leg parlay. No forced legs.')
- st.caption('Parlays are illustrations only in this version; no automatic parlay history is claimed.')
+ st.caption('Illustration only. Odds may come from different sportsbooks; no live prices or automatic parlay tracking.')
 with right:
  st.subheader('🔥 Underdog Watch')
  dogs=sorted([p for p in shown if p['market']=='Moneyline' and p['odds']>0 and p['probability'] is not None],key=lambda p:p['edge'],reverse=True)
@@ -324,7 +427,7 @@ with right:
   for p in dogs[:4]:
    st.markdown(f"**{p['selection']}** · {p['sport']} · {american(p['odds'])} · $20 profit: **{money(payout(p,20))}**")
    st.caption(f"Estimated chance {p['probability']:.0%} · {p['signal']} · {p['reason']}")
- else:st.info('No underdogs with enough verified team data in this view.')
+ else:st.info('No underdogs with enough available team data in this view.')
  st.caption('Underdogs are watch candidates, not automatic $100 paper entries unless they also qualify for the main picks.')
 
 with st.expander('🔴 Live scores and games',expanded=False):
