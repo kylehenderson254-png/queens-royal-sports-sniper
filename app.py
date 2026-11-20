@@ -6,7 +6,7 @@ from collections import defaultdict
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V2.9.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V2.9.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT=ZoneInfo("America/Chicago")
 SPORTS={
  "NBA":("basketball_nba","basketball/nba"),"NFL":("americanfootball_nfl","football/nfl"),
@@ -159,7 +159,7 @@ def collect(events,sport,lookup,games):
    if p is None:signal='WATCH';edge=None
    else:
     edge=p-implied(price)
-    signal='VALUE PICK' if edge>=.06 and decimal(price)>=1.55 and state=='pre' else 'WATCH'
+    signal='MODEL LEAN' if edge>=.06 and decimal(price)>=1.55 and state=='pre' else 'WATCH'
    picks.append(dict(sport=sport,event_id=str(e.get('id')),event_time=e.get('commence_time'),home=home,away=away,
     market=market,selection=selection,point=point,odds=price,book=book,probability=p,edge=edge,
     signal=signal,reason=reason if market=='Moneyline' else 'No validated model for this market',
@@ -172,7 +172,7 @@ def pick_id(p):
 
 def store_picks(picks):
  # Store one qualifying selection per game; never record multiple duplicate picks on rerun.
- qualified=sorted([p for p in picks if p['signal']=='VALUE PICK'],key=lambda p:p['edge'],reverse=True)
+ qualified=sorted([p for p in picks if p['signal']=='VALUE PICK' and False],key=lambda p:p['edge'],reverse=True)
  chosen={}
  for p in qualified:
   if p['event_id'] not in chosen:chosen[p['event_id']]=p
@@ -325,8 +325,117 @@ def live_panel():
  with st.expander('📊 Timestamped Live Prediction History',expanded=False):
   if not hist:st.caption('No live predictions yet. Queen records one automatically when a supported game is in progress and has a non-tied score.')
   for r in hist:
-   st.write(f"{r['sport']} · {r['selection']} · {r['status']} · {r['result'] or 'Pending'} · At {local(r['predicted_at'])} · Score {r['away_score']:g}–{r['home_score']:g}")
+   st.write(f"{r['sport']} · {r['selection']} · {r['status']} · {r['result'] or 'Pending'} · At {local(r['predicted_at'])} · Score {r['away_score'] if r['away_score'] is not None else '—'}–{r['home_score'] if r['home_score'] is not None else '—'}")
  st.caption('Live price / profit: unavailable until verified in-play quotes are integrated. Local SQLite history on Streamlit Cloud may be erased by restart or redeploy.')
+
+
+# Public read-only market discovery. These endpoints do not require trading credentials.
+# A market being OPEN is different from a game being LIVE. Never infer one from the other.
+POLY_PUBLIC='https://gateway.polymarket.us'
+KALSHI_PUBLIC='https://api.elections.kalshi.com/trade-api/v2'
+POLY_LEAGUES={'NBA':'nba','NFL':'nfl','NCAAB':'ncaab','NCAAF':'ncaaf',
+              'NHL':'nhl','MLB':'mlb','WNBA':'wnba','MLS':'mls','EPL':'epl','UFC':'ufc'}
+
+def public_json(url,params=None):
+ try:
+  r=requests.get(url,params=params,timeout=9,headers={'Accept':'application/json','User-Agent':'RoyalSportsSniper254/2.9.2'})
+  r.raise_for_status();return r.json(),None
+ except requests.exceptions.HTTPError as e:
+  return None,f'HTTP {e.response.status_code}' if e.response is not None else 'HTTP error'
+ except (requests.exceptions.RequestException,ValueError) as e:
+  return None,type(e).__name__
+
+def unwrap_items(payload):
+ if isinstance(payload,list):return payload
+ if isinstance(payload,dict):
+  for k in ('events','markets','data','results','items'):
+   v=payload.get(k)
+   if isinstance(v,list):return v
+   if isinstance(v,dict):
+    nested=unwrap_items(v)
+    if nested:return nested
+ return []
+
+@st.cache_data(ttl=120,show_spinner=False)
+def poly_discover(league):
+ # Polymarket US SPORTS event discovery, not international Gamma API.
+ slug=POLY_LEAGUES.get(league)
+ if not slug:return [],'League not mapped'
+ payload,error=public_json(f'{POLY_PUBLIC}/v2/leagues/{slug}/events',{'limit':50,'offset':0})
+ if error:return [],error
+ result=[]
+ for e in unwrap_items(payload):
+  if not isinstance(e,dict):continue
+  title=e.get('title') or e.get('name') or e.get('slug') or 'Untitled event'
+  ident=e.get('id') or e.get('eventId') or e.get('slug')
+  result.append({'source':'Polymarket US','sport':league,'title':str(title),
+   'id':str(ident or ''),'state':str(e.get('status') or e.get('state') or 'unknown'),
+   'start':str(e.get('startTime') or e.get('startDate') or e.get('start_time') or ''),
+   'url':'','price':None})
+ return result,None
+
+@st.cache_data(ttl=120,show_spinner=False)
+def kalshi_discover():
+ # Bounded pagination: inspect open event contracts, then retain sports-series prefixes.
+ # Series coverage is intentionally explicit and may miss new sports.
+ prefixes=('KXNBAGAME','KXNFLGAME','KXNCAABGAME','KXNCAAFGAME',
+           'KXNHLGAME','KXMLBGAME','KXMLSGAME','KXUFC')
+ sport_by_prefix={'KXNBAGAME':'NBA','KXNFLGAME':'NFL','KXNCAABGAME':'NCAAB',
+   'KXNCAAFGAME':'NCAAF','KXNHLGAME':'NHL','KXMLBGAME':'MLB','KXMLSGAME':'MLS','KXUFC':'UFC'}
+ result=[];errors=[]
+ # Series-specific lookup avoids scanning unrelated prediction markets.
+ for prefix in prefixes:
+  payload,error=public_json(f'{KALSHI_PUBLIC}/markets',{'limit':40,'status':'open','series_ticker':prefix})
+  if error:
+   errors.append(f'{prefix}: {error}');continue
+  for m in unwrap_items(payload):
+   if not isinstance(m,dict):continue
+   ticker=str(m.get('ticker') or '')
+   if not ticker.startswith(prefix):continue
+   result.append({'source':'Kalshi','sport':sport_by_prefix[prefix],
+    'title':str(m.get('title') or m.get('subtitle') or ticker),
+    'id':ticker,'state':str(m.get('status') or 'unknown'),
+    'start':str(m.get('open_time') or ''),'url':'',
+    # Quotes intentionally omitted until bid/ask semantics and contract side verified.
+    'price':None})
+ return result,'; '.join(errors[:2]) if errors else None
+
+def market_discovery_panel(selected_sports):
+ st.subheader('📡 Live & Open Sports Markets')
+ st.caption('Open for trading does not mean the game is underway. Discovery is read-only; live executable prices and market-to-game matching are not yet verified.')
+ sources=st.radio('Market source',['Both','Polymarket US','Kalshi'],horizontal=True,key='market_source')
+ if st.button('🔎 Refresh market discovery',use_container_width=True):
+  poly_discover.clear();kalshi_discover.clear()
+ entries=[];issues=[]
+ if sources in ('Both','Polymarket US'):
+  for league in selected_sports[:8]:
+   found,error=poly_discover(league)
+   entries.extend(found)
+   if error:issues.append(f'Polymarket US {league}: {error}')
+ if sources in ('Both','Kalshi'):
+  found,error=kalshi_discover()
+  entries.extend(x for x in found if x['sport'] in selected_sports)
+  if error:issues.append('Kalshi: '+error)
+ entries=list({(x['source'],x['id']):x for x in entries}.values())
+ c1,c2,c3=st.columns(3)
+ c1.metric('Markets / events found',len(entries))
+ c2.metric('Polymarket US',sum(x['source']=='Polymarket US' for x in entries))
+ c3.metric('Kalshi',sum(x['source']=='Kalshi' for x in entries))
+ if issues:
+  with st.expander('Feed diagnostics · Some sources unavailable'):
+   for issue in issues:st.caption(issue)
+ if not entries:st.info('No discoverable sports events or contracts from the public endpoints right now. This is not proof that no live sports markets exist.')
+ else:
+  st.caption('Showing discovered events and contracts, NOT Queen picks or verified live odds.')
+  for x in entries[:30]:
+   with st.container(border=True):
+    a,b=st.columns([5,2])
+    a.markdown(f"**{x['title']}**")
+    a.caption(f"{x['sport']} · {x['source']} · {x['id']}")
+    b.markdown(f"**{x['state'].upper()}**")
+    b.caption('Market / event status')
+ if len(entries)>30:st.caption(f'Showing first 30 of {len(entries)}. More markets exist in this scan.')
+ st.caption('No orders are sent. No price, edge, or potential payout is invented when bid/ask quotes are unavailable.')
 
 st.markdown('''<style>
 .block-container{padding-top:1rem;max-width:1350px}.stButton>button{border-radius:22px!important}
@@ -337,7 +446,7 @@ h1,h2,h3{color:#ae74ed!important}div[data-testid="stVerticalBlock"]{gap:.5rem}
 banner=next((x for x in ['royal_banner.png','banner.png','sports_banner.png','queens_banner.png'] if Path(x).exists()),None)
 if banner:st.image(banner,use_container_width=True)
 else:st.title('👑 QUEEN’S EDGE | 254 — ROYAL SPORTS SNIPER')
-st.caption('V2.9.1 LIVE WATCH · EXPERIMENTAL PAPER TESTING · NO REAL ORDERS')
+st.caption('V2.9.2 LIVE MARKET DISCOVERY · EXPERIMENTAL PAPER TESTING · NO REAL ORDERS')
 
 # Refresh the live panel independently of the pregame market scanner.
 @st.fragment(run_every='60s')
@@ -346,12 +455,11 @@ def live_fragment():
 
 key=get_key()
 if not key:
- st.error('Missing ODDS_API_KEY. Add it to Streamlit App Settings → Secrets, then reload.');st.stop()
-active,err=catalog(key)
+ st.warning('ODDS_API_KEY is missing. Public market discovery and ESPN scores can still work; sportsbook comparison is unavailable.')
+active,err=catalog(key) if key else (set(),None)
 if err:st.warning('Sports catalog temporarily unavailable: '+err)
-choices=[s for s,(code,path) in SPORTS.items() if code in active]
-if not choices:
- st.warning('No configured sports are currently available from the odds provider. Check your API key and provider credits.');st.stop()
+choices=[s for s,(code,path) in SPORTS.items() if code in active] or [s for s in SPORTS if SPORTS[s][1] or s in POLY_LEAGUES]
+if not active:st.caption('Sportsbook catalog unavailable; public sports-market discovery remains available.')
 
 st.markdown('**🏆 Choose Your Sport**')
 sport_names=['All Sports']+choices
@@ -370,13 +478,15 @@ with st.expander('⚙️ Scanner settings & data notes',expanded=False):
 if 'scan' not in st.session_state:st.session_state.scan=False
 if st.button('👑 Scan Royal Markets',type='primary',use_container_width=True):st.session_state.scan=True
 if not st.session_state.scan:
- st.info('Press **Scan Royal Markets** to load available matchups and paper-test qualifying pregame picks.');st.stop()
+ st.info('Press **Scan Royal Markets** to load available matchups and inspect public sports markets.');st.stop()
 
 selected=(choices[:max_sports] if sport=='All Sports' else [sport]) if st.session_state.scan else []
 all_picks=[];games_by_sport={};errors=[];remaining='?'
 with st.spinner('Queen is checking available games and prices…'):
  for s in selected:
-  code,path=SPORTS[s];events,e,remaining=odds_feed(code,key)
+  code,path=SPORTS[s]
+  if not key or code not in active:continue
+  events,e,remaining=odds_feed(code,key)
   if e:errors.append(f'{s}: {e}');continue
   lookup,games=records_and_logos(espn_data(path));games_by_sport[s]=games
   all_picks.extend(collect(events,s,lookup,games))
@@ -394,18 +504,19 @@ def window_ok(p):
 
 shown=[p for p in all_picks if window_ok(p)]
 # Paper-lock all qualifying pregame selections from fetched sports, not just the visible tab.
-locked=store_picks(all_picks)
+locked={}  # Disabled: experimental model cannot justify automatic value bets.
 with conn() as c:
  stats=c.execute("SELECT COUNT(*) n,SUM(CASE WHEN result='WIN' THEN 1 ELSE 0 END) w,SUM(CASE WHEN result='LOSS' THEN 1 ELSE 0 END) l,COALESCE(SUM(profit),0) pnl FROM picks").fetchone()
  recent=c.execute('SELECT * FROM picks ORDER BY placed_at DESC LIMIT 30').fetchall()
 
 m1,m2,m3,m4=st.columns(4)
-m1.metric('Paper Picks',stats['n']);m2.metric('Wins',stats['w'] or 0);m3.metric('Losses',stats['l'] or 0);m4.metric('Paper P&L',money(stats['pnl']))
+m1.metric('Historical Paper Picks',stats['n']);m2.metric('Wins',stats['w'] or 0);m3.metric('Losses',stats['l'] or 0);m4.metric('Paper P&L',money(stats['pnl']))
 
 live_fragment()
+market_discovery_panel(selected)
 
 st.subheader(f"👑 Queen's Top 10 — {sport} (experimental)")
-ranked=sorted([p for p in shown if p['signal']=='MODEL LEAN'],key=lambda p:(p['edge'],p['probability']),reverse=True)
+ranked=sorted([p for p in shown if p['signal']=='MODEL LEAN'],key=lambda p:((p['edge'] or 0),(p['probability'] or 0)),reverse=True)
 # Keep one pick per game in the visible recommendations.
 unique=[];used=set()
 for p in ranked:
@@ -436,7 +547,7 @@ with right:
    st.markdown(f"**{p['selection']}** · {p['sport']} · {american(p['odds'])} · $20 profit: **{money(payout(p,20))}**")
    st.caption(f"Estimated chance {p['probability']:.0%} · {p['signal']} · {p['reason']}")
  else:st.info('No underdogs with enough available team data in this view.')
- st.caption('Underdogs are watch candidates, not automatic $100 paper entries unless they also qualify for the main picks.')
+ st.caption('Underdogs are watch candidates only. The record model is unvalidated; no new paper entries are recorded from its leans.')
 
 with st.expander('🔴 Live scores and games',expanded=False):
  live=[p for p in all_picks if p['state']=='in']
