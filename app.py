@@ -7,7 +7,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -64,7 +64,7 @@ def db():
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.5"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.6"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -337,6 +337,9 @@ def lock_predictions(items):
             if game and game["state"]=="post": continue
             pred=choose_prediction(x)
             if not pred: continue
+            # V3.6: no NEW arbitrary first-team predictions. Previously locked
+            # records remain untouched and available in saved history.
+            if pred["model"] == "Uninformed baseline": continue
             phase="LIVE" if x.get("live") else "PREGAME"
             pid=hashlib.sha256((x["event_id"]+"|"+x["slug"]+"|"+phase).encode()).hexdigest()[:32]
             q=x.get("quote")
@@ -463,7 +466,7 @@ def _pick_card(r, paper=None):
 
 
 def prediction_panel():
-    st.subheader("👑 Queen's Locked Pick History")
+    st.subheader("👑 Saved Pick History")
     with db() as c:
         # No 150-row limit on statistics: historical totals must reflect all saved picks.
         totals=c.execute("SELECT COUNT(*), SUM(result='WIN'), SUM(result='LOSS') FROM royal_predictions_v34").fetchone()
@@ -535,8 +538,8 @@ def display_row(x, number=None):
         main = "No verified quote"
         secondary = "Price unavailable"
     if locked:
-        action = "PICK LOCKED" if locked["result"]=="PENDING" else locked["result"]
-        main = f"👑 PICK: {html.escape(locked['selection'])} to WIN"
+        action = "TRACKED" if locked["result"]=="PENDING" else locked["result"]
+        main = f"👑 FORECAST: {html.escape(locked['selection'])} to WIN"
         secondary = f"{html.escape(locked['confidence'])} · {secondary}"
     with st.container(border=True):
         st.markdown(f'''<div class="royal-game">
@@ -717,7 +720,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.5 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
+st.caption("V3.6 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
@@ -806,7 +809,7 @@ st.session_state["royal_locked"] = prediction_lookup()
 
 
 
-with st.expander("🔎 Why paper entries are skipped", expanded=False):
+with st.expander("🔎 Advanced: Why paper entries are skipped", expanded=False):
     from collections import Counter
     reasons = Counter(paper_reason(x) for x in checked)
     if not reasons:
@@ -820,33 +823,57 @@ with st.expander("🔎 Why paper entries are skipped", expanded=False):
         st.json({"event":sample["title"], "market_slug":sample["slug"], "market_type":sample["market_type"],
                  "marketSides":sample.get("raw_sides"), "market_metadata":sample.get("market_raw"), "mapping_result":sample.get("side_reason")}, expanded=False)
 
-st.subheader("👑 Queen’s Top 10 · Locked Picks")
+st.subheader("👑 Queen’s Featured Picks")
+st.caption("Up to five tracked forecasts with the strongest available evidence. These are not verified betting edges or buy recommendations.")
 watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
-watch.sort(key=lambda x:(not x["verified_side"], not bool(x.get("score_game")), not bool(x.get("quote") and x["quote"].get("valid")), parse_date(x["start"]) or datetime.max.replace(tzinfo=timezone.utc)))
-# Diversify Top 10 across sports before filling remaining slots.
-unique, seen = [], set()
-for league in selected:
-    candidate = next((x for x in watch if x["sport"] == league and x["event_id"] not in seen), None)
-    if candidate:
-        unique.append(candidate); seen.add(candidate["event_id"])
-for x in watch:
-    if x["event_id"] in seen: continue
-    unique.append(x); seen.add(x["event_id"])
-if window == "🔴 Live":
-    st.caption("Showing only markets marked live by the event feed or matched scoreboard. Tennis is included when the US feed provides it.")
-# Pair consecutive games in a compact two-column grid, including on phones.
-for offset in range(0, min(len(unique), 10), 2):
-    left_card, right_card = st.columns(2, gap="small")
-    with left_card:
-        display_row(unique[offset], offset + 1)
-    if offset + 1 < min(len(unique), 10):
-        with right_card:
-            display_row(unique[offset + 1], offset + 2)
-if not unique: st.info("No valid open two-sided quotes in this scan. Queen says WAIT. Try Today or Next 3 Days and check the feed diagnostics.")
-st.caption("Locked picks are directional forecasts, not automatically recommended trades. Season-record models are uncalibrated; market and no-stat baselines are not independent predictions.")
 
-prediction_panel()
-with st.expander("🧪 Previous V3.3 paper history"):
+def evidence_rank(x):
+    locked = st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"), {})
+    model = locked.get("model", "")
+    tier = 3 if model == "Season-record baseline" else 2 if model == "Market-favorite baseline" else 1
+    verified = bool(x.get("verified_side"))
+    valid = bool(x.get("quote") and x["quote"].get("valid"))
+    return (-tier, -int(bool(x.get("score_game"))), -int(verified and valid), parse_date(x.get("start")) or datetime.max.replace(tzinfo=timezone.utc))
+
+watch.sort(key=evidence_rank)
+featured, seen_events = [], set()
+for x in watch:
+    if x["event_id"] in seen_events: continue
+    locked = st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"), {})
+    if locked.get("model") == "Uninformed baseline": continue
+    featured.append(x)
+    seen_events.add(x["event_id"])
+    if len(featured) >= 5: break
+
+if featured:
+    for offset in range(0,len(featured),2):
+        col1,col2=st.columns(2,gap="small")
+        with col1: display_row(featured[offset],offset+1)
+        if offset+1<len(featured):
+            with col2: display_row(featured[offset+1],offset+2)
+else:
+    st.info("No evidence-backed featured picks found in this scan. Queen says WAIT rather than guess.")
+
+st.caption("Season-record estimates are uncalibrated. Market-favorite selections repeat market sentiment and are not independent forecasts.")
+with st.expander(f"📋 Other tracked games ({max(0,len(watch)-len(featured))})", expanded=False):
+    other = [x for x in watch if x not in featured]
+    st.caption("These are saved or monitored, but not highlighted as stronger predictions. Some older records use uninformed baselines.")
+    for x in other[:20]:
+        display_row(x)
+    if len(other)>20: st.caption(f"Showing 20 of {len(other)} other games. Saved history below includes all recorded picks.")
+
+with db() as _summary_db:
+    _p=_summary_db.execute("SELECT COUNT(*), SUM(result='WIN'), SUM(result='LOSS') FROM royal_predictions_v34").fetchone()
+    _t=_summary_db.execute("SELECT COUNT(*), SUM(status='WIN'), SUM(status='LOSS'), COALESCE(SUM(pnl),0) FROM royal_paper_v34").fetchone()
+_w,_l=_p[1] or 0,_p[2] or 0
+st.subheader("📊 Queen’s Scoreboard")
+a,b,c,d=st.columns(4)
+a.metric("Saved picks",_p[0]);b.metric("Graded accuracy",f"{_w/(_w+_l):.0%}" if _w+_l else "—")
+c.metric("$100 paper trades",_t[0]);d.metric("Settled paper P&L",f"${_t[3]:+,.2f}")
+st.caption("Only graded predictions count toward accuracy. Results are provisional until official exchange settlement is confirmed.")
+with st.expander("📚 All locked picks, paper trades & backups",expanded=False):
+    prediction_panel()
+with st.expander("🧪 Earlier V3.3 paper tests",expanded=False):
     paper_panel()
 
 with st.expander("📡 Market feed & scan details",expanded=False):
@@ -860,18 +887,18 @@ with st.expander("📡 Market feed & scan details",expanded=False):
     st.caption("Open market is not the same as a live game. Quotes are indicative.")
     for x in checked: display_row(x)
 
-left,right = st.columns(2)
-with left:
-    st.subheader("🎯 Royal Parlays")
-    legs = st.radio("Parlay legs", [2,3,5,10], horizontal=True)
-    st.info("Parlay calculations paused until compatible Polymarket US combo pricing and each leg's settlement rules are verified. No fabricated combined odds.")
-with right:
-    st.subheader("🔥 Underdog Watch")
-    dogs = [x for x in watch if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"] < .5]
-    if dogs:
-        for x in dogs[:4]: st.write(f"**{x['selection']}** · {x['sport']} · YES ask {x['quote']['ask']:.0%} · WATCH ONLY")
-    else: st.info("No lower-priced outcomes with verified quotes in this scan.")
-    st.caption("A low price does not prove an upset opportunity or positive expected value.")
+with st.expander("🎯 Parlays & 🔥 Underdog Research",expanded=False):
+    left,right=st.columns(2)
+    with left:
+        st.markdown("**🎯 Royal Parlays**")
+        st.caption("Paused: verified combination pricing and settlement rules are not available. No fabricated parlay odds.")
+    with right:
+        st.markdown("**🔥 Underdog Watch**")
+        dogs=[x for x in watch if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"]<.5]
+        if dogs:
+            for x in dogs[:4]: st.caption(f"{x['selection']} · {x['sport']} · {x['quote']['ask']:.0%} YES ask · WATCH ONLY")
+        else: st.caption("No lower-priced outcomes with verified quotes.")
+        st.caption("Low price does not establish value.")
 
 with st.expander("📊 Royal Paper Observation History", expanded=False):
     with db() as c:
