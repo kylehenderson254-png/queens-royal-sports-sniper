@@ -1,4 +1,5 @@
 import os, re, sqlite3, hashlib, html, math, csv, io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -7,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -72,7 +73,7 @@ def db():
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.7"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/3.8"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -93,10 +94,14 @@ def scores(sport, date):
 def score_index(sports):
     result = {}
     today = utc().astimezone(CT).date()
-    for sport in sports:
-        if sport not in ESPN: continue
-        for delta in (-1, 0, 1, 2, 3):
-            for e in scores(sport, (today + timedelta(days=delta)).strftime("%Y%m%d")):
+    jobs=[(sport,(today+timedelta(days=delta)).strftime("%Y%m%d")) for sport in sports if sport in ESPN for delta in (-1,0,1,2,3)]
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures={pool.submit(scores,sport,day):sport for sport,day in jobs}
+        for future in as_completed(futures):
+            sport=futures[future]
+            try: events=future.result()
+            except Exception: continue
+            for e in events:
                 comp = (e.get("competitions") or [{}])[0]
                 teams = comp.get("competitors") or []
                 names = [t.get("team", {}).get("displayName", "") for t in teams]
@@ -433,6 +438,39 @@ def _restore_history(upload, table):
         return 0, f"Could not import CSV: {type(exc).__name__}"
 
 
+
+# V3.8: Risk recommendation for paper tests. No model has validated edge yet.
+BASE_UNIT = 20.0
+def royal_unit_advice(p):
+    model = str(p.get("model") or "")
+    if model == "Season-record baseline":
+        return 0.0, "WATCH: season-record estimates are uncalibrated"
+    if model == "Market-favorite baseline":
+        return 0.0, "SKIP: market favorite is not an independent edge"
+    return 0.0, "SKIP: insufficient verified evidence for a stake"
+
+def royal_unit_manager():
+    with db() as c:
+        picks=[dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 ORDER BY created_at DESC")]
+        papers=[dict(r) for r in c.execute("SELECT * FROM royal_paper_v34")]
+    st.markdown("**👑 Queen's Automatic Unit Manager**")
+    st.caption("Base unit $20. Queen decides units per play; no manual adjustment needed.")
+    a,b,c=st.columns(3)
+    a.metric("Picks evaluated",len(picks))
+    b.metric("Suggested exposure","0 U")
+    c.metric("1 unit","$20")
+    st.caption("No model has demonstrated a calibrated betting edge yet, so Queen recommends 0 U for existing baseline picks. This is a risk decision, not a prediction that the picks will lose.")
+    if papers:
+        pnl=sum(float(p.get("pnl") or 0) for p in papers)
+        st.caption(f"Existing paper trades: {len(papers)} · Recorded P&L ${pnl:+,.2f} ({pnl/BASE_UNIT:+.2f} U). Original $100 stakes are preserved, not retroactively changed.")
+    with st.expander("Review existing picks and Queen's units",expanded=False):
+        for p in picks[:20]:
+            units,why=royal_unit_advice(p)
+            st.markdown(f"**{p.get('selection','Unknown')}** · {units:g} U · ${units*BASE_UNIT:.2f}")
+            st.caption(f"{p.get('sport','Sports')} · {p.get('title','')} · {why}")
+        if len(picks)>20: st.caption(f"Showing 20 of {len(picks)}; all included in totals.")
+    st.caption("Retrospective unit evaluations are not actual bets. Higher unit tiers require independently validated model performance.")
+
 def _pick_card(r, paper=None):
     sport=r["sport"] or "Sports"
     status=r["result"] or "PENDING"
@@ -448,6 +486,8 @@ def _pick_card(r, paper=None):
             elif status=="LOSS": st.error("LOST")
             else: st.warning("PENDING")
         st.markdown(f"**👑 QUEEN'S PICK: {r['selection']} TO WIN**")
+        units,why=royal_unit_advice(r)
+        st.caption(f"Royal units: {units:g} U · ${units*BASE_UNIT:.2f} · {why}")
         st.caption(f"🔒 Locked {local(r['created_at'])} · {r['model'] or 'Prediction method not saved'}")
         if paper:
             price=paper["entry_ask"]
@@ -549,6 +589,8 @@ def display_row(x, number=None):
         action = "TRACKED" if locked["result"]=="PENDING" else locked["result"]
         main = f"👑 FORECAST: {html.escape(locked['selection'])} to WIN"
         secondary = f"{html.escape(locked['confidence'])} · {secondary}"
+        units,_=royal_unit_advice(locked)
+        secondary+=f" · {units:g} U (${units*BASE_UNIT:.0f})"
     with st.container(border=True):
         st.markdown(f'''<div class="royal-game">
           <div class="royal-game-head"><span class="sport-icon">{icon}</span>
@@ -728,10 +770,25 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.7 · POLYMARKET US · LIVE SPORTS WATCH · PAPER ONLY")
+st.caption("V3.8 · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
-sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
-window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
+# Saved records load without a new market scan.
+with db() as _quick_db:
+    _qp=_quick_db.execute("SELECT COUNT(*) FROM royal_predictions_v34").fetchone()[0]
+    _qt=_quick_db.execute("SELECT COUNT(*),COALESCE(SUM(pnl),0) FROM royal_paper_v34").fetchone()
+    _ql=_quick_db.execute("SELECT COUNT(*) FROM royal_parlays_v37").fetchone()[0]
+st.markdown("#### 👑 Royal Dashboard")
+_q1,_q2,_q3,_q4=st.columns(4)
+_q1.metric("Saved picks",_qp)
+_q2.metric("Paper trades",_qt[0])
+_q3.metric("Parlays",_ql)
+_q4.metric("Paper P&L",f"${_qt[1]:+,.2f}")
+with st.expander("👑 Unit Manager · Saved Picks",expanded=False):
+    royal_unit_manager()
+st.caption("Saved history loads without scanning. Scan only to refresh market data.")
+
+sport = st.radio("🏆 Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
+window = st.radio("📅 Games", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
 with st.expander("⚙️ Scan settings & important notes"):
     max_leagues = st.slider("Maximum leagues in All Sports", 1, len(LEAGUES), len(LEAGUES))
     max_quotes = st.slider("Maximum contracts to price per scan", 10, 120, 60, step=5)
@@ -754,10 +811,14 @@ with st.spinner("Finding Polymarket US sports events and checking market quotes.
             if safe_logo(url): logo_catalog.setdefault(league,{})[clean(team)]=url
     st.session_state["royal_logo_catalog"]=logo_catalog
     all_events, errors = [], []
-    for s in selected:
-        items, err = events_for(s)
-        if err: errors.append(f"{s}: {err}")
-        all_events.extend((s, e) for e in items)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        futures={pool.submit(events_for,league):league for league in selected}
+        for future in as_completed(futures):
+            league=futures[future]
+            try: items,err=future.result()
+            except Exception as exc: items,err=[],type(exc).__name__
+            if err: errors.append(f"{league}: {err}")
+            all_events.extend((league,e) for e in items)
 
 current = utc().astimezone(CT).date()
 def in_window(s, e, game):
@@ -782,7 +843,8 @@ for s, e in all_events:
         if not slug: continue
         sides = m.get("marketSides") or []
         # One contract is one instrument. Only label a side when the API identifies it.
-        verified_team, side_reason, mapping_source = resolve_contract(m)
+        verified_team, side_reason = identify_yes_team(m)
+        mapping_source = "event market" if verified_team else "not checked"
         selection = verified_team or (m.get("titleShort") or m.get("question") or m.get("title") or slug)
         market_type = str(m.get("sportsMarketTypeV2") or m.get("sportsMarketType") or "Market").replace("SPORTS_MARKET_TYPE_", "").replace("_", " ").title()
         rows.append({"event_id":str(e.get("id")), "sport":s, "title":str(e.get("title") or "Sports event"),
@@ -803,9 +865,24 @@ while len(checked) < max_quotes and any(buckets.values()):
         if len(checked) >= max_quotes: break
         if buckets[league]:
             checked.append(buckets[league].pop(0))
-for x in checked:
-    x["quote"], x["error"] = bbo(x["slug"])
-    if x["quote"] and x["quote"]["valid"]: quoted += 1
+with ThreadPoolExecutor(max_workers=12) as pool:
+    futures={pool.submit(bbo,x["slug"]):x for x in checked}
+    for future in as_completed(futures):
+        x=futures[future]
+        try: x["quote"],x["error"]=future.result()
+        except Exception as exc: x["quote"],x["error"]=None,type(exc).__name__
+        if x["quote"] and x["quote"]["valid"]: quoted+=1
+# Limit extra detailed contract checks to quoted markets, avoiding hundreds of lookups.
+unmapped=[x for x in checked if not x["verified_side"] and x.get("quote") and x["quote"].get("valid")]
+with ThreadPoolExecutor(max_workers=8) as pool:
+    futures={pool.submit(resolve_contract,x["market_raw"]):x for x in unmapped[:20]}
+    for future in as_completed(futures):
+        x=futures[future]
+        try: name,reason,source=future.result()
+        except Exception: continue
+        if name:
+            x["selection"],x["verified_side"]=name,True
+            x["side_reason"],x["mapping_source"]=reason,source
 observations(checked)
 # Lock all discovered eligible named two-competitor markets, including those beyond
 # the quote budget. Paper entries require actual checked valid quotes.
@@ -982,10 +1059,11 @@ with st.container():
         status=ticket["status"]
         st.markdown(f"**{'🟢 WON' if status=='WIN' else '🔴 LOST' if status=='LOSS' else '🟡 PENDING'} · {selected_legs}-leg {'Royal Lotto' if selected_legs==10 else 'Royal Parlay'}**")
         st.caption(f"🔒 Locked {local(ticket['created_at'])} · {ticket['wins']} won · {ticket['losses']} lost · {len(tlegs)-ticket['wins']-ticket['losses']} pending")
-        for leg in tlegs:
-            icon=SPORT_ICON.get(leg["sport"],"🏆")
-            st.markdown(f"{icon} **{leg['selection']} to WIN** · {leg['leg_result']}")
-            st.caption(f"{leg['sport']} · {leg['title']} · {leg['model']}")
+        with st.expander(f"View {len(tlegs)} locked legs",expanded=False):
+            for leg in tlegs:
+                icon=SPORT_ICON.get(leg["sport"],"🏆")
+                st.markdown(f"{icon} **{leg['selection']} to WIN** · {leg['leg_result']}")
+                st.caption(f"{leg['sport']} · {leg['title']} · {leg['model']}")
     else:
         st.info(f"Only {len(royal_candidates)} eligible tracked games in this scan; {selected_legs} different games are required. Queen won't invent extra legs.")
     st.caption("These are locked *prediction combinations*, not purchasable Polymarket US parlays. Combined odds, paper P&L and payout are intentionally omitted until verified combo pricing and settlement are supported. Season-record estimates are not calibrated and market-favorite baselines are not independent edges.")
