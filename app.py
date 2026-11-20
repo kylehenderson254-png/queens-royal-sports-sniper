@@ -1,6 +1,8 @@
 import json
 import re
 import sqlite3
+import hashlib
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -11,7 +13,9 @@ import streamlit as st
 st.set_page_config(page_title="Royal Sports Sniper | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 KALSHI = "https://api.elections.kalshi.com/trade-api/v2"
 POLY = "https://gamma-api.polymarket.com"
-DB = Path("royal_sports_history.db")
+DB = Path(os.environ.get("ROYAL_DB_PATH", "royal_sports_history.db"))
+STARTING_BANKROLL = 10000.0
+PAPER_SIZES = {"STRONG": 100.0, "MODERATE": 75.0, "QUALIFIED": 50.0}
 SPORTS = {"NFL": ["nfl", "football", "touchdown", "passing yards", "rushing yards"], "NBA": ["nba", "basketball", "rebounds", "assists", "wnba"], "MLB": ["mlb", "baseball", "strikeouts"], "NHL": ["nhl", "hockey", "shots on goal"], "Soccer": ["soccer", "premier league", "champions league", "epl", "mls", "uefa", "fifa"], "Tennis": ["tennis", "atp", "wta", "wimbledon"], "MMA": ["ufc", "mma", "boxing"], "Golf": ["golf", "pga"], "College": ["ncaa", "ncaaf", "ncaab", "college football", "college basketball"]}
 BLOCKED = ("president", "election", "secretary general", "elon musk", "political", "prime minister", "congress", "senate", "cabinet", "pope", "nato")
 
@@ -30,7 +34,7 @@ a{color:#d8a7ff!important}
 
 
 def get_json(url, params=None):
-    r = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/1.2"}, timeout=17)
+    r = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/1.3"}, timeout=17)
     r.raise_for_status()
     return r.json()
 
@@ -90,7 +94,7 @@ def kalshi_markets():
     # Prefer popular game and player prop series; avoid alphabetical soccer-only sampling.
     def priority(item):
         t = (str(item.get("ticker", "")) + " " + str(item.get("title", ""))).lower()
-        groups = ["nba", "nfl", "nhl", "mlb", "wnba", "ncaab", "ncaaf", "epl", "mls", "ufc", "tennis"]
+        groups = ["nba", "nfl", "ncaab", "ncaaf", "nhl", "mlb", "wnba", "epl", "mls", "ufc", "tennis"]
         league = next((i for i, name in enumerate(groups) if name in t), len(groups))
         game = 0 if any(w in t for w in ("game", "match", "points", "touchdown", "rebound", "assist", "spread", "total")) else 1
         return (league, game, t)
@@ -153,7 +157,7 @@ def polymarket_markets():
     # Gamma can reject some combinations of order and tag parameters with 422.
     # Query small batches by league, without order; fall back to broad sports tag.
     seen_events = set()
-    for tag in ("nba", "nfl", "nhl", "mlb", "soccer", "tennis", "ufc", "sports"):
+    for tag in ("nba", "nfl", "ncaab", "ncaaf", "nhl", "mlb", "soccer", "tennis", "ufc", "sports"):
         try:
             events = get_json(f"{POLY}/events", {"tag_slug": tag, "active": "true", "closed": "false", "limit": 70})
         except requests.HTTPError as e:
@@ -278,14 +282,156 @@ def display_card(m, idx=None):
             st.link_button("View market", m["url"])
 
 
+
+# ================================
+# V1.3: PAPER LEDGER FOUNDATION
+# ================================
+# This ledger only acts on independently validated, executable signals.
+# No probability engine or executable order-book feed is connected yet;
+# therefore V1.3 deliberately opens ZERO automatic positions.
+# SQLite is local and EPHEMERAL on Streamlit Community Cloud. Set
+# ROYAL_DB_PATH to a durable mounted disk when deploying a worker.
+
+def ledger_connection():
+    DB.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(DB, timeout=15)
+    con.row_factory = sqlite3.Row
+    con.execute("PRAGMA busy_timeout=15000")
+    con.execute("""CREATE TABLE IF NOT EXISTS paper_trades (
+      trade_id TEXT PRIMARY KEY, market_key TEXT NOT NULL,
+      platform TEXT NOT NULL, market_id TEXT NOT NULL,
+      title TEXT NOT NULL, league TEXT, side TEXT NOT NULL,
+      grade TEXT NOT NULL, contracts INTEGER NOT NULL,
+      entry_price REAL NOT NULL, entry_fee REAL NOT NULL DEFAULT 0,
+      opened_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'OPEN',
+      exit_price REAL, exit_fee REAL NOT NULL DEFAULT 0,
+      closed_at TEXT, realized_pnl REAL, close_reason TEXT)""")
+    con.execute("""CREATE TABLE IF NOT EXISTS paper_activity (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_key TEXT UNIQUE, created_at TEXT NOT NULL,
+      action TEXT NOT NULL, details TEXT NOT NULL)""")
+    con.commit()
+    return con
+
+
+def now_utc():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def paper_summary(con):
+    row = con.execute("""SELECT COALESCE(SUM(CASE WHEN status='OPEN'
+        THEN contracts*entry_price+entry_fee ELSE 0 END),0) locked,
+        COALESCE(SUM(CASE WHEN status='CLOSED' THEN realized_pnl ELSE 0 END),0) pnl,
+        SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) open_count,
+        SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END) closed_count
+        FROM paper_trades""").fetchone()
+    locked, pnl = float(row['locked']), float(row['pnl'])
+    # Available cash includes released entry capital from closed trades.
+    return {"cash": STARTING_BANKROLL + pnl - locked,
+            "locked": locked, "realized": pnl,
+            "open": row['open_count'] or 0, "closed": row['closed_count'] or 0}
+
+
+def record_activity(con, action, details, event_key):
+    con.execute("INSERT OR IGNORE INTO paper_activity(event_key,created_at,action,details) VALUES(?,?,?,?)",
+                (event_key, now_utc(), action, details))
+
+
+def open_paper_trade(con, signal):
+    """For future validated signals ONLY; never call from market discovery.
+
+    Required signal: verified=True, executable=True, current ask, grade,
+    market_key, market_id, platform, title, side, and fee estimate.
+    An external engine must verify independent probability, settlement
+    equivalence, freshness, and available depth before calling this.
+    """
+    if signal.get('verified') is not True or signal.get('executable') is not True:
+        return False, 'Unverified signal: paper entry blocked'
+    grade = signal.get('grade')
+    if grade not in PAPER_SIZES or signal.get('side') not in ('YES','NO'):
+        return False, 'Unsupported signal grade or side'
+    try:
+        price = float(signal['ask'])
+        fee_per_contract = float(signal['fee_per_contract'])
+    except (KeyError, TypeError, ValueError):
+        return False, 'Missing executable ask or fee'
+    if not (0 < price < 1) or not (0 <= fee_per_contract < 1):
+        return False, 'Invalid price or fee'
+    key = str(signal.get('market_key') or '')
+    if not key or not signal.get('market_id') or not signal.get('platform'):
+        return False, 'Missing contract identity'
+    contracts = int(PAPER_SIZES[grade] // (price + fee_per_contract))
+    if contracts < 1:
+        return False, 'Insufficient budget for one contract'
+    cost = contracts * (price + fee_per_contract)
+    trade_id = hashlib.sha256((key + '|' + signal['side']).encode()).hexdigest()[:24]
+    with con:
+        # Same outcome across platforms is one paper position, never two.
+        existing = con.execute("SELECT trade_id FROM paper_trades WHERE market_key=? AND status='OPEN'",(key,)).fetchone()
+        if existing:
+            return False, 'Equivalent position already open'
+        if con.execute('SELECT 1 FROM paper_trades WHERE trade_id=?',(trade_id,)).fetchone():
+            return False, 'Signal previously traded; no duplicate re-entry'
+        if paper_summary(con)['cash'] < cost:
+            return False, 'Insufficient available paper cash'
+        con.execute("""INSERT INTO paper_trades(trade_id,market_key,platform,market_id,title,league,
+           side,grade,contracts,entry_price,entry_fee,opened_at)
+           VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+           (trade_id,key,signal['platform'],signal['market_id'],signal.get('title',''),
+            signal.get('league',''),signal['side'],grade,contracts,price,
+            contracts*fee_per_contract,now_utc()))
+        record_activity(con,'BUY',f"{signal['platform']} | {signal.get('title','')} | {signal['side']} | {contracts} contracts",'buy:'+trade_id)
+    return True, trade_id
+
+
+def close_paper_trade(con, trade_id, exit_bid, fee_per_contract, reason='CASH OUT'):
+    """Paper exit requires a verified executable bid, never a last price."""
+    try:
+        bid, fee = float(exit_bid), float(fee_per_contract)
+    except (TypeError, ValueError):
+        return False, 'Missing executable exit quote'
+    if not (0 <= bid <= 1 and 0 <= fee < 1):
+        return False, 'Invalid exit quote'
+    with con:
+        t = con.execute("SELECT * FROM paper_trades WHERE trade_id=? AND status='OPEN'",(trade_id,)).fetchone()
+        if t is None:
+            return False, 'No open position'
+        exit_fee = t['contracts']*fee
+        pnl = t['contracts']*(bid-t['entry_price'])-t['entry_fee']-exit_fee
+        con.execute("""UPDATE paper_trades SET status='CLOSED',exit_price=?,exit_fee=?,
+           closed_at=?,realized_pnl=?,close_reason=? WHERE trade_id=? AND status='OPEN' """,
+           (bid,exit_fee,now_utc(),pnl,reason,trade_id))
+        record_activity(con,reason,f"{t['title']} | {pnl:+.2f} paper USD",'close:'+trade_id)
+    return True, pnl
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def live_scoreboard(league):
+    # ESPN's public scoreboard is contextual information, not a licensed
+    # production feed or a substitute for synchronized in-play pricing.
+    paths = {'NFL':'football/nfl','NBA':'basketball/nba',
+             'NCAAF':'football/college-football','NCAAB':'basketball/mens-college-basketball'}
+    data = get_json('https://site.api.espn.com/apis/site/v2/sports/'+paths[league]+'/scoreboard')
+    games = []
+    for e in data.get('events',[]):
+        c = (e.get('competitions') or [{}])[0]
+        teams = c.get('competitors') or []
+        if len(teams)<2: continue
+        name = ' vs '.join(x.get('team',{}).get('displayName','Team') for x in teams[:2])
+        score = ' – '.join(str(x.get('score','–')) for x in teams[:2])
+        state = e.get('status',{}).get('type',{}).get('description','Unknown')
+        games.append({'Game':name,'Score':score,'Status':state,'Start':e.get('date','')})
+    return games
+
+
 # The replacement image has no white margins; Streamlit scales it to mobile width.
 banner = Path("royal_sports_banner.png")
 if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.markdown("# 👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("🏈 NFL · 🏀 NBA · ⚾ MLB · 🏒 NHL · ⚽ Soccer · 🎾 Tennis · 🥊 MMA")
-st.caption("V1.2 · Sports market screening · No verified statistical picks or live score feed yet · No orders placed")
+st.caption("🏈 NFL · 🏀 NBA · 🎓 NCAAF · 🏀 NCAAB · More sports in research scanner")
+st.caption("V1.3 FOUNDATION · Market research + live score context · Automatic paper entries safely paused until verified model and executable quotes")
 header, refresh = st.columns([3, 1])
 with header:
     st.markdown("### 💜 Royal Sports Scanner")
@@ -306,6 +452,33 @@ b.metric("👑 Kalshi", sum(m["platform"] == "Kalshi" for m in markets))
 c.metric("💜 Polymarket", sum(m["platform"] == "Polymarket" for m in markets))
 st.caption(f"Partial discovery from up to 40 of {series_count} Kalshi sports series and sampled Polymarket global sports tags. Polymarket global is not necessarily Polymarket US. Prices may be stale or non-executable.")
 
+st.markdown('<div class="royal-head">💜 ROYAL PAPER BANKROLL</div>', unsafe_allow_html=True)
+try:
+    with ledger_connection() as ledger:
+        account = paper_summary(ledger)
+    p1,p2,p3,p4 = st.columns(4)
+    p1.metric('Starting paper funds',f'${STARTING_BANKROLL:,.0f}')
+    p2.metric('Available paper cash',f"${account['cash']:,.2f}")
+    p3.metric('Open positions',account['open'])
+    p4.metric('Realized paper P/L',f"${account['realized']:+,.2f}")
+except (sqlite3.Error, OSError) as e:
+    st.warning('Paper ledger unavailable: '+str(e)[:150])
+
+st.markdown('<div class="royal-head">📡 QUEEN’S LIVE ACTIVITY</div>', unsafe_allow_html=True)
+st.info('SCANNING / RESEARCH MODE — No statistically verified signals yet. Auto paper BUY and CASH OUT are paused; no trades are being invented.')
+st.caption('Paper sizes: $100 strong · $75 moderate · $50 qualified. Top 5 is not a daily trade limit.')
+with st.expander('🏈🏀 LIVE SPORTS SCOREBOARD — CONTEXT ONLY', expanded=False):
+    st.caption('Public scoreboard snapshots; not synchronized with tradable quotes. Not a basis for live entries.')
+    tabs=st.tabs(['NFL','NBA','NCAAF','NCAAB'])
+    for league, tab in zip(['NFL','NBA','NCAAF','NCAAB'],tabs):
+        with tab:
+            try:
+                games=live_scoreboard(league)
+                if games: st.dataframe(games,use_container_width=True,hide_index=True)
+                else: st.caption('No games returned for this scoreboard.')
+            except (requests.RequestException,KeyError,ValueError) as e:
+                st.caption('Scoreboard unavailable: '+str(e)[:100])
+
 st.markdown('<div class="royal-head">👑 TOP 5 TO INVESTIGATE</div>', unsafe_allow_html=True)
 st.caption("Upcoming, active markets prioritized by timing and activity. NOT predictions, guaranteed picks, or confirmed positive expected value.")
 candidates = [m for m in markets if m["decision"].startswith("🟡")]
@@ -315,9 +488,9 @@ else:
     st.info("No eligible research candidates in the sampled results. Refresh later; Queen will not manufacture picks.")
 
 st.markdown('<div class="royal-head">💚 QUALIFIED VALUE PICKS</div>', unsafe_allow_html=True)
-st.info("No statistically verified value picks yet. This needs team/player statistics, tested probabilities, and fees/spread checks.")
+st.info("No verified value picks yet. Independent probabilities, sportsbook comparisons, order-book depth, and fees are not connected. No paper entries will be created from research rankings.")
 st.markdown('<div class="royal-head">🔴 LIVE GAME OPPORTUNITIES</div>', unsafe_allow_html=True)
-st.info("Live scores and player stats are not connected yet. Market prices alone cannot verify live-game performance.")
+st.info("Scoreboard context is available above; synchronized in-play probabilities and executable quotes are not. Live BUY/CASH OUT signals remain paused.")
 
 with st.expander("🏆 EXPLORE MORE SPORTS MARKETS", expanded=False):
     search = st.text_input("Search team, player, or market", placeholder="Lakers, touchdowns, NBA...")
@@ -330,7 +503,18 @@ with st.expander("🏆 EXPLORE MORE SPORTS MARKETS", expanded=False):
     for m in filtered[:8]: display_card(m)
     if not filtered: st.caption("No matching markets in this scan.")
 
-with st.expander("📊 ROYAL TRACKING CENTER — SCANS & HISTORY", expanded=False):
+with st.expander("📊 ROYAL TRACKING CENTER — PAPER TRADES & HISTORY", expanded=False):
+    try:
+        with ledger_connection() as con:
+            positions=[dict(r) for r in con.execute("SELECT opened_at,platform,title,side,grade,contracts,entry_price,status,realized_pnl,closed_at FROM paper_trades ORDER BY opened_at DESC LIMIT 100").fetchall()]
+            activity=[dict(r) for r in con.execute("SELECT created_at,action,details FROM paper_activity ORDER BY event_id DESC LIMIT 100").fetchall()]
+        st.markdown("**Paper positions**")
+        if positions: st.dataframe(positions,use_container_width=True,hide_index=True)
+        else: st.caption("No paper positions. Queen will only enter on independently validated signals.")
+        st.markdown("**Activity log**")
+        if activity: st.dataframe(activity,use_container_width=True,hide_index=True)
+        else: st.caption("No automated trade events yet.")
+    except (sqlite3.Error,OSError) as e: st.warning("Paper ledger unavailable: "+str(e)[:120])
     st.caption("Snapshots are discovered markets, not bets or predictions. Local storage is not durable on Streamlit Community Cloud.")
     if "v12_logged" not in st.session_state: st.session_state.v12_logged = None
     snapshot = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M") if markets else None
@@ -348,4 +532,4 @@ with st.expander("📊 ROYAL TRACKING CENTER — SCANS & HISTORY", expanded=Fals
         if rows:
             st.dataframe([{"UTC":r[0], "Platform":r[1], "Sport":r[2], "Type":r[3], "Market":r[4], "YES":cents(r[5]), "Status":r[6]} for r in rows], use_container_width=True, hide_index=True)
     except Exception as e: st.warning(f"Tracking unavailable: {e}")
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.2 · Research only")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.3 FOUNDATION · Paper only · No real orders · Local SQLite is not durable on Community Cloud · 24/7 worker not yet deployed")
