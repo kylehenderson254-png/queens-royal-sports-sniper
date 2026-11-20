@@ -549,6 +549,90 @@ def pregame_board(odds):
     rows.sort(key=lambda x: (x["start"], -x["prob"]))
     return rows
 
+# V1.6: ESPN pregame records and rankings, optional and fail-closed.
+# A missing or ambiguous match never displays a guessed record or rank.
+@st.cache_data(ttl=900, show_spinner=False)
+def espn_pregame_teams(league, start_day, end_day):
+    paths = {"NFL": "football/nfl", "NBA": "basketball/nba",
+             "NCAAF": "football/college-football",
+             "NCAAB": "basketball/mens-college-basketball"}
+    url = "https://site.api.espn.com/apis/site/v2/sports/" + paths[league] + "/scoreboard"
+    data = get_json(url, {"dates": start_day + "-" + end_day, "limit": 500})
+    games = []
+    for event in data.get("events", []):
+        competition = (event.get("competitions") or [{}])[0]
+        teams = []
+        for competitor in competition.get("competitors", []):
+            team = competitor.get("team") or {}
+            record = None
+            for rec in competitor.get("records") or []:
+                if rec.get("type") in ("total", "overall") and rec.get("summary"):
+                    record = rec["summary"]
+                    break
+            rank = competitor.get("curatedRank", {})
+            rank = rank.get("current") if isinstance(rank, dict) else None
+            if not isinstance(rank, int) or rank < 1 or rank > 25:
+                rank = None
+            teams.append({"name": team.get("displayName", ""),
+                          "short": team.get("shortDisplayName", ""),
+                          "location": team.get("location", ""),
+                          "nickname": team.get("name", ""),
+                          "record": record, "rank": rank})
+        if len(teams) == 2:
+            games.append({"start": parse_date(event.get("date")), "teams": teams})
+    return games
+
+
+def normalize_team_name(value):
+    value = unicodedata.normalize("NFKD", str(value)).encode("ascii", "ignore").decode().lower()
+    return " ".join(re.findall(r"[a-z0-9]+", value.replace("&", " and ")))
+
+
+def match_espn_game(pick, games):
+    # Require both teams and a start time within 90 minutes; never fuzzy-match
+    # on a mascot or school alone because that can attach incorrect records.
+    names = [x.strip() for x in pick["game"].split(" @ ")]
+    if len(names) != 2:
+        return None
+    requested = [normalize_team_name(x) for x in names]
+    matches = []
+    for game in games:
+        start = game.get("start")
+        if not start or abs((start - pick["start"]).total_seconds()) > 5400:
+            continue
+        aliases = [{normalize_team_name(t.get(k, "")) for k in ("name", "short")}
+                   for t in game["teams"]]
+        if (requested[0] in aliases[0] and requested[1] in aliases[1]) or (requested[0] in aliases[1] and requested[1] in aliases[0]):
+            matches.append(game)
+    return matches[0] if len(matches) == 1 else None
+
+
+def compact_matchup(pick, game):
+    if not game:
+        return pick["game"], None
+    def format_team(team):
+        rank = f"#{team['rank']} " if team.get("rank") else ""
+        record = f" ({team['record']})" if team.get("record") else ""
+        return rank + team["name"] + record
+    by_name = {normalize_team_name(t["name"]): t for t in game["teams"]}
+    odds_names = [x.strip() for x in pick["game"].split(" @ ")]
+    ordered = []
+    for name in odds_names:
+        match = next((t for t in game["teams"] if normalize_team_name(name) in
+                      (normalize_team_name(t["name"]), normalize_team_name(t["short"]))), None)
+        if match is None:
+            return pick["game"], None
+        ordered.append(match)
+    return " @ ".join(format_team(t) for t in ordered), ordered
+
+
+def short_reason(pick, ordered):
+    # Record comparisons are descriptive only; the consensus determines the lean.
+    reason = f"Sportsbook favorite ({pick['prob']:.1%} consensus)"
+    if ordered and all(t.get("record") for t in ordered):
+        reason += "; records shown for context"
+    return reason + ". Not a verified BUY."
+
 def bankroll_strip(account):
     cells = [
         ("START", f"${STARTING_BANKROLL:,.0f}"),
@@ -581,9 +665,9 @@ if banner.exists():
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
 
-st.caption("V1.5 · Pregame-first · Kalshi + Polymarket discovery · PAPER ONLY")
+st.caption("V1.6 · Compact records + rankings · Pregame-first · Kalshi + Polymarket discovery · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Signals")
-st.caption("Directional sportsbook consensus before kickoff. LEAN is not a BUY or proof of value.")
+st.caption("Sportsbook favorites before kickoff. Records and available rankings are context, not a BUY signal.")
 if st.button("🔄 Refresh markets and scores"):
     scan.clear()
     live_scoreboard.clear()
@@ -595,12 +679,24 @@ board = pregame_board(odds)
 
 if board:
     st.markdown("#### 🏆 Today's Top 5 Pregame Leans")
-    for i, pick in enumerate(board[:5], 1):
+    selected = board[:5]
+    espn_by_league = {}
+    for league in {pick["league"] for pick in selected}:
+        league_picks = [p for p in selected if p["league"] == league]
+        first = min(p["start"] for p in league_picks).strftime("%Y%m%d")
+        last = max(p["start"] for p in league_picks).strftime("%Y%m%d")
+        try:
+            espn_by_league[league] = espn_pregame_teams(league, first, last)
+        except (requests.RequestException, KeyError, ValueError, TypeError):
+            espn_by_league[league] = []
+    for i, pick in enumerate(selected, 1):
+        game = match_espn_game(pick, espn_by_league.get(pick["league"], []))
+        matchup, teams = compact_matchup(pick, game)
         with st.container(border=True):
-            st.markdown(f"**👑 {i}. {pick['game']}**")
-            st.markdown(f"🟣 **{pick['status']} — {pick['team']}**")
-            st.caption(f"{pick['league']} · {local_start(pick['start'].isoformat())} · Sportsbook consensus {pick['prob']:.1%} · {pick['books']} bookmaker observations")
-            st.caption("Market-derived directional favorite only. No independently verified edge, executable entry, or BUY qualification.")
+            st.markdown(f"**👑 {i}. {matchup}**")
+            st.markdown(f"🟣 **PREGAME LEAN — {pick['team']}**")
+            st.caption(f"{pick['league']} · {local_start(pick['start'].isoformat())} · {pick['books']} books")
+            st.caption("Queen's reason: " + short_reason(pick, teams))
 else:
     st.info("⚪ WAIT — No upcoming, supported two-outcome sportsbook games available for a pregame lean. Queen will not invent picks.")
 
@@ -684,4 +780,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(e)[:120])
     st.caption("SQLite on Streamlit Community Cloud is not durable. App reruns are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.5 · Paper only · No real orders")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.6 · Paper only · No real orders")
