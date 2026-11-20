@@ -665,7 +665,7 @@ if banner.exists():
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
 
-st.caption("V1.6 · Compact records + rankings · Pregame-first · Kalshi + Polymarket discovery · PAPER ONLY")
+st.caption("V1.7 · Records/rankings visibility check · Pregame-first · Kalshi + Polymarket discovery · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Signals")
 st.caption("Sportsbook favorites before kickoff. Records and available rankings are context, not a BUY signal.")
 if st.button("🔄 Refresh markets and scores"):
@@ -689,14 +689,25 @@ if board:
             espn_by_league[league] = espn_pregame_teams(league, first, last)
         except (requests.RequestException, KeyError, ValueError, TypeError):
             espn_by_league[league] = []
+    matched_count = 0
     for i, pick in enumerate(selected, 1):
         game = match_espn_game(pick, espn_by_league.get(pick["league"], []))
         matchup, teams = compact_matchup(pick, game)
+        if teams:
+            matched_count += 1
         with st.container(border=True):
             st.markdown(f"**👑 {i}. {matchup}**")
+            if not teams:
+                st.caption("📋 Team records/rankings unavailable: ESPN matchup not confirmed.")
+            elif not any(t.get("record") or t.get("rank") for t in teams):
+                st.caption("📋 ESPN matched the game, but supplied no record or Top 25 rank.")
             st.markdown(f"🟣 **PREGAME LEAN — {pick['team']}**")
             st.caption(f"{pick['league']} · {local_start(pick['start'].isoformat())} · {pick['books']} books")
             st.caption("Queen's reason: " + short_reason(pick, teams))
+    with st.expander("📋 Records & Rankings Status", expanded=False):
+        st.caption(f"ESPN matched {matched_count} of {len(selected)} displayed games. Records and Top 25 rankings appear only when ESPN returns them for the confirmed matchup.")
+        if matched_count < len(selected):
+            st.caption("Missing labels are a data/matching issue, not proof the app failed to update.")
 else:
     st.info("⚪ WAIT — No upcoming, supported two-outcome sportsbook games available for a pregame lean. Queen will not invent picks.")
 
@@ -780,4 +791,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(e)[:120])
     st.caption("SQLite on Streamlit Community Cloud is not durable. App reruns are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.6 · Paper only · No real orders")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.7 · Paper only · No real orders")
