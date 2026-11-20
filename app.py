@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -91,9 +91,47 @@ def scores(sport, date):
         return r.json().get("events", [])
     except (requests.RequestException, ValueError): return []
 
+def _score_competitor_name(comp):
+    """ESPN team sports use team; tennis generally uses athlete."""
+    team=comp.get("team") or {}
+    athlete=comp.get("athlete") or {}
+    return str(team.get("displayName") or athlete.get("displayName") or
+               comp.get("displayName") or athlete.get("fullName") or "").strip()
+
+def _tennis_sets(comp):
+    parts=[]
+    for entry in comp.get("linescores") or []:
+        if isinstance(entry,dict):
+            value=entry.get("value",entry.get("displayValue"))
+        else: value=entry
+        if value is not None and str(value).strip():
+            number=numeric(value)
+            parts.append(str(int(number)) if number is not None and number.is_integer() else str(value))
+    return parts
+
+def _score_record(event, sport):
+    competitions=event.get("competitions") or []
+    if not competitions: return None
+    comp=competitions[0]
+    participants=comp.get("competitors") or []
+    if len(participants)!=2: return None
+    names=[_score_competitor_name(p) for p in participants]
+    if not all(names) or clean(names[0])==clean(names[1]): return None
+    status=event.get("status") or {}
+    typ=status.get("type") or {}
+    detail=str(typ.get("shortDetail") or typ.get("detail") or status.get("displayClock") or "").strip()
+    scores={n:p.get("score") for n,p in zip(names,participants)}
+    sets={n:_tennis_sets(p) for n,p in zip(names,participants)} if sport=="Tennis" else {}
+    return {"state":typ.get("state","unknown"),"detail":detail,"date":event.get("date"),"teams":names,
+            "scores":scores,"sets":sets,"winner":next((n for n,p in zip(names,participants) if p.get("winner") is True),None),
+            "logos":{n:(p.get("team") or {}).get("logo","") for n,p in zip(names,participants)},
+            "records":{n:p.get("records") or [] for n,p in zip(names,participants)},
+            "home":next((n for n,p in zip(names,participants) if p.get("homeAway")=="home"),""),
+            "event_id":str(event.get("id") or "")}
+
 def score_index(sports):
-    result = {}
-    today = utc().astimezone(CT).date()
+    result={}
+    today=utc().astimezone(CT).date()
     jobs=[(sport,(today+timedelta(days=delta)).strftime("%Y%m%d")) for sport in sports if sport in ESPN for delta in (-1,0,1,2,3)]
     with ThreadPoolExecutor(max_workers=12) as pool:
         futures={pool.submit(scores,sport,day):sport for sport,day in jobs}
@@ -101,18 +139,38 @@ def score_index(sports):
             sport=futures[future]
             try: events=future.result()
             except Exception: continue
-            for e in events:
-                comp = (e.get("competitions") or [{}])[0]
-                teams = comp.get("competitors") or []
-                names = [t.get("team", {}).get("displayName", "") for t in teams]
-                if len(names) < 2: continue
-                status = e.get("status", {}).get("type", {})
-                record = {"state":status.get("state", "unknown"), "detail":status.get("shortDetail", ""), "date":e.get("date"), "teams":names,
-                          "scores": {t.get("team", {}).get("displayName", ""):t.get("score") for t in teams}, "winner": next((t.get("team", {}).get("displayName", "") for t in teams if t.get("winner") is True), None), "logos":{t.get("team", {}).get("displayName", ""):t.get("team", {}).get("logo", "") for t in teams},
-                           "records": {t.get("team", {}).get("displayName", ""): (t.get("records") or []) for t in teams},
-                           "home": next((t.get("team",{}).get("displayName", "") for t in teams if t.get("homeAway")=="home"), "") }
-                result[(sport, frozenset(clean(n) for n in names))] = record
+            for event in events:
+                game=_score_record(event,sport)
+                if game:
+                    result[(sport,frozenset(clean(n) for n in game["teams"]))]=game
     return result
+
+def _match_saved_game(row, index):
+    """Match BOTH saved opponents in the same sport; never assume LIVE from phase."""
+    sport=row.get("sport")
+    a,b=clean(row.get("selection")),clean(row.get("opponent"))
+    if not a or not b or a==b: return None
+    exact=index.get((sport,frozenset((a,b))))
+    if exact: return exact
+    # Handle harmless name punctuation and tennis 'First Last' vs 'Last First'
+    def similarity(x,y):
+        if clean(x)==clean(y): return 1.0
+        tx=sorted(re.findall(r"[a-z]+",str(x).lower()))
+        ty=sorted(re.findall(r"[a-z]+",str(y).lower()))
+        if len(tx)>=2 and tx==ty: return .98
+        return SequenceMatcher(None,clean(x),clean(y)).ratio()
+    matches=[]
+    for (league,_),game in index.items():
+        if league!=sport: continue
+        x,y=game["teams"]
+        strength=max(min(similarity(row.get("selection"),x),similarity(row.get("opponent"),y)),
+                     min(similarity(row.get("selection"),y),similarity(row.get("opponent"),x)))
+        if strength>=.92: matches.append((strength,game))
+    matches.sort(key=lambda v:v[0],reverse=True)
+    if len(matches)==1 or (len(matches)>1 and matches[0][0]-matches[1][0]>=.07):
+        return matches[0][1]
+    return None
+
 
 def event_score(sport, event, index):
     names = []
@@ -425,8 +483,8 @@ def refresh_saved_results():
                 if len(teams)!=2: continue
                 status=e.get('status',{}).get('type',{})
                 if status.get('state')!='post' or not status.get('completed'): continue
-                names=[str(t.get('team',{}).get('displayName') or '') for t in teams]
-                winner=next((str(t.get('team',{}).get('displayName') or '') for t in teams if t.get('winner') is True),None)
+                names=[_score_competitor_name(t) for t in teams]
+                winner=next((_score_competitor_name(t) for t in teams if t.get('winner') is True),None)
                 game_date=parse_date(e.get('date'))
                 if winner and game_date:
                     completed[sp].append((frozenset(clean(n) for n in names),clean(winner),game_date,str(e.get('id') or '')))
@@ -608,12 +666,41 @@ def royal_unit_manager():
         if len(picks)>20: st.caption(f"Showing 20 of {len(picks)}; all included in totals.")
     st.caption("Retrospective unit evaluations are not actual bets. Higher unit tiers require independently validated model performance.")
 
-def _pick_card(r, paper=None):
+def _saved_game_banner(game, result):
+    result=str(result or "PENDING").upper()
+    if result=="WIN": return "✅ WON · QUEEN CALLED IT", "#16a34a"
+    if result=="LOSS": return "❌ LOST · QUEEN MISSED", "#dc2626"
+    if game and game.get("state")=="in": return "🔴 LIVE · IN PROGRESS", "#e11d48"
+    if game and game.get("state")=="post": return "🏁 FINAL · AWAITING GRADING", "#d97706"
+    if game and game.get("state")=="pre": return "📅 UPCOMING · NOT STARTED", "#64748b"
+    return "⏳ PENDING · LIVE STATUS UNVERIFIED", "#a16207"
+
+def _render_saved_score(game, row):
+    if not game:
+        st.caption("🕒 Live scoreboard not matched yet · original pick remains saved")
+        return
+    st.markdown(f"**{royal_game_clock(game,game.get('date'))}**")
+    line=royal_score_line(game,row.get("selection"))
+    if line: st.markdown(line)
+    elif game.get("state")=="in": st.caption("Live match found · score unavailable from ESPN")
+    if row.get("sport")=="Tennis" and game.get("state") in ("in","post"):
+        sets=game.get("sets") or {}
+        names=game.get("teams") or []
+        if len(names)==2 and (sets.get(names[0]) or sets.get(names[1])):
+            st.caption("🎾 Sets: "+" | ".join(f"{n}: {'–'.join(sets.get(n) or ['—'])}" for n in names))
+        if game.get("state")=="in":
+            st.caption("Tennis has no game clock. Current game points appear only if the score provider supplies them.")
+
+def _pick_card(r, paper=None, score_index_data=None):
     sport=r["sport"] or "Sports"
     status=r["result"] or "PENDING"
     icon=SPORT_ICON.get(sport,"🏆")
     paper_status=paper["status"] if paper else None
+    game=_match_saved_game(r,score_index_data or {})
     with st.container(border=True):
+        banner,color=_saved_game_banner(game,status)
+        st.markdown(f'<div style="background:{color}20;border:1px solid {color};border-radius:10px;padding:7px 10px;font-weight:800">{banner}</div>',unsafe_allow_html=True)
+        _render_saved_score(game,r)
         left,right=st.columns([3,1],gap="small")
         with left:
             st.markdown(f"**{icon} {r['title'] or (r['selection']+' vs. '+str(r['opponent'] or 'Opponent'))}**")
@@ -674,8 +761,13 @@ def prediction_panel():
         filtered=rows
     st.caption(f"Showing {min(len(filtered),st.session_state.get('royal_history_limit',12))} of {len(filtered)} saved picks · Newest first")
     limit=st.session_state.get("royal_history_limit",12)
-    for r in filtered[:limit]:
-        _pick_card(r,paper_by_prediction.get(r["id"]))
+    shown=filtered[:limit]
+    # Fetch once for visible saved picks, even if those events are absent from the
+    # current Polymarket market scan. No invented live status for unmatched games.
+    history_sports={r.get("sport") for r in shown if r.get("sport") in ESPN}
+    history_scores=score_index(sorted(history_sports)) if history_sports else {}
+    for r in shown:
+        _pick_card(r,paper_by_prediction.get(r["id"]),history_scores)
     if len(filtered)>limit:
         if st.button("Show 20 more saved picks",use_container_width=True):
             st.session_state["royal_history_limit"]=limit+20
@@ -790,6 +882,11 @@ def display_row(x, number=None):
         score_line=royal_score_line(game,locked.get("selection") if locked else None)
         if score_line: st.markdown(score_line)
         elif game and game.get("state")=="in": st.caption("Live scoreboard connected · score currently unavailable")
+        if sport=="Tennis" and game and game.get("state") in ("in","post"):
+            sets=game.get("sets") or {}
+            names=game.get("teams") or []
+            if len(names)==2 and (sets.get(names[0]) or sets.get(names[1])):
+                st.caption("🎾 Sets: "+" | ".join(f"{n}: {'–'.join(sets.get(n) or ['—'])}" for n in names))
         st.markdown(f'''<div class="royal-game">
           <div class="royal-game-head"><span class="sport-icon">{icon}</span>
           <span class="royal-match">{f'{number}. ' if number else ''}{title}</span>
@@ -968,7 +1065,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.3 · FEATURED LIVE RESULTS & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.4 · LIVE HISTORY SCOREBOARDS & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
@@ -986,7 +1083,7 @@ if st.button("👑 Refresh Queen", type="primary", use_container_width=True):
     api.clear()
     scores.clear()
     st.rerun()
-st.caption("Live games and markets refresh about every 2 minutes while the page is active; saved final results are checked about every 10 minutes. Updates pause when Streamlit sleeps. Tap Refresh Queen for a manual check.")
+st.caption("Live market scans refresh about every 2 minutes while the page is active; ESPN scores are cached for up to 60 seconds and saved finals are checked about every 10 minutes. Updates pause when Streamlit sleeps. Tap Refresh Queen for a manual check.")
 
 @st.fragment(run_every="600s")
 def royal_auto_results():
