@@ -6,7 +6,7 @@ from urllib.parse import quote
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V2.9.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V2.9.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc"}
@@ -50,7 +50,7 @@ def db():
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/2.9.4"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/2.9.5"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -130,29 +130,43 @@ def money_profit(price, stake):
 
 def display_row(x, number=None):
     q = x.get("quote")
+    heading = f"{number}. {x['title']}" if number else x['title']
     with st.container(border=True):
-        a,b,c = st.columns([4.6, 2.1, 1.5], vertical_alignment="center")
-        title = f"**{number}. {x['title']}**" if number else f"**{x['title']}**"
-        a.markdown(title)
-        a.caption(f"{x['sport']} · {x['selection']} · {x['market_type']} · {local(x['start'])}")
-        if x["live"]: a.caption("🔴 Game LIVE" + (f" · {x['score_detail']}" if x['score_detail'] else ""))
-        elif x["game_state"] == "pre": a.caption("📅 Game scheduled · market status is separate")
-        else: a.caption("Game status not independently matched")
-        if q and q["valid"]:
-            b.markdown(f"**Ask {q['ask']:.0%} · Bid {q['bid']:.0%}**")
-            b.caption("Indicative best offer / bid")
-            c.markdown("**WATCH**" if "OPEN" in q["state"].upper() else "**WAIT**")
-            c.caption("No validated edge model")
+        st.markdown(f"**{html.escape(heading)}**")
+        st.caption(f"{x['sport']} · {html.escape(x['selection'])} · {x['market_type']} · {local(x['start'])}")
+        if x['live']:
+            st.markdown("🔴 **LIVE GAME**" + (f" · {html.escape(x['score_detail'])}" if x['score_detail'] else ""))
+        elif x['game_state'] == 'pre':
+            st.caption("📅 Scheduled game")
         else:
-            b.markdown("**Price unavailable**")
-            b.caption(x.get("error") or "No valid two-sided quote")
-            c.markdown("**WAIT**")
-        with st.expander("Details / hypothetical payout", expanded=False):
-            st.write("Polymarket US market slug:", x["slug"])
-            st.write("Market status:", q["state"] if q else "Unknown")
-            if q and q["valid"]:
-                st.write(f"$100 theoretical gross profit if this exact outcome wins: **${money_profit(q['ask'], 100):,.2f}**. This ignores fees, slippage, liquidity and settlement-rule differences.")
-            st.caption("No recommendation or live trade is being made. Quotes may be delayed or change before an order could fill.")
+            st.caption("Game identity / status not confirmed")
+        if q and q['valid']:
+            st.markdown(f"**Buy YES: {q['ask']:.0%}** · Sell YES: {q['bid']:.0%} · **{'WATCH' if 'OPEN' in q['state'].upper() else 'WAIT'}**")
+        else:
+            st.markdown("**WAIT · Price unavailable**")
+        with st.expander("Why WATCH? · Price, payout & paper-test check"):
+            st.write("Outcome:", x['selection'])
+            st.write("Market:", x['slug'])
+            st.write("Market status:", q['state'] if q else "Unknown")
+            if q and q['valid']:
+                st.write(f"Illustrative $100 YES profit if this outcome wins: ${money_profit(q['ask'], 100):,.2f} before fees and slippage.")
+            st.write("Paper entry:", paper_reason(x))
+            st.caption("A price is not a prediction. Quotes are indicative and may change.")
+
+
+def paper_reason(x):
+    q = x.get('quote')
+    if not q or not q.get('valid'): return "SKIP — no valid two-sided quote"
+    if not x.get('verified_side'): return "SKIP — contract side is not verified as one team"
+    if x.get('market_type', '').lower() not in ('moneyline', 'money line'): return "SKIP — not a verified moneyline"
+    game = x.get('score_game')
+    if not game: return "SKIP — ESPN team/game match not confirmed"
+    if game['state'] != 'pre' or x['live']: return "SKIP — game is not pregame"
+    if clean(x['selection']) not in [clean(t) for t in game['teams']]: return "SKIP — selected team does not match scoreboard"
+    if 'OPEN' not in q['state'].upper(): return "SKIP — market not confirmed open"
+    if q['ask'] - q['bid'] > .03: return "SKIP — spread exceeds 3 cents"
+    if not (.25 <= q['ask'] <= .75): return "SKIP — price outside 25–75 cent testing range"
+    return "ELIGIBLE for experimental paper entry (not a value prediction)"
 
 def paper_update(items):
     """Conservative forward test: log only independently matched pregame team-moneyline YES.
@@ -235,18 +249,41 @@ def paper_panel():
 
 
 st.markdown("""<style>
-.block-container{padding-top:1rem;max-width:1300px}
-h1,h2,h3{color:#b37cf1!important}
-[data-testid="stMetric"]{background:rgba(127,71,166,.13);padding:.65rem;border-radius:12px}
-.stButton>button{border-radius:20px}
-@media(max-width:650px){.block-container{padding-left:.7rem;padding-right:.7rem}h1{font-size:1.7rem!important}h2{font-size:1.25rem!important}[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}[data-testid="column"]{min-width:45%!important;flex:1 1 45%!important}}
+.block-container{padding-top:.65rem;max-width:1060px;padding-left:1rem;padding-right:1rem}
+h1,h2,h3{color:#c49aff!important;letter-spacing:-.02em}
+h1{font-size:clamp(1.45rem,4vw,2.5rem)!important}
+h2{font-size:clamp(1.2rem,3vw,1.6rem)!important}
+[data-testid="stMetric"]{background:#211926;padding:.7rem;border-radius:18px;border:1px solid #362840}
+[data-testid="stMetricLabel"]{font-size:.8rem}
+[data-testid="stMetricValue"]{font-size:1.45rem}
+[data-testid="stVerticalBlockBorderWrapper"]{border-radius:18px!important}
+.stButton>button{border-radius:22px;min-height:2.8rem}
+[data-testid="stExpander"]{border-radius:15px}
+@media(max-width:650px){
+ .block-container{padding-left:.8rem;padding-right:.8rem}
+ [data-testid="stHorizontalBlock"]{gap:.45rem!important}
+ [data-testid="column"]{min-width:calc(50% - .5rem)!important;flex:1 1 calc(50% - .5rem)!important}
+ [data-testid="stMetric"]{padding:.55rem}
+ [data-testid="stMetricValue"]{font-size:1.25rem}
+ div[data-testid="stVerticalBlockBorderWrapper"]{padding:.2rem!important}
+}
 </style>""", unsafe_allow_html=True)
-for name in ("royal_banner.png", "banner.png", "sports_banner.png", "queens_banner.png"):
-    if Path(name).is_file():
-        st.image(name, use_container_width=True)
+
+# Accept common banner filenames, including images kept in an assets/ folder.
+banner = None
+for folder in (Path('.'), Path('assets'), Path('images')):
+    if not folder.is_dir(): continue
+    images = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in ('.png','.jpg','.jpeg','.webp')]
+    preferred = [p for p in images if any(k in p.stem.lower() for k in ('banner','royal','sniper','queen'))]
+    if preferred:
+        banner = sorted(preferred, key=lambda p: (not ('banner' in p.stem.lower()),p.name))[0]
         break
-else: st.title("👑 QUEEN’S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.9.4 · POLYMARKET US ONLY · EXPERIMENTAL AUTOMATIC PAPER TESTS · NO REAL ORDERS")
+if banner:
+    st.image(str(banner), use_container_width=True)
+else:
+    st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
+    st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
+st.caption("V2.9.5 · POLYMARKET US ONLY · PAPER TESTING · NO REAL ORDERS")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
@@ -312,7 +349,7 @@ for x in rows[:max_quotes]:
 observations(rows[:max_quotes])
 paper_update(rows[:max_quotes])
 
-st.subheader("📡 Polymarket US — Live & Open Sports Markets")
+st.subheader("📡 Market Feed")
 a,b,c,d = st.columns(4)
 a.metric("Events discovered", len(all_events))
 b.metric("Markets in view", len(rows))
@@ -324,9 +361,19 @@ if errors:
 if not rows: st.info("No matching markets for this sport and time window. Try Next 3 Days or another sport.")
 else:
     st.caption(f"Showing up to {min(len(rows), max_quotes)} priced/checked contracts. OPEN market ≠ LIVE game. No unsupported prices are invented.")
-    for x in rows[:max_quotes]: display_row(x)
+    with st.expander(f"📡 View all {min(len(rows), max_quotes)} scanned markets", expanded=False):
+        for x in rows[:max_quotes]: display_row(x)
 
 paper_panel()
+
+with st.expander("🔎 Why paper entries are skipped", expanded=False):
+    from collections import Counter
+    reasons = Counter(paper_reason(x) for x in rows[:max_quotes])
+    if not reasons:
+        st.write("No markets checked in this game window.")
+    for reason, count in reasons.most_common():
+        st.write(f"{count} contracts · {reason}")
+    st.caption("The app may skip eligible entries when a paper entry already exists for the same event. This section is for debugging, not betting advice.")
 
 st.subheader("👑 Queen's Top 10 — Watchlist")
 watch = [x for x in rows[:max_quotes] if x.get("quote") and x["quote"]["valid"] and "OPEN" in x["quote"]["state"].upper()]
