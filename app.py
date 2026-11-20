@@ -1,4 +1,4 @@
-import os, re, sqlite3, hashlib
+import os, re, sqlite3, hashlib, html
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -6,7 +6,7 @@ from urllib.parse import quote
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V2.9.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V2.9.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc"}
@@ -38,13 +38,19 @@ def db():
       id TEXT PRIMARY KEY, event_id TEXT, sport TEXT, title TEXT, market_slug TEXT,
       selection TEXT, bid REAL, ask REAL, market_state TEXT, game_live INTEGER,
       observed_at TEXT, status TEXT DEFAULT 'OBSERVED')""")
+    c.execute("""CREATE TABLE IF NOT EXISTS royal_paper_v294 (
+      id TEXT PRIMARY KEY, event_id TEXT, sport TEXT, title TEXT, slug TEXT,
+      selection TEXT, entry_ask REAL, stake REAL, entry_at TEXT,
+      last_bid REAL, last_seen TEXT, game_state TEXT,
+      status TEXT DEFAULT 'OPEN', settled_at TEXT, pnl REAL,
+      note TEXT)""")
     c.commit()
     return c
 
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
     try:
-        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/2.9.3"}, timeout=12)
+        r = requests.get(BASE + path, params=params, headers={"Accept":"application/json", "User-Agent":"RoyalSportsSniper254/2.9.4"}, timeout=12)
         r.raise_for_status()
         return r.json(), None
     except requests.HTTPError as e:
@@ -75,7 +81,7 @@ def score_index(sports):
                 if len(names) < 2: continue
                 status = e.get("status", {}).get("type", {})
                 record = {"state":status.get("state", "unknown"), "detail":status.get("shortDetail", ""), "date":e.get("date"), "teams":names,
-                          "scores": {t.get("team", {}).get("displayName", ""):t.get("score") for t in teams}}
+                          "scores": {t.get("team", {}).get("displayName", ""):t.get("score") for t in teams}, "winner": next((t.get("team", {}).get("displayName", "") for t in teams if t.get("winner") is True), None)}
                 result[(sport, frozenset(clean(n) for n in names))] = record
     return result
 
@@ -148,18 +154,99 @@ def display_row(x, number=None):
                 st.write(f"$100 theoretical gross profit if this exact outcome wins: **${money_profit(q['ask'], 100):,.2f}**. This ignores fees, slippage, liquidity and settlement-rule differences.")
             st.caption("No recommendation or live trade is being made. Quotes may be delayed or change before an order could fill.")
 
+def paper_update(items):
+    """Conservative forward test: log only independently matched pregame team-moneyline YES.
+    Prices are indicative. An entry is an experiment, not a recommendation.
+    ESPN winner is used ONLY for matched completed games; otherwise stays OPEN.
+    """
+    now = utc().isoformat()
+    with db() as c:
+        for x in items:
+            q = x.get("quote")
+            if not q or not q.get("valid"):
+                continue
+            ident = hashlib.sha256((x["event_id"] + "|" + x["slug"]).encode()).hexdigest()[:32]
+            existing = c.execute("SELECT * FROM royal_paper_v294 WHERE id=?", (ident,)).fetchone()
+            game = x.get("score_game")
+            if existing:
+                if existing["status"] == "OPEN":
+                    c.execute("UPDATE royal_paper_v294 SET last_bid=?, last_seen=?, game_state=? WHERE id=?",
+                              (q["bid"], now, game["state"] if game else "unknown", ident))
+                    if game and game["state"] == "post" and game.get("winner"):
+                        winner = clean(game["winner"])
+                        selection = clean(existing["selection"])
+                        # Exact team identity only; never grade a draw, a non-team market, or uncertain mapping.
+                        teams = [clean(n) for n in game["teams"]]
+                        if selection in teams and winner in teams:
+                            won = selection == winner
+                            pnl = (existing["stake"] * (1 / existing["entry_ask"] - 1)) if won else -existing["stake"]
+                            c.execute("UPDATE royal_paper_v294 SET status=?, settled_at=?, pnl=?, note=? WHERE id=?",
+                                      ("WIN" if won else "LOSS", now, round(pnl,2), "ESPN final winner; verify official market settlement", ident))
+                continue
+            # One candidate per event; never silently create opposing positions.
+            if c.execute("SELECT 1 FROM royal_paper_v294 WHERE event_id=?", (x["event_id"],)).fetchone():
+                continue
+            if not (x.get("verified_side") and x.get("market_type", "").lower() in ("moneyline", "money line")):
+                continue
+            if not game or game["state"] != "pre" or x["live"]:
+                continue
+            if clean(x["selection"]) not in [clean(t) for t in game["teams"]]:
+                continue
+            if "OPEN" not in q["state"].upper() or q["ask"] - q["bid"] > .03:
+                continue
+            # Avoid extremely cheap longshots and near-certain contracts; paper test a repeatable price band.
+            if not (.25 <= q["ask"] <= .75):
+                continue
+            c.execute("""INSERT OR IGNORE INTO royal_paper_v294
+              (id,event_id,sport,title,slug,selection,entry_ask,stake,entry_at,last_bid,last_seen,game_state,note)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (ident,x["event_id"],x["sport"],x["title"],x["slug"],x["selection"],q["ask"],100.0,now,q["bid"],now,"pre","Experimental price/liquidity filter; not a validated edge"))
+        c.commit()
+
+
+def paper_panel():
+    with db() as c:
+        records = c.execute("SELECT * FROM royal_paper_v294 ORDER BY entry_at DESC LIMIT 100").fetchall()
+        totals = c.execute("SELECT COUNT(*), SUM(status='WIN'), SUM(status='LOSS'), COALESCE(SUM(pnl),0) FROM royal_paper_v294").fetchone()
+    st.subheader("🧪 Queen's Automatic $100 Paper Tests")
+    a,b,c,d = st.columns(4)
+    a.metric("Paper entries", totals[0]); b.metric("Wins", totals[1] or 0)
+    c.metric("Losses", totals[2] or 0); d.metric("Settled paper P&L", f"${totals[3]:,.2f}")
+    st.caption("Each qualifying pregame YES contract is simulated at its observed ask; no orders are placed. Open P&L uses indicative bid, not a guaranteed cash-out. Game results are provisional until official market settlement is checked. Fees/slippage excluded.")
+    if not records:
+        st.info("No qualifying paper entries yet. Select Today or Next 3 Days and scan. Queen will not force a test when the side, game, or quote cannot be verified.")
+    for r in records[:12]:
+        with st.container(border=True):
+            a,b = st.columns([3,1])
+            a.markdown(f"**{r['selection']} — {r['title']}**")
+            a.caption(f"{r['sport']} · Entry {r['entry_ask']:.0%} · {local(r['entry_at'])} · $100 simulated YES")
+            b.markdown(f"**{r['status']}**")
+            if r['status'] == 'OPEN' and r['last_bid'] is not None:
+                value = 100 * r['last_bid'] / r['entry_ask']
+                b.caption(f"Indicative exit P&L ${value-100:+,.2f}")
+            elif r['pnl'] is not None:
+                b.caption(f"Paper result ${r['pnl']:+,.2f}")
+            with st.expander("Contract and test details"):
+                st.write("Contract:", r['slug'])
+                st.write("Observed entry ask:", f"{r['entry_ask']:.4f}")
+                st.write("Latest bid:", f"{r['last_bid']:.4f}" if r['last_bid'] is not None else "unavailable")
+                st.write("Last checked:", local(r['last_seen']))
+                st.caption(r['note'] or "Experimental observation")
+
+
 st.markdown("""<style>
 .block-container{padding-top:1rem;max-width:1300px}
 h1,h2,h3{color:#b37cf1!important}
 [data-testid="stMetric"]{background:rgba(127,71,166,.13);padding:.65rem;border-radius:12px}
 .stButton>button{border-radius:20px}
+@media(max-width:650px){.block-container{padding-left:.7rem;padding-right:.7rem}h1{font-size:1.7rem!important}h2{font-size:1.25rem!important}[data-testid="stHorizontalBlock"]{flex-wrap:wrap!important}[data-testid="column"]{min-width:45%!important;flex:1 1 45%!important}}
 </style>""", unsafe_allow_html=True)
 for name in ("royal_banner.png", "banner.png", "sports_banner.png", "queens_banner.png"):
     if Path(name).is_file():
         st.image(name, use_container_width=True)
         break
 else: st.title("👑 QUEEN’S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.9.3 · POLYMARKET US ONLY · READ-ONLY MARKET WATCH · PAPER OBSERVATIONS")
+st.caption("V2.9.4 · POLYMARKET US ONLY · EXPERIMENTAL AUTOMATIC PAPER TESTS · NO REAL ORDERS")
 
 sport = st.radio("🏆 Choose Your Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Choose Game Window", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
@@ -167,7 +254,7 @@ with st.expander("⚙️ Scan settings & important notes"):
     max_leagues = st.slider("Maximum leagues in All Sports", 1, len(LEAGUES), 6)
     max_quotes = st.slider("Maximum contracts to price per scan", 5, 100, 35, step=5)
     st.caption("The public Polymarket US API is used without an account key. Quotes are cached for two minutes. Game scores come from ESPN and may lag.")
-    st.caption("This version does not calculate verified betting edge or automatically wager. Existing historical picks in your old database are preserved, not added to the new watch statistics.")
+    st.caption("Paper entries are simulated at the observed ask; the experimental entry filter is NOT a validated prediction or positive-edge strategy. Existing history is preserved separately.")
 
 if st.button("👑 Scan Polymarket US", type="primary", use_container_width=True):
     st.session_state["royal_scan"] = True
@@ -212,10 +299,10 @@ for s, e in all_events:
             selection = (sides[0].get("team") or {}).get("name") or sides[0].get("description") or selection
         market_type = str(m.get("sportsMarketTypeV2") or m.get("sportsMarketType") or "Market").replace("SPORTS_MARKET_TYPE_", "").replace("_", " ").title()
         rows.append({"event_id":str(e.get("id")), "sport":s, "title":str(e.get("title") or "Sports event"),
-                     "slug":str(slug), "selection":str(selection), "market_type":market_type,
+                     "slug":str(slug), "selection":str(selection), "market_type":market_type, "verified_side":len(sides)==1 and isinstance(sides[0],dict) and bool((sides[0].get("team") or {}).get("name")),
                      "start":e.get("eventDate") or e.get("startTime") or e.get("startDate"),
                      "live":is_live, "game_state":game["state"] if game else "unknown",
-                     "score_detail":game["detail"] if game else "", "quote":None, "error":None})
+                     "score_detail":game["detail"] if game else "", "score_game":game, "quote":None, "error":None})
 
 # Prefer games already underway, then the earliest scheduled. Bound API calls.
 rows.sort(key=lambda x:(not x["live"], parse_date(x["start"]) or datetime.max.replace(tzinfo=timezone.utc)))
@@ -223,6 +310,7 @@ for x in rows[:max_quotes]:
     x["quote"], x["error"] = bbo(x["slug"])
     if x["quote"] and x["quote"]["valid"]: quoted += 1
 observations(rows[:max_quotes])
+paper_update(rows[:max_quotes])
 
 st.subheader("📡 Polymarket US — Live & Open Sports Markets")
 a,b,c,d = st.columns(4)
@@ -237,6 +325,8 @@ if not rows: st.info("No matching markets for this sport and time window. Try Ne
 else:
     st.caption(f"Showing up to {min(len(rows), max_quotes)} priced/checked contracts. OPEN market ≠ LIVE game. No unsupported prices are invented.")
     for x in rows[:max_quotes]: display_row(x)
+
+paper_panel()
 
 st.subheader("👑 Queen's Top 10 — Watchlist")
 watch = [x for x in rows[:max_quotes] if x.get("quote") and x["quote"]["valid"] and "OPEN" in x["quote"]["state"].upper()]
@@ -269,4 +359,4 @@ with st.expander("📊 Royal Paper Observation History", expanded=False):
     st.caption(f"{total} distinct contract observations. These are NOT wagers, wins, or losses. First seen quote is locked per contract.")
     for r in history:
         st.write(f"{r['sport']} · {r['selection']} · bid {r['bid']:.0%} / ask {r['ask']:.0%} · {local(r['observed_at'])} · {r['market_state']}")
-st.caption("No real orders. Local SQLite on Streamlit Community Cloud can be lost on restart/redeploy; persistent storage is required for dependable long-term tracking.")
+st.caption("No real orders. Paper records are experimental and do not establish profitability. Local SQLite on Streamlit Community Cloud can be lost on restart/redeploy; persistent storage is required for dependable long-term tracking.")
