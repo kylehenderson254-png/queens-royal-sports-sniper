@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.9 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -966,13 +966,7 @@ def display_row(x, number=None):
             status_text, status_color = "⏳ PENDING · GAME NOT FINAL", "#a16207"
         else:
             status_text, status_color = "👀 WATCH · NO LOCKED FORECAST", "#64748b"
-        st.markdown(
-            '<div style="background:'+status_color+'20;border:1px solid '+status_color+
-            ';border-radius:10px;padding:9px 12px;margin-bottom:7px;'
-            'font-size:1.06rem;font-weight:800;color:inherit;">'+status_text+'</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(f"**{royal_game_clock(game, x.get('start'))}**")
+        st.caption(status_text+" · "+royal_game_clock(game, x.get("start")))
         score_line=royal_score_line(game,locked.get("selection") if locked else None)
         if score_line: st.markdown(score_line)
         elif game and game.get("state")=="in": st.caption("Live scoreboard connected · score currently unavailable")
@@ -988,7 +982,7 @@ def display_row(x, number=None):
           <div class="royal-game-bottom"><div class="royal-game-text">
           <div class="royal-meta">{html.escape(sport)} · {state} · {html.escape(str(x.get('market_type','Market')))}</div>
           <div class="royal-selection">{main}</div><div class="royal-price">{secondary}</div></div>
-          <span class="royal-watch">{action}</span></div></div>''', unsafe_allow_html=True)
+          </div></div>''', unsafe_allow_html=True)
         with st.expander("Why this status? · Contract details"):
             st.write("Game:", x.get("score_detail") or local(x.get("start")))
             st.write("Verified YES outcome:", x["selection"] if verified else "Not established by contract metadata")
@@ -1159,7 +1153,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.7.1 · ROYAL FOCUS: NBA • NFL • NHL · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.9 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # The primary dashboard shows ONLY the post-switch Royal Focus cohort.
 _focus_picks, _focus_papers, _focus_parlays, _all_saved = royal_focus_stats()
@@ -1306,7 +1300,7 @@ def royal_auto_scan():
 
 
     st.subheader("👑 Queen’s Top 10 Picks")
-    st.caption("NBA · NFL · NHL · NCAAF | Up to ten research picks. Not verified betting edges.")
+    st.caption("NBA · NFL · NHL · NCAAF | Up to ten independent record-based candidates, with cross-sport representation when available.")
     watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
 
     def evidence_rank(x):
@@ -1318,14 +1312,35 @@ def royal_auto_scan():
         return (-tier, -int(bool(x.get("score_game"))), -int(verified and valid), parse_date(x.get("start")) or datetime.max.replace(tzinfo=timezone.utc))
 
     watch.sort(key=evidence_rank)
-    featured, seen_events = [], set()
+    eligible=[]
+    used=set()
     for x in watch:
-        if x["event_id"] in seen_events: continue
-        locked = st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"), {})
-        if locked.get("model") != "Season-record baseline": continue
-        featured.append(x)
-        seen_events.add(x["event_id"])
-        if len(featured) >= 10: break
+        if x["event_id"] in used: continue
+        locked=st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{})
+        if locked.get("model")!="Season-record baseline": continue
+        eligible.append(x);used.add(x["event_id"])
+    featured=[]; selected_events=set()
+    # Reserve up to two positions per sport only where evidence exists.
+    for sport in ACTIVE_SPORTS:
+        for x in [r for r in eligible if r["sport"]==sport][:2]:
+            if len(featured)<10:
+                featured.append(x);selected_events.add(x["event_id"])
+    for x in eligible:
+        if len(featured)>=10:break
+        if x["event_id"] not in selected_events:
+            featured.append(x);selected_events.add(x["event_id"])
+
+    # Show which leagues supplied eligible games, so missing sports are explainable.
+    league_counts={league:{"events":len({x["event_id"] for x in rows if x["sport"]==league}),
+                           "record":len({x["event_id"] for x in watch if x["sport"]==league and
+                             st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{}).get("model")=="Season-record baseline"}),
+                           "quoted":sum(1 for x in checked if x["sport"]==league and x.get("quote") and x["quote"].get("valid"))}
+                   for league in ACTIVE_SPORTS}
+    with st.expander("🔎 Sports coverage · why a league may be missing",expanded=False):
+        for league,counts in league_counts.items():
+            st.caption(f"{league}: {counts['events']} events in window · {counts['record']} independent record-baseline games · {counts['quoted']} valid market quotes")
+        if errors: st.caption("Feed errors: "+" | ".join(errors))
+        st.caption("No qualifying games means WATCH, not an invented selection. Season records are uncalibrated.")
 
     if featured:
         for offset in range(0,len(featured),2):
@@ -1373,7 +1388,7 @@ def royal_auto_scan():
         used_across=set()
         with db() as c:
             for n in (2,3,5,10):
-                pid=hashlib.sha256(("royal-parlay-v48|"+session_key+"|"+str(n)).encode()).hexdigest()[:32]
+                pid=hashlib.sha256(("royal-parlay-v49|"+session_key+"|"+str(n)).encode()).hexdigest()[:32]
                 if c.execute("SELECT 1 FROM royal_parlays_v37 WHERE id=?",(pid,)).fetchone():
                     continue
                 # Prefer new games in each ticket, then allow limited overlap if necessary.
@@ -1384,7 +1399,7 @@ def royal_auto_scan():
                 before=c.total_changes
                 c.execute("INSERT OR IGNORE INTO royal_parlays_v37 (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)",
                     (pid,session_key,n,utc().isoformat(),
-                     "V4.8 diversified research-only combination; no verified parlay price or betting edge."))
+                     "V4.9 diversified research-only combination; no verified parlay price or betting edge."))
                 if c.total_changes==before: continue
                 for i,r in enumerate(chosen,1):
                     c.execute("""INSERT OR IGNORE INTO royal_parlay_legs_v37
@@ -1425,7 +1440,7 @@ def royal_auto_scan():
 
     # Session is local calendar date + scan window + sport selector; a repeated scan
     # never changes the picks already locked for that session.
-    royal_session=f"{current.isoformat()}|{window}|ROYAL-FOCUS-NBA-NFL-NHL-NCAAF-V48"
+    royal_session=f"{current.isoformat()}|{window}|ROYAL-FOCUS-NBA-NFL-NHL-NCAAF-V49"
     royal_candidates=royal_parlay_candidates()
     royal_new=royal_lock_parlays(royal_candidates,royal_session)
     royal_grade_parlays()
