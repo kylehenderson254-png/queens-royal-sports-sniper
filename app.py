@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.8.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.9 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -395,6 +395,102 @@ def grade_predictions(items):
                     pnl=paper["stake"]*(1/paper["entry_ask"]-1) if result=="WIN" else -paper["stake"]
                     c.execute("UPDATE royal_paper_v34 SET status=?,pnl=?,graded_at=? WHERE id=?",(result,round(pnl,2),utc().isoformat(),paper["id"]))
         c.commit()
+
+def refresh_saved_results():
+    """Grade pending saved predictions even when their games are absent from today's market scan.
+
+    Match the exact two competitors and league; only accept completed ESPN games
+    occurring after the prediction was locked. Never infer exchange settlement.
+    """
+    with db() as c:
+        pending=[dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 WHERE result='PENDING'")]
+    if not pending:
+        return 0, 0, "No pending saved predictions"
+    today=utc().astimezone(CT).date()
+    sports=sorted({r['sport'] for r in pending if r['sport'] in ESPN})
+    # Restrict historical lookups to recent dates to bound network traffic.
+    # Older unmatched records stay pending rather than being guessed.
+    dates=[(today-timedelta(days=i)).strftime('%Y%m%d') for i in range(0,15)]
+    jobs=[(sp,day) for sp in sports for day in dates]
+    completed={sp:[] for sp in sports}
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        futures={pool.submit(scores,sp,day):sp for sp,day in jobs}
+        for future in as_completed(futures):
+            sp=futures[future]
+            try: events=future.result()
+            except Exception: continue
+            for e in events:
+                comp=(e.get('competitions') or [{}])[0]
+                teams=comp.get('competitors') or []
+                if len(teams)!=2: continue
+                status=e.get('status',{}).get('type',{})
+                if status.get('state')!='post' or not status.get('completed'): continue
+                names=[str(t.get('team',{}).get('displayName') or '') for t in teams]
+                winner=next((str(t.get('team',{}).get('displayName') or '') for t in teams if t.get('winner') is True),None)
+                game_date=parse_date(e.get('date'))
+                if winner and game_date:
+                    completed[sp].append((frozenset(clean(n) for n in names),clean(winner),game_date,str(e.get('id') or '')))
+    changed=0
+    with db() as c:
+        for r in pending:
+            target=frozenset((clean(r['selection']),clean(r['opponent'])))
+            if len(target)!=2 or not all(target): continue
+            locked_at=parse_date(r['created_at'])
+            if not locked_at: continue
+            matches={g[3]:g for g in completed.get(r['sport'],[]) if g[0]==target and g[2]>=locked_at-timedelta(hours=2)}
+            # More than one plausible finished match: do not grade ambiguously.
+            if len(matches)!=1: continue
+            game=next(iter(matches.values()))
+            result='WIN' if clean(r['selection'])==game[1] else 'LOSS'
+            before=c.total_changes
+            c.execute("UPDATE royal_predictions_v34 SET result=?,graded_at=?,grade_note=? WHERE id=? AND result='PENDING'",
+                      (result,utc().isoformat(),'Provisional ESPN completed game; exchange settlement NOT verified',r['id']))
+            if c.total_changes==before: continue
+            changed+=1
+            paper=c.execute("SELECT * FROM royal_paper_v34 WHERE prediction_id=? AND status='OPEN'",(r['id'],)).fetchone()
+            if paper and paper['entry_ask'] is not None and 0<float(paper['entry_ask'])<1:
+                pnl=float(paper['stake'])*(1/float(paper['entry_ask'])-1) if result=='WIN' else -float(paper['stake'])
+                c.execute("UPDATE royal_paper_v34 SET status=?,pnl=?,graded_at=?,note=? WHERE id=? AND status='OPEN'",
+                          (result,round(pnl,2),utc().isoformat(),'Provisional ESPN result; simulated entry, fees excluded; exchange settlement unverified',paper['id']))
+        # Grade saved parlay tickets from the original locked legs.
+        ids=[r['id'] for r in c.execute("SELECT id FROM royal_parlays_v37")]
+        parlay_changes=0
+        for pid in ids:
+            legs=[r[0] for r in c.execute("SELECT COALESCE(p.result,'PENDING') FROM royal_parlay_legs_v37 l LEFT JOIN royal_predictions_v34 p ON p.id=l.prediction_id WHERE l.parlay_id=? ORDER BY l.leg_number",(pid,))]
+            if not legs: continue
+            wins=legs.count('WIN'); losses=legs.count('LOSS')
+            state='LOSS' if losses else 'WIN' if wins==len(legs) else 'PENDING'
+            old=c.execute('SELECT status,wins,losses FROM royal_parlays_v37 WHERE id=?',(pid,)).fetchone()
+            if old and (old['status'],old['wins'],old['losses'])!=(state,wins,losses):
+                c.execute('UPDATE royal_parlays_v37 SET status=?,wins=?,losses=? WHERE id=?',(state,wins,losses,pid))
+                parlay_changes+=1
+        c.commit()
+    return changed,parlay_changes,'ESPN final results are provisional; exchange settlements have not been independently confirmed'
+
+
+def royal_results_dashboard():
+    with db() as c:
+        picks=c.execute("SELECT COUNT(*) n, SUM(result='WIN') w, SUM(result='LOSS') l, SUM(result='PENDING') pending FROM royal_predictions_v34").fetchone()
+        papers=c.execute("SELECT COUNT(*) n, SUM(status='WIN') w, SUM(status='LOSS') l, COALESCE(SUM(CASE WHEN status IN ('WIN','LOSS') THEN pnl ELSE 0 END),0) pnl FROM royal_paper_v34").fetchone()
+        parlays=[dict(r) for r in c.execute('SELECT leg_count,status,COUNT(*) n FROM royal_parlays_v37 GROUP BY leg_count,status ORDER BY leg_count,status')]
+        sport_rows=[dict(r) for r in c.execute("SELECT sport,COUNT(*) total,SUM(result='WIN') wins,SUM(result='LOSS') losses FROM royal_predictions_v34 GROUP BY sport ORDER BY total DESC")]
+    w,l=picks['w'] or 0,picks['l'] or 0
+    st.subheader('📊 Royal Results & Unit Scoreboard')
+    a,b,c,d=st.columns(4)
+    a.metric('Saved picks',picks['n'])
+    b.metric('Graded accuracy',f'{w/(w+l):.1%}' if w+l else '—')
+    c.metric('Pending picks',picks['pending'] or 0)
+    d.metric('Recorded paper P&L',f"${papers['pnl']:+,.2f}")
+    st.caption(f"Graded picks: {w} WIN / {l} LOSS. Original paper trades: {papers['n']} (${100} each where recorded). Net paper units: {papers['pnl']/BASE_UNIT:+.2f} U at $20/U. Experimental suggested units are NOT additional executed trades.")
+    st.caption('Results use ESPN finals, not confirmed exchange settlements. Paper P&L excludes fees, slippage and actual fills. No parlay payout is calculated without verified combo pricing.')
+    with st.expander('🏆 Accuracy by sport',expanded=False):
+        for r in sport_rows:
+            won,lost=r['wins'] or 0,r['losses'] or 0
+            st.write(f"{SPORT_ICON.get(r['sport'],'🏆')} {r['sport']}: {won} W / {lost} L · {won/(won+lost):.1%} graded accuracy" if won+lost else f"{SPORT_ICON.get(r['sport'],'🏆')} {r['sport']}: {r['total']} tracked · not graded yet")
+    with st.expander('🎯 Saved parlay result counts',expanded=False):
+        if not parlays: st.caption('No saved parlay tickets yet.')
+        for r in parlays: st.write(f"{r['leg_count']}-leg · {r['status']}: {r['n']}")
+
 
 def prediction_lookup():
     with db() as c:
@@ -817,7 +913,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.8.2 · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V3.9 · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
@@ -833,6 +929,14 @@ _q4.metric("Paper P&L",f"${_qt[1]:+,.2f}")
 with st.expander("👑 Unit Manager · Saved Picks",expanded=False):
     royal_unit_manager()
 st.caption("Saved history loads without scanning. Scan only to refresh market data.")
+if st.button("🔄 Refresh saved game & parlay results",use_container_width=True):
+    with st.spinner("Checking ESPN finals for saved predictions (last 14 days)..."):
+        _graded,_parlay_updates,_grade_note=refresh_saved_results()
+    st.success(f"Updated {_graded} saved picks and {_parlay_updates} parlay tickets. {_grade_note}")
+royal_results_dashboard()
+with st.expander("ℹ️ Why Queen sometimes shows 0 U · SKIP",expanded=False):
+    st.write("0 U means no recommended real-money allocation. It does NOT mean the prediction is a loss or the market is missing. Queen's season-record model is not calibrated, and market-favorite picks are not an independent advantage.")
+    st.write("The experimental 0.25–0.5 U sizes are retrospective shadow-paper sizing ideas, not additional recorded trades. Existing $100 paper entries remain unchanged.")
 
 sport = st.radio("🏆 Sport", ["All Sports"] + list(LEAGUES), horizontal=True)
 window = st.radio("📅 Games", ["🔴 Live", "📅 Today", "Tomorrow", "Next 3 Days"], horizontal=True, index=1)
