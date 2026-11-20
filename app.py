@@ -515,135 +515,173 @@ def top_five_diverse(candidates):
     return chosen
 
 
-# The replacement image has no white margins; Streamlit scales it to mobile width.
+
+# ======================================
+# V1.5 — PREGAME-FIRST ROYAL DASHBOARD
+# ======================================
+from zoneinfo import ZoneInfo
+from html import escape
+
+CENTRAL = ZoneInfo("America/Chicago")
+
+def local_start(value):
+    d = parse_date(value)
+    return d.astimezone(CENTRAL).strftime("%a %b %d · %-I:%M %p CT") if d else "Time unavailable"
+
+def pregame_board(odds):
+    now = datetime.now(timezone.utc)
+    rows = []
+    for event in odds:
+        start = parse_date(event.get("commence"))
+        if not start or not now <= start <= now + __import__("datetime").timedelta(days=2):
+            continue
+        probs = event.get("probabilities", {})
+        if len(probs) != 2:
+            continue
+        favored, probability = max(probs.items(), key=lambda x: x[1])
+        # A sportsbook consensus is a directional lean, NOT an independently
+        # validated model or a confirmed positive-EV trading opportunity.
+        rows.append({
+            "league": event["league"], "game": event["game"],
+            "team": favored, "prob": probability, "start": start,
+            "books": event.get("books", 0), "status": "LEAN YES",
+        })
+    rows.sort(key=lambda x: (x["start"], -x["prob"]))
+    return rows
+
+def bankroll_strip(account):
+    cells = [
+        ("START", f"${STARTING_BANKROLL:,.0f}"),
+        ("AVAILABLE", f"${account['cash']:,.2f}"),
+        ("OPEN", str(account["open"])),
+        ("REALIZED P/L", f"${account['realized']:+,.2f}"),
+    ]
+    html = '<div class="royal-strip">'
+    for label, value in cells:
+        html += f'<div><small>{escape(label)}</small><strong>{escape(value)}</strong></div>'
+    html += '</div>'
+    st.markdown(html, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+.royal-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;
+background:#211235;border:1px solid #70419a;border-radius:12px;padding:10px;margin:6px 0 16px}
+.royal-strip>div{text-align:center;min-width:0}
+.royal-strip small{display:block;font-size:.65rem;color:#c6b1d9;letter-spacing:.04em}
+.royal-strip strong{display:block;font-size:clamp(.78rem,1.7vw,1.08rem);color:#f5d47d;overflow-wrap:anywhere}
+.royal-pick{background:#24143c;border:1px solid #6b3b9b;border-radius:12px;padding:12px;margin:8px 0}
+.royal-pick b{color:#f5d47d}
+@media(max-width:600px){.royal-strip{gap:3px;padding:8px 3px}.royal-strip small{font-size:.55rem}.royal-strip strong{font-size:.73rem}}
+</style>
+""", unsafe_allow_html=True)
+
 banner = Path("royal_sports_banner.png")
 if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
-    st.markdown("# 👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("🏈 NFL · 🏀 NBA · 🎓 NCAAF · 🏀 NCAAB · More sports in research scanner")
-st.caption("V1.4 · Sportsbook benchmarks + improved research filtering · Paper BUY/CASH OUT paused pending validated edge and executable quotes")
-header, refresh = st.columns([3, 1])
-with header:
-    st.markdown("### 💜 Royal Sports Scanner")
-with refresh:
-    if st.button("🔄 Refresh", use_container_width=True):
-        scan.clear()
-        st.rerun()
-with st.spinner("Queen is scanning sports markets..."):
-    markets, errors, series_count = scan()
-for error in errors:
-    st.warning(error)
-for m in markets:
-    m["decision"], m["reason"], m["rank"] = evaluate(m)
-markets.sort(key=lambda m: (-m["rank"], -(m.get("volume") or 0)))
-a,b,c = st.columns(3)
-a.metric("🏟️ Markets", len(markets))
-b.metric("👑 Kalshi", sum(m["platform"] == "Kalshi" for m in markets))
-c.metric("💜 Polymarket", sum(m["platform"] == "Polymarket" for m in markets))
-st.caption(f"Partial discovery from up to 80 of {series_count} Kalshi sports series and sampled Polymarket global sports tags. Polymarket global is not necessarily Polymarket US. Prices may be stale or non-executable.")
+    st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
 
-st.markdown('<div class="royal-head">💜 ROYAL PAPER BANKROLL</div>', unsafe_allow_html=True)
+st.caption("V1.5 · Pregame-first · Kalshi + Polymarket discovery · PAPER ONLY")
+st.markdown("### 👑 Today's Royal Signals")
+st.caption("Directional sportsbook consensus before kickoff. LEAN is not a BUY or proof of value.")
+if st.button("🔄 Refresh markets and scores"):
+    scan.clear()
+    live_scoreboard.clear()
+    st.rerun()
+
+key = odds_api_key()
+odds, odds_errors = sportsbook_benchmarks(key) if key else ([], ["Odds API key not configured"])
+board = pregame_board(odds)
+
+if board:
+    st.markdown("#### 🏆 Today's Top 5 Pregame Leans")
+    for i, pick in enumerate(board[:5], 1):
+        with st.container(border=True):
+            st.markdown(f"**👑 {i}. {pick['game']}**")
+            st.markdown(f"🟣 **{pick['status']} — {pick['team']}**")
+            st.caption(f"{pick['league']} · {local_start(pick['start'].isoformat())} · Sportsbook consensus {pick['prob']:.1%} · {pick['books']} bookmaker observations")
+            st.caption("Market-derived directional favorite only. No independently verified edge, executable entry, or BUY qualification.")
+else:
+    st.info("⚪ WAIT — No upcoming, supported two-outcome sportsbook games available for a pregame lean. Queen will not invent picks.")
+
+st.markdown("#### 💚 Qualified BUY Signals")
+st.info("⚪ WAIT — BUY YES / BUY NO remain disabled until independent probabilities, exact contract matching, fees, order-book depth and freshness are verified.")
+
+st.markdown("#### 👑 Royal Paper Parlays")
+st.caption("2-, 3- and 5-leg combinations require that many independently qualified, distinct-game picks. These are simulated combinations, not executable platform parlays.")
+st.info("⚪ WAIT — No qualified legs yet. No paper parlays created.")
+
+st.markdown("#### 💜 Royal Paper Bankroll")
 try:
     with ledger_connection() as ledger:
         account = paper_summary(ledger)
-    p1,p2 = st.columns(2)
-    p3,p4 = st.columns(2)
-    p1.metric('Starting paper funds',f'${STARTING_BANKROLL:,.0f}')
-    p2.metric('Available paper cash',f"${account['cash']:,.2f}")
-    p3.metric('Open positions',account['open'])
-    p4.metric('Realized paper P/L',f"${account['realized']:+,.2f}")
+    bankroll_strip(account)
 except (sqlite3.Error, OSError) as e:
-    st.warning('Paper ledger unavailable: '+str(e)[:150])
+    st.warning("Paper ledger unavailable: " + str(e)[:120])
 
-st.markdown('<div class="royal-head">📡 QUEEN’S LIVE ACTIVITY</div>', unsafe_allow_html=True)
-st.info('SCANNING / RESEARCH MODE — No statistically verified signals yet. Auto paper BUY and CASH OUT are paused; no trades are being invented.')
-st.caption('Paper sizes: $100 strong · $75 moderate · $50 qualified. Top 5 is not a daily trade limit.')
-with st.expander('🏈🏀 LIVE SPORTS SCOREBOARD — CONTEXT ONLY', expanded=False):
-    st.caption('Public scoreboard snapshots; not synchronized with tradable quotes. Not a basis for live entries.')
-    tabs=st.tabs(['NFL','NBA','NCAAF','NCAAB'])
-    for league, tab in zip(['NFL','NBA','NCAAF','NCAAB'],tabs):
-        with tab:
-            try:
-                games=live_scoreboard(league)
-                if games: st.dataframe(games,use_container_width=True,hide_index=True)
-                else: st.caption('No games returned for this scoreboard.')
-            except (requests.RequestException,KeyError,ValueError) as e:
-                st.caption('Scoreboard unavailable: '+str(e)[:100])
+st.markdown("#### 🔴 Live Games & Queen Signals")
+st.caption("Live scores are contextual, not synchronized with tradable bids. HOLD and CASH OUT require verified open positions and quotes.")
+tabs = st.tabs(["NFL", "NBA", "NCAAF", "NCAAB"])
+for league, tab in zip(["NFL", "NBA", "NCAAF", "NCAAB"], tabs):
+    with tab:
+        try:
+            games = live_scoreboard(league)
+            if games:
+                st.dataframe(games, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No games returned.")
+        except (requests.RequestException, ValueError, KeyError) as e:
+            st.caption(f"Scoreboard unavailable: {str(e)[:90]}")
 
-st.markdown('<div class="royal-head">📈 SPORTSBOOK ODDS INTELLIGENCE</div>', unsafe_allow_html=True)
-key = odds_api_key()
-if key:
-    odds, odds_errors = sportsbook_benchmarks(key)
-    st.caption('Independent sportsbook moneyline benchmarks. Margin removed within each two-outcome book, then averaged. Not a calibrated prediction or BUY signal.')
-    st.caption(f'{len(odds)} upcoming games with sportsbook data across NFL, NBA, NCAAF and NCAAB.')
-    with st.expander('View sportsbook benchmarks', expanded=False):
-        if odds:
-            rows = []
-            for event in odds[:40]:
-                for team, prob in event['probabilities'].items():
-                    rows.append({'League':event['league'], 'Game':event['game'], 'Team':team,
-                                 'Market benchmark':f'{prob*100:.1f}%', 'Books':event['books'],
-                                 'Start (UTC)':event['commence']})
-            st.dataframe(rows, use_container_width=True, hide_index=True)
-        else:
-            st.info('No two-outcome sportsbook odds returned for supported leagues.')
-        for error in odds_errors:
-            st.caption('Provider: ' + error)
-else:
-    st.caption('Sportsbook comparison is ready but not connected. Optional ODDS_API_KEY in Streamlit Secrets enables supported moneyline benchmarks; no paid account is required just to run the dashboard.')
+with st.expander("📈 Sportsbook Odds Intelligence", expanded=False):
+    if odds:
+        st.dataframe([
+            {"League": o["league"], "Game": o["game"], "Team": team,
+             "Consensus": f"{p:.1%}", "Books": o["books"], "Start": local_start(o["commence"])}
+            for o in odds for team, p in o["probabilities"].items()
+        ], use_container_width=True, hide_index=True)
+    else:
+        st.caption("No sportsbook benchmark data.")
+    for err in odds_errors:
+        st.caption("Provider: " + err)
 
-st.markdown('<div class="royal-head">👑 TOP 5 TO INVESTIGATE</div>', unsafe_allow_html=True)
-st.caption("Upcoming, active markets prioritized by timing and activity. NOT predictions, guaranteed picks, or confirmed positive expected value.")
-candidates = [m for m in markets if m["decision"].startswith("🟡")]
-if candidates:
-    for i,m in enumerate(top_five_diverse(candidates),1): display_card(m,i)
-else:
-    st.info("No eligible research candidates in the sampled results. Refresh later; Queen will not manufacture picks.")
+with st.expander("🔎 Sports Market Scanner & Diagnostics", expanded=False):
+    with st.spinner("Scanning Kalshi and Polymarket sports markets..."):
+        markets, errors, series_count = scan()
+    for err in errors:
+        st.warning(err)
+    st.caption(f"{len(markets)} sampled markets · {sum(m['platform']=='Kalshi' for m in markets)} Kalshi · {sum(m['platform']=='Polymarket' for m in markets)} Polymarket")
+    st.caption("Polymarket global markets may differ from Polymarket US. Displayed prices can be stale or non-executable.")
+    search = st.text_input("Search markets", placeholder="Team, player, league...")
+    league = st.selectbox("Sport", ["All Sports"] + list(SPORTS) + ["Other Sports"])
+    platform = st.selectbox("Platform", ["Both", "Kalshi", "Polymarket"])
+    filtered = [m for m in markets if
+                (not search or search.casefold() in (m["title"] + " " + m["sport"]).casefold())
+                and (league == "All Sports" or m["sport"] == league)
+                and (platform == "Both" or m["platform"] == platform)]
+    for m in filtered[:8]:
+        display_card(m)
+    st.caption(f"Showing {min(8,len(filtered))} of {len(filtered)} matching sampled contracts.")
 
-st.markdown('<div class="royal-head">💚 QUALIFIED VALUE PICKS</div>', unsafe_allow_html=True)
-st.info("No verified value picks yet. Sportsbook benchmarks are not a validated independent prediction model; exact contract matching, executable order-book depth, and fees are not connected. No paper entries will be created from research rankings.")
-st.markdown('<div class="royal-head">🔴 LIVE GAME OPPORTUNITIES</div>', unsafe_allow_html=True)
-st.info("Scoreboard context is available above; synchronized in-play probabilities and executable quotes are not. Live BUY/CASH OUT signals remain paused.")
-
-with st.expander("🏆 EXPLORE MORE SPORTS MARKETS", expanded=False):
-    search = st.text_input("Search team, player, or market", placeholder="Lakers, touchdowns, NBA...")
-    a,b,c = st.columns(3)
-    with a: league = st.selectbox("Sport", ["All Sports"] + list(SPORTS) + ["Other Sports"])
-    with b: typ = st.selectbox("Market", ["All Types", "Moneyline / Other", "Player Props", "Totals", "Spreads", "Combos"])
-    with c: platform = st.selectbox("Platform", ["Both", "Kalshi", "Polymarket"])
-    filtered = [m for m in markets if (not search or search.lower() in (m["title"] + " " + m["sport"]).lower()) and (league == "All Sports" or m["sport"] == league) and (typ == "All Types" or m["type"] == typ) and (platform == "Both" or m["platform"] == platform)]
-    st.caption(f"{len(filtered)} matching · showing up to 8")
-    for m in filtered[:8]: display_card(m)
-    if not filtered: st.caption("No matching markets in this scan.")
-
-with st.expander("📊 ROYAL TRACKING CENTER — PAPER TRADES & HISTORY", expanded=False):
+with st.expander("📊 Royal Tracking Center — Paper Trades & History", expanded=False):
     try:
         with ledger_connection() as con:
-            positions=[dict(r) for r in con.execute("SELECT opened_at,platform,title,side,grade,contracts,entry_price,status,realized_pnl,closed_at FROM paper_trades ORDER BY opened_at DESC LIMIT 100").fetchall()]
-            activity=[dict(r) for r in con.execute("SELECT created_at,action,details FROM paper_activity ORDER BY event_id DESC LIMIT 100").fetchall()]
+            positions = [dict(r) for r in con.execute(
+                "SELECT opened_at,platform,title,side,grade,contracts,entry_price,status,realized_pnl,closed_at FROM paper_trades ORDER BY opened_at DESC LIMIT 100")]
+            activity = [dict(r) for r in con.execute(
+                "SELECT created_at,action,details FROM paper_activity ORDER BY event_id DESC LIMIT 100")]
         st.markdown("**Paper positions**")
-        if positions: st.dataframe(positions,use_container_width=True,hide_index=True)
-        else: st.caption("No paper positions. Queen will only enter on independently validated signals.")
-        st.markdown("**Activity log**")
-        if activity: st.dataframe(activity,use_container_width=True,hide_index=True)
-        else: st.caption("No automated trade events yet.")
-    except (sqlite3.Error,OSError) as e: st.warning("Paper ledger unavailable: "+str(e)[:120])
-    st.caption("Snapshots are discovered markets, not bets or predictions. Local storage is not durable on Streamlit Community Cloud.")
-    if "v12_logged" not in st.session_state: st.session_state.v12_logged = None
-    snapshot = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M") if markets else None
-    if snapshot and snapshot != st.session_state.v12_logged:
-        try:
-            log_snapshot(markets)
-            st.session_state.v12_logged = snapshot
-        except Exception as e: st.warning(f"History write unavailable: {e}")
-    try:
-        con = init_db()
-        total = con.execute("SELECT COUNT(*) FROM royal_v11").fetchone()[0]
-        st.metric("Market snapshots (V1.1 + V1.2)", total)
-        rows = con.execute("SELECT timestamp,platform,sport,market_type,title,ask,status FROM royal_v11 ORDER BY rowid DESC LIMIT 100").fetchall()
-        con.close()
-        if rows:
-            st.dataframe([{"UTC":r[0], "Platform":r[1], "Sport":r[2], "Type":r[3], "Market":r[4], "YES":cents(r[5]), "Status":r[6]} for r in rows], use_container_width=True, hide_index=True)
-    except Exception as e: st.warning(f"Tracking unavailable: {e}")
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.4 RESEARCH · Paper only · No real orders · Local SQLite is not durable on Community Cloud · 24/7 worker not yet deployed")
+        if positions:
+            st.dataframe(positions, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No verified paper entries yet.")
+        st.markdown("**Activity**")
+        if activity:
+            st.dataframe(activity, use_container_width=True, hide_index=True)
+        else:
+            st.caption("No activity yet.")
+    except (sqlite3.Error, OSError) as e:
+        st.warning("Tracking unavailable: " + str(e)[:120])
+    st.caption("SQLite on Streamlit Community Cloud is not durable. App reruns are not 24/7 background monitoring.")
+
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.5 · Paper only · No real orders")
