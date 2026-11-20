@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V3.8.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -449,6 +449,43 @@ def royal_unit_advice(p):
         return 0.0, "SKIP: market favorite is not an independent edge"
     return 0.0, "SKIP: insufficient verified evidence for a stake"
 
+def royal_profit_preview(ask, units):
+    """Gross hypothetical YES-contract settlement only; never claim a fill."""
+    p=numeric(ask)
+    if p is None or not (0 < p < 1):
+        return None
+    return BASE_UNIT * units * (1.0 / p - 1.0)
+
+def royal_paper_test_units(p):
+    """An experimental stake for measuring sizing, NOT a real-money recommendation."""
+    model=str(p.get("model") or "")
+    probability=numeric(p.get("model_probability"))
+    if model=="Season-record baseline" and probability is not None:
+        if probability >= .60: return .5, "EXPERIMENTAL · stronger season-record signal"
+        if probability >= .54: return .25, "EXPERIMENTAL · modest season-record signal"
+    return 0.0, "WATCH ONLY · insufficient independent evidence"
+
+def royal_under_dog_units(x):
+    """Only trial a paper unit when a named YES underdog agrees with a saved pick."""
+    q=x.get("quote") or {}
+    ask=numeric(q.get("ask"))
+    phase="LIVE" if x.get("live") else "PREGAME"
+    pred=st.session_state.get("royal_locked",{}).get((x["event_id"],x["slug"],phase))
+    if not pred or ask is None or not (0<ask<.5):
+        return 0.0,"WATCH ONLY"
+    if clean(pred.get("selection"))!=clean(x.get("selection")):
+        return 0.0,"WATCH ONLY · Queen's pick is a different side"
+    probability=numeric(pred.get("model_probability"))
+    if pred.get("model")!="Season-record baseline" or probability is None:
+        return 0.0,"WATCH ONLY · no independent estimate"
+    if probability-ask>=.15 and probability>=.50:
+        return .25,"EXPERIMENTAL · uncalibrated estimate exceeds quote"
+    return 0.0,"WATCH ONLY · no sufficient modeled margin"
+
+def royal_parlay_units(legs):
+    """No positive staking recommendation without a verifiable combined quote."""
+    return 0.0,"PAYOUT UNAVAILABLE · no verified combined price"
+
 def royal_unit_manager():
     with db() as c:
         picks=[dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 ORDER BY created_at DESC")]
@@ -457,15 +494,15 @@ def royal_unit_manager():
     st.caption("Base unit $20. Queen decides units per play; no manual adjustment needed.")
     a,b,c=st.columns(3)
     a.metric("Picks evaluated",len(picks))
-    b.metric("Suggested exposure","0 U")
+    b.metric("Paper-test units",f"{sum(royal_paper_test_units(p)[0] for p in picks):.2f} U")
     c.metric("1 unit","$20")
-    st.caption("No model has demonstrated a calibrated betting edge yet, so Queen recommends 0 U for existing baseline picks. This is a risk decision, not a prediction that the picks will lose.")
+    st.caption("These are retrospective, experimental paper-test sizes, not recommended real-money wagers. No model has demonstrated a validated edge.")
     if papers:
         pnl=sum(float(p.get("pnl") or 0) for p in papers)
         st.caption(f"Existing paper trades: {len(papers)} · Recorded P&L ${pnl:+,.2f} ({pnl/BASE_UNIT:+.2f} U). Original $100 stakes are preserved, not retroactively changed.")
     with st.expander("Review existing picks and Queen's units",expanded=False):
         for p in picks[:20]:
-            units,why=royal_unit_advice(p)
+            units,why=royal_paper_test_units(p)
             st.markdown(f"**{p.get('selection','Unknown')}** · {units:g} U · ${units*BASE_UNIT:.2f}")
             st.caption(f"{p.get('sport','Sports')} · {p.get('title','')} · {why}")
         if len(picks)>20: st.caption(f"Showing 20 of {len(picks)}; all included in totals.")
@@ -770,7 +807,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.8 · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V3.8.1 · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
@@ -1044,6 +1081,26 @@ royal_new=royal_lock_parlays(royal_candidates,royal_session)
 royal_grade_parlays()
 royal_tickets,royal_legs=royal_parlay_history()
 
+st.subheader("🔥 Queen's Underdog Sniper")
+dogs=[x for x in watch if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"]<.5]
+if dogs:
+    for x in sorted(dogs,key=lambda a:a["quote"]["ask"])[:5]:
+        ask=x["quote"]["ask"]
+        u,reason=royal_under_dog_units(x)
+        profit=royal_profit_preview(ask,u)
+        per_unit=royal_profit_preview(ask,1.0)
+        with st.container(border=True):
+            st.markdown(f"**{SPORT_ICON.get(x['sport'],'🏆')} {html.escape(str(x['selection']))}** · {ask*100:.1f}¢ YES")
+            st.markdown(f"**Paper units: {u:g} U · ${u*BASE_UNIT:.2f}** · {reason}")
+            if u>0 and profit is not None:
+                st.caption(f"If YES wins: +${profit:,.2f} gross · If wrong: -${u*BASE_UNIT:,.2f} · Per 1 U gross: +${per_unit:,.2f}")
+            else:
+                st.caption(f"Per 1 U ($20) hypothetical gross win profit: +${per_unit:,.2f} · Actual allocation $0")
+            st.caption("Illustrative quote-based payout before fees; only valid if this verified YES contract pays on the named outcome. No real order.")
+else:
+    st.caption("No verified lower-priced YES contracts in this scan.")
+st.caption("Low prices are not proof of value. Experimental allocations are for paper evaluation, not betting advice.")
+
 st.subheader("🎯 Queen’s Royal Parlays")
 with st.container():
     st.markdown("**👑 Automatic Royal Parlay Builder**")
@@ -1059,6 +1116,9 @@ with st.container():
         status=ticket["status"]
         st.markdown(f"**{'🟢 WON' if status=='WIN' else '🔴 LOST' if status=='LOSS' else '🟡 PENDING'} · {selected_legs}-leg {'Royal Lotto' if selected_legs==10 else 'Royal Parlay'}**")
         st.caption(f"🔒 Locked {local(ticket['created_at'])} · {ticket['wins']} won · {ticket['losses']} lost · {len(tlegs)-ticket['wins']-ticket['losses']} pending")
+        pu,preason=royal_parlay_units(tlegs)
+        st.markdown(f"**👑 Parlay risk: {pu:g} U · ${pu*BASE_UNIT:.2f} | Potential profit: unavailable**")
+        st.caption(preason + " · A parlay's payout cannot be calculated from its legs' separate YES prices.")
         with st.expander(f"View {len(tlegs)} locked legs",expanded=False):
             for leg in tlegs:
                 icon=SPORT_ICON.get(leg["sport"],"🏆")
@@ -1081,12 +1141,6 @@ with st.container():
         st.download_button("⬇️ Parlay tickets CSV",_csv_bytes(pr),"royal_parlays_v37_backup.csv","text/csv",disabled=not pr,use_container_width=True)
         st.download_button("⬇️ Parlay legs CSV",_csv_bytes(pl),"royal_parlay_legs_v37_backup.csv","text/csv",disabled=not pl,use_container_width=True)
         st.caption("Download both files for safekeeping. Parlay records also use the host's nonpersistent local SQLite database. Existing prediction/paper backups remain in the All locked picks section.")
-    with st.expander("🔥 Underdog Watch",expanded=False):
-        dogs=[x for x in watch if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"]<.5]
-        if dogs:
-            for x in dogs[:4]: st.caption(f"{x['selection']} · {x['sport']} · {x['quote']['ask']:.0%} YES ask · WATCH ONLY")
-        else: st.caption("No lower-priced outcomes with verified quotes.")
-        st.caption("Low price does not establish value.")
 
 with st.expander("📊 Royal Paper Observation History", expanded=False):
     with db() as c:
