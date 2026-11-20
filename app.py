@@ -40,7 +40,7 @@ div.stButton>button{background:linear-gradient(110deg,#7426bd,#aa48eb);color:whi
 
 
 def get_json(url, params=None):
-    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.6.1"}, timeout=15)
+    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.7"}, timeout=15)
     response.raise_for_status()
     return response.json(), response.headers
 
@@ -308,6 +308,36 @@ def polymarket_scan():
     return found, errors
 
 
+@st.cache_data(ttl=240, show_spinner=False)
+def kalshi_event_details(event_ticker):
+    """Look up event metadata only for a plausible candidate, not every scanned market."""
+    if not event_ticker:
+        return {}
+    try:
+        payload, _ = get_json(f"{KALSHI}/events/{quote(str(event_ticker), safe='')}")
+        return payload.get("event") or {}
+    except (requests.RequestException, ValueError, TypeError):
+        return {}
+
+
+def team_side(event, m):
+    """Outcome detection uses an explicit YES label; never infer YES from NO pricing."""
+    label = str(m.get("yes_sub_title") or m.get("outcome") or "")
+    home, away = event["home"], event["away"]
+    a, b = _team_in_text(home, label), _team_in_text(away, label)
+    return (home if a else away) if a != b else None
+
+
+def research_gap(event, market):
+    """A price-versus-consensus comparison, NOT a verified statistical edge."""
+    selection = market.get("verified_yes_team")
+    benchmark = next((p for t, p in event.get("probs", {}).items() if team_match(t, selection)), None)
+    ask = market.get("yes") if market.get("platform") == "Kalshi" else None
+    if benchmark is None or ask is None:
+        return None
+    return {"benchmark": benchmark, "ask": ask, "gap": benchmark - ask}
+
+
 @st.cache_data(ttl=180, show_spinner=False)
 def markets_scan():
     results, errors, count = [], [], 0
@@ -405,6 +435,8 @@ def match_contract(event, contracts):
         item["verified_yes_team"] = home if yes_home else away
         item["match_status"] = "League, matchup, event date and YES outcome matched; settlement rules unverified"
         verified.append(item)
+    # A market may use a short team name, with the full matchup in its event metadata.
+    # Keep the strict original verification as the only automatic verified pathway.
     # Never silently choose among duplicate contracts for the same YES outcome.
     by_team = {}
     for m in verified:
@@ -583,7 +615,7 @@ if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.6.1 · ESPN-first Top 5 · Kalshi + Polymarket research · PAPER ONLY")
+st.caption("V2.7 · ESPN-first Top 5 · Kalshi + Polymarket research · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Top 5")
 st.caption("Team lean and contract decision are separate. LIVE games remain visible even when markets are unavailable.")
 
@@ -665,6 +697,11 @@ for event in odds:
     rows.append({"event": event, "game": None, "state": "pre",
                  "markets": match_contract(event, contracts), "rank": 20 + min(10, event["books"])})
 rows.sort(key=lambda x: (-x["rank"], x["event"]["start"]))
+verified_games = sum(bool(r["markets"]) for r in rows)
+verified_k = sum(any(m["platform"] == "Kalshi" for m in r["markets"]) for r in rows)
+verified_p = sum(any(m["platform"] == "Polymarket" for m in r["markets"]) for r in rows)
+st.caption(f"👑 Contract matching: {verified_games} of {len(rows)} upcoming/live games with a strictly matched sampled contract "
+           f"· K {verified_k} · P {verified_p}. A missing match means unverified, not necessarily unlisted.")
 
 if not rows:
     st.info("⏳ WAIT — No upcoming or live games returned from ESPN or the available sportsbook feed. Queen won't manufacture picks.")
@@ -700,13 +737,20 @@ else:
                 st.caption("Sportsbook consensus unavailable for this matchup; game and scores sourced from ESPN.")
             if row["markets"]:
                 for m in row["markets"]:
-                    st.markdown(f"**{escape(m['platform'])}** · {escape(m['title'])}")
+                    tag = "🟣 K" if m["platform"] == "Kalshi" else "🔵 P"
+                    st.markdown(f"**{tag} · {escape(m['verified_yes_team'])}** · {escape(m['title'])}")
                     price_tiles(m)
+                    gap = research_gap(e, m)
+                    if gap:
+                        direction = "below" if gap["gap"] > 0 else "above"
+                        st.caption(f"Research comparison: {gap['ask']:.1%} Kalshi YES ask vs "
+                                   f"{gap['benchmark']:.1%} pregame sportsbook benchmark "
+                                   f"({abs(gap['gap']):.1%} {direction}). NOT an independently validated edge.")
                     st.caption(m["quote_kind"] + " · YES outcome: " + m["verified_yes_team"] + ". " + m["match_status"])
                     if m["url"]:
                         st.link_button("View market", m["url"], key=f"top_{index}_{m['platform']}_{m['id']}")
             else:
-                st.caption("K / P: No safely verified matching contract found in the bounded scans. Prices unavailable.")
+                st.caption("⚪ K / P UNVERIFIED — No exact league + game + date + outcome match in the sampled markets. This does not prove the contract is unavailable.")
             favored, confidence, call, reason = queen_call(row)
             if favored:
                 st.markdown(f"**👑 Queen favors: {escape(favored)}** · sportsbook benchmark {confidence:.1%}")
@@ -724,7 +768,9 @@ except (sqlite3.Error, OSError) as exc:
     st.warning("Paper ledger unavailable: " + str(exc)[:120])
 
 st.markdown("#### 📡 Queen's Live Activity")
-st.info("K + P RESEARCH — Queen identifies the favored team and can flag WATCH on an indicative price gap. BUY remains disabled without validated fees, liquidity, settlement and independent edge.")
+st.info("K + P RESEARCH — Queen checks league, teams, event date and YES outcome before linking a contract. "
+        "A sportsbook favorite alone is NOT a platform pick. BUY stays disabled until contract rules, fees, "
+        "liquidity and an independent probability estimate are verified.")
 
 st.markdown("#### 👑 Royal Paper Parlays")
 st.caption("Research simulation only. These are NOT verified BUY signals, actual sportsbook odds, or executable Kalshi parlays.")
@@ -734,7 +780,16 @@ stake = st.radio("Choose paper stake ($)", [5, 10, 20], index=1,
                  horizontal=True, key="royal_stake")
 st.caption("👑 Queen automatically selects teams; no manual picking required.")
 # Use the full eligible pregame slate, not just the five featured games.
-parlay_rows = [{"event": o, "state": "pre"} for o in odds if o["start"] > now]
+parlay_rows = []
+for o in odds:
+    if not (now + timedelta(minutes=5) < o["start"] <= now + timedelta(days=2)):
+        continue
+    g = matching_game(o, games_by_league.get(o["league"], []))
+    if not g or g.get("state") != "pre":
+        continue
+    if not g.get("start") or abs((g["start"] - o["start"]).total_seconds()) > 5400:
+        continue
+    parlay_rows.append({"event": o, "state": "pre"})
 candidates = paper_parlay_candidates(parlay_rows, now)
 selected = []
 used = set()
@@ -750,6 +805,8 @@ selected = [x for x in selected if x["p"] >= 0.60 and x["event"]["books"] >= 4]
 if len(selected) >= 2:
     selected = selected[:min(leg_count, 3)]
     st.caption(f"👑 Queen recommends {len(selected)} research legs (requested maximum {leg_count}); fewer legs limit compounded uncertainty.")
+    st.caption("⚪ These are sportsbook-consensus research selections, not confirmed K/P parlay legs. "
+               "The app cannot claim they can be combined on either platform.")
 if len(selected) < 2:
     st.info(f"⏳ Only {len(selected)} sufficiently supported research legs found. Queen recommends WAIT rather than forcing a parlay.")
 else:
@@ -777,6 +834,7 @@ else:
     st.caption(f"Illustrative independent-leg estimate: {combined_probability:.1%} all win · "
                f"fair-price proxy {example_odds:.2f}x · illustrative gross return ${stake*example_odds:.2f}. "
                "Not a real parlay quote; correlated legs can invalidate the probability estimate.")
+    st.caption("⚪ Platform: NOT VERIFIED · No executable multi-leg quote. Do not treat the illustrative return as a payout offer.")
     st.caption("Queen's Reason: Automatically selected from the strongest available pregame sportsbook consensus favorites "
                "in the selected leagues, not independently verified value opportunities.")
     if st.button("📝 Enter hypothetical $%s paper parlay" % stake, key="paper_parlay_enter"):
@@ -842,8 +900,15 @@ def research_market_type(m):
     return "Moneyline / other"
 
 with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
+    st.markdown("**👑 Contract matching status**")
+    st.caption(f"Upcoming/live games checked: {len(rows)} · Exact matches: {verified_games} · "
+               f"Kalshi games: {verified_k} · Polymarket games: {verified_p}")
+    if not verified_games:
+        st.info("No contracts passed the strict league, matchup, date and YES-outcome checks. "
+                "This can result from limited API pagination or missing event metadata, not necessarily absent markets.")
     st.caption(f"Scanned {sum(m['platform']=='Kalshi' for m in contracts)} Kalshi markets from {series_count} series and {sum(m['platform']=='Polymarket' for m in contracts)} Polymarket outcome references. Bounded, not exhaustive.")
-    st.caption("Kalshi asks and Polymarket indicative outcome prices are different quote types; neither guarantees a fill.")
+    st.caption("Kalshi asks and Polymarket Gamma indicative outcome prices are different quote types; neither guarantees a fill. "
+               "Gamma discovery may not represent Polymarket US availability.")
     st.caption("Research categories include player props, spreads and totals when found in the sampled markets. "
                "Text classification is not contract verification; no prop model or mixed-parlay pricing is active.")
     market_type = st.radio("Market research type",
@@ -905,4 +970,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(exc)[:120])
     st.caption("Streamlit Community Cloud local SQLite storage is not durable; page refreshes are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.6.1 · PAPER ONLY · NO REAL ORDERS")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.7 · PAPER ONLY · NO REAL ORDERS")
