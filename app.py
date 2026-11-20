@@ -3,6 +3,7 @@ import re
 import sqlite3
 import hashlib
 import os
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
@@ -16,7 +17,7 @@ POLY = "https://gamma-api.polymarket.com"
 DB = Path(os.environ.get("ROYAL_DB_PATH", "royal_sports_history.db"))
 STARTING_BANKROLL = 10000.0
 PAPER_SIZES = {"STRONG": 100.0, "MODERATE": 75.0, "QUALIFIED": 50.0}
-SPORTS = {"NFL": ["nfl", "football", "touchdown", "passing yards", "rushing yards"], "NBA": ["nba", "basketball", "rebounds", "assists", "wnba"], "MLB": ["mlb", "baseball", "strikeouts"], "NHL": ["nhl", "hockey", "shots on goal"], "Soccer": ["soccer", "premier league", "champions league", "epl", "mls", "uefa", "fifa"], "Tennis": ["tennis", "atp", "wta", "wimbledon"], "MMA": ["ufc", "mma", "boxing"], "Golf": ["golf", "pga"], "College": ["ncaa", "ncaaf", "ncaab", "college football", "college basketball"]}
+SPORTS = {"NFL": ["nfl", "football", "touchdown", "passing yards", "rushing yards"], "NBA": ["nba", "basketball", "rebounds", "assists", "wnba"], "MLB": ["mlb", "baseball", "strikeouts"], "NHL": ["nhl", "hockey", "shots on goal"], "Soccer": ["soccer", "premier league", "champions league", "epl", "mls", "uefa", "fifa"], "Tennis": ["tennis", "atp", "wta", "wimbledon"], "MMA": ["ufc", "mma", "boxing"], "Golf": ["golf", "pga"], "NCAAF": ["ncaaf", "college football"], "NCAAB": ["ncaab", "college basketball", "march madness"], "College": ["ncaa"]}
 BLOCKED = ("president", "election", "secretary general", "elon musk", "political", "prime minister", "congress", "senate", "cabinet", "pope", "nato")
 
 st.markdown('''<style>
@@ -100,7 +101,7 @@ def kalshi_markets():
         return (league, game, t)
     series.sort(key=priority)
     results = []
-    for s in series[:40]:
+    for s in series[:80]:
         ticker = s.get("ticker")
         if not ticker:
             continue
@@ -250,6 +251,10 @@ def evaluate(m):
     hours = (close - now).total_seconds() / 3600 if close else None
     if hours is not None and hours <= 0:
         return "🔴 EXPIRED / CHECK", "Closing time has passed; confirm market status.", -999
+    if hours is None:
+        return "⚪ DATE NEEDED", "Contract close time unavailable; not eligible for Top 5.", -500
+    if hours > 24 * 21:
+        return "⚪ LONG DATED", "Outside the 21-day research window.", -200
     yes, no = m.get("price"), m.get("no_price")
     prices = [("YES", yes), ("NO", no)]
     available = [(side, price) for side, price in prices if price is not None]
@@ -424,6 +429,92 @@ def live_scoreboard(league):
     return games
 
 
+# ================================
+# V1.4: SPORTSBOOK MARKET BENCHMARKS
+# ================================
+# The Odds API is optional and requires a user-provided key.
+# Data coverage, permitted use and quotas depend on the provider's terms.
+ODDS_SPORTS = {
+    "NFL": "americanfootball_nfl", "NBA": "basketball_nba",
+    "NCAAF": "americanfootball_ncaaf", "NCAAB": "basketball_ncaab",
+}
+
+
+def odds_api_key():
+    try:
+        return st.secrets.get("ODDS_API_KEY", "") or os.getenv("ODDS_API_KEY", "")
+    except (FileNotFoundError, KeyError):
+        return os.getenv("ODDS_API_KEY", "")
+
+
+def american_implied(odd):
+    try:
+        v = float(odd)
+        if v == 0:
+            return None
+        return 100 / (v + 100) if v > 0 else (-v) / ((-v) + 100)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def sportsbook_benchmarks(key):
+    # Fetch h2h only: spreads, totals and props require separate outcome matching.
+    results, errors = [], []
+    for league, code in ODDS_SPORTS.items():
+        try:
+            events = get_json("https://api.the-odds-api.com/v4/sports/" + code + "/odds/", {
+                "apiKey": key, "regions": "us", "markets": "h2h", "oddsFormat": "american"
+            })
+            if not isinstance(events, list):
+                errors.append(f"{league}: unexpected odds response")
+                continue
+            for e in events:
+                if not isinstance(e, dict):
+                    continue
+                # Only two-outcome events can be de-vigged with this method.
+                by_team = {}
+                for book in e.get("bookmakers", []):
+                    for market in book.get("markets", []):
+                        if market.get("key") != "h2h":
+                            continue
+                        vals = {o.get("name"): american_implied(o.get("price")) for o in market.get("outcomes", [])}
+                        home, away = e.get("home_team"), e.get("away_team")
+                        if home not in vals or away not in vals or len(vals) != 2:
+                            continue
+                        if vals[home] is None or vals[away] is None:
+                            continue
+                        total = vals[home] + vals[away]
+                        if total <= 0:
+                            continue
+                        for team in (home, away):
+                            by_team.setdefault(team, []).append(vals[team] / total)
+                if by_team:
+                    results.append({
+                        "league": league, "game": f"{e.get('away_team','?')} @ {e.get('home_team','?')}",
+                        "commence": e.get("commence_time", ""),
+                        "probabilities": {team: round(sum(vals)/len(vals), 4) for team, vals in by_team.items()},
+                        "books": min(len(v) for v in by_team.values()),
+                    })
+        except requests.RequestException as exc:
+            errors.append(f"{league}: {str(exc)[:80]}")
+    return results, errors
+
+
+def top_five_diverse(candidates):
+    # Display diversity only; never manufactures an edge or changes trade eligibility.
+    chosen, seen, remaining = [], set(), list(candidates)
+    while remaining and len(chosen) < 5:
+        best_index = max(range(len(remaining)), key=lambda i: (
+            remaining[i]["rank"] - (18 if remaining[i]["sport"] in seen else 0)
+            - (9 if remaining[i]["type"] in {x["type"] for x in chosen} else 0),
+            remaining[i].get("volume") or 0))
+        picked = remaining.pop(best_index)
+        chosen.append(picked)
+        seen.add(picked["sport"])
+    return chosen
+
+
 # The replacement image has no white margins; Streamlit scales it to mobile width.
 banner = Path("royal_sports_banner.png")
 if banner.exists():
@@ -431,7 +522,7 @@ if banner.exists():
 else:
     st.markdown("# 👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
 st.caption("🏈 NFL · 🏀 NBA · 🎓 NCAAF · 🏀 NCAAB · More sports in research scanner")
-st.caption("V1.3 FOUNDATION · Market research + live score context · Automatic paper entries safely paused until verified model and executable quotes")
+st.caption("V1.4 · Sportsbook benchmarks + improved research filtering · Paper BUY/CASH OUT paused pending validated edge and executable quotes")
 header, refresh = st.columns([3, 1])
 with header:
     st.markdown("### 💜 Royal Sports Scanner")
@@ -450,13 +541,14 @@ a,b,c = st.columns(3)
 a.metric("🏟️ Markets", len(markets))
 b.metric("👑 Kalshi", sum(m["platform"] == "Kalshi" for m in markets))
 c.metric("💜 Polymarket", sum(m["platform"] == "Polymarket" for m in markets))
-st.caption(f"Partial discovery from up to 40 of {series_count} Kalshi sports series and sampled Polymarket global sports tags. Polymarket global is not necessarily Polymarket US. Prices may be stale or non-executable.")
+st.caption(f"Partial discovery from up to 80 of {series_count} Kalshi sports series and sampled Polymarket global sports tags. Polymarket global is not necessarily Polymarket US. Prices may be stale or non-executable.")
 
 st.markdown('<div class="royal-head">💜 ROYAL PAPER BANKROLL</div>', unsafe_allow_html=True)
 try:
     with ledger_connection() as ledger:
         account = paper_summary(ledger)
-    p1,p2,p3,p4 = st.columns(4)
+    p1,p2 = st.columns(2)
+    p3,p4 = st.columns(2)
     p1.metric('Starting paper funds',f'${STARTING_BANKROLL:,.0f}')
     p2.metric('Available paper cash',f"${account['cash']:,.2f}")
     p3.metric('Open positions',account['open'])
@@ -479,16 +571,38 @@ with st.expander('🏈🏀 LIVE SPORTS SCOREBOARD — CONTEXT ONLY', expanded=Fa
             except (requests.RequestException,KeyError,ValueError) as e:
                 st.caption('Scoreboard unavailable: '+str(e)[:100])
 
+st.markdown('<div class="royal-head">📈 SPORTSBOOK ODDS INTELLIGENCE</div>', unsafe_allow_html=True)
+key = odds_api_key()
+if key:
+    odds, odds_errors = sportsbook_benchmarks(key)
+    st.caption('Independent sportsbook moneyline benchmarks. Margin removed within each two-outcome book, then averaged. Not a calibrated prediction or BUY signal.')
+    st.caption(f'{len(odds)} upcoming games with sportsbook data across NFL, NBA, NCAAF and NCAAB.')
+    with st.expander('View sportsbook benchmarks', expanded=False):
+        if odds:
+            rows = []
+            for event in odds[:40]:
+                for team, prob in event['probabilities'].items():
+                    rows.append({'League':event['league'], 'Game':event['game'], 'Team':team,
+                                 'Market benchmark':f'{prob*100:.1f}%', 'Books':event['books'],
+                                 'Start (UTC)':event['commence']})
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        else:
+            st.info('No two-outcome sportsbook odds returned for supported leagues.')
+        for error in odds_errors:
+            st.caption('Provider: ' + error)
+else:
+    st.caption('Sportsbook comparison is ready but not connected. Optional ODDS_API_KEY in Streamlit Secrets enables supported moneyline benchmarks; no paid account is required just to run the dashboard.')
+
 st.markdown('<div class="royal-head">👑 TOP 5 TO INVESTIGATE</div>', unsafe_allow_html=True)
 st.caption("Upcoming, active markets prioritized by timing and activity. NOT predictions, guaranteed picks, or confirmed positive expected value.")
 candidates = [m for m in markets if m["decision"].startswith("🟡")]
 if candidates:
-    for i,m in enumerate(candidates[:5],1): display_card(m,i)
+    for i,m in enumerate(top_five_diverse(candidates),1): display_card(m,i)
 else:
     st.info("No eligible research candidates in the sampled results. Refresh later; Queen will not manufacture picks.")
 
 st.markdown('<div class="royal-head">💚 QUALIFIED VALUE PICKS</div>', unsafe_allow_html=True)
-st.info("No verified value picks yet. Independent probabilities, sportsbook comparisons, order-book depth, and fees are not connected. No paper entries will be created from research rankings.")
+st.info("No verified value picks yet. Sportsbook benchmarks are not a validated independent prediction model; exact contract matching, executable order-book depth, and fees are not connected. No paper entries will be created from research rankings.")
 st.markdown('<div class="royal-head">🔴 LIVE GAME OPPORTUNITIES</div>', unsafe_allow_html=True)
 st.info("Scoreboard context is available above; synchronized in-play probabilities and executable quotes are not. Live BUY/CASH OUT signals remain paused.")
 
@@ -532,4 +646,4 @@ with st.expander("📊 ROYAL TRACKING CENTER — PAPER TRADES & HISTORY", expand
         if rows:
             st.dataframe([{"UTC":r[0], "Platform":r[1], "Sport":r[2], "Type":r[3], "Market":r[4], "YES":cents(r[5]), "Status":r[6]} for r in rows], use_container_width=True, hide_index=True)
     except Exception as e: st.warning(f"Tracking unavailable: {e}")
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.3 FOUNDATION · Paper only · No real orders · Local SQLite is not durable on Community Cloud · 24/7 worker not yet deployed")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V1.4 RESEARCH · Paper only · No real orders · Local SQLite is not durable on Community Cloud · 24/7 worker not yet deployed")
