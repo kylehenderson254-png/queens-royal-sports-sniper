@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.7.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -480,7 +480,7 @@ def lock_predictions(items):
                 (pid,x["event_id"],x["slug"],x["sport"],x["title"],pred["selection"],pred["opponent"],phase,pred["model"],pred["prob"],pred["confidence"],pred["evidence"],ask,now))
             # $100 paper entry only when Queen's chosen side IS the verified YES contract.
             # No pretending a NO-side prediction has an executable quoted YES ask.
-            if ask is not None and q["ask"]-q["bid"]<=.03 and "OPEN" in q["state"].upper() and .05<=ask<=.95:
+            if pred["model"]=="Season-record baseline" and ask is not None and q["ask"]-q["bid"]<=.03 and "OPEN" in q["state"].upper() and .05<=ask<=.95:
                 paperid=hashlib.sha256(("paper|"+pid).encode()).hexdigest()[:32]
                 c.execute("""INSERT OR IGNORE INTO royal_paper_v34
                    (id,prediction_id,event_id,slug,sport,selection,stake,entry_ask,entry_at,last_bid,note)
@@ -584,13 +584,13 @@ def refresh_saved_results():
 # Royal Focus started with the V4.7 deployment on Nov 20, 2026 at 9:07 AM CT.
 # This immutable cutoff excludes earlier experiments, even in the same leagues.
 ROYAL_FOCUS_SINCE_UTC = "2026-11-20T15:07:00+00:00"
-ROYAL_FOCUS_SPORTS = ("NBA", "NFL", "NHL")
+ROYAL_FOCUS_SPORTS = ("NBA", "NFL", "NHL", "NCAAF")
 
 
 def royal_focus_stats():
     """Read-only split: never alter historical grades, trades, or tickets."""
     with db() as c:
-        where = "sport IN (?,?,?) AND created_at >= ?"
+        where = "sport IN (?,?,?,?) AND created_at >= ?"
         args = (*ROYAL_FOCUS_SPORTS, ROYAL_FOCUS_SINCE_UTC)
         picks = c.execute(f"""SELECT COUNT(*) n,
             COALESCE(SUM(result='WIN'),0) w,
@@ -600,10 +600,10 @@ def royal_focus_stats():
         paper = c.execute("""SELECT COUNT(*) n,
             COALESCE(SUM(CASE WHEN t.status IN ('WIN','LOSS') THEN t.pnl ELSE 0 END),0) pnl
             FROM royal_paper_v34 t JOIN royal_predictions_v34 p ON p.id=t.prediction_id
-            WHERE p.sport IN (?,?,?) AND p.created_at >= ?""", args).fetchone()
+            WHERE p.sport IN (?,?,?,?) AND p.created_at >= ?""", args).fetchone()
         parlays = c.execute("""SELECT COUNT(*) n FROM royal_parlays_v37
             WHERE created_at >= ? AND session_key LIKE ?""",
-            (ROYAL_FOCUS_SINCE_UTC, "%ROYAL-FOCUS-NBA-NFL-NHL%" )).fetchone()
+            (ROYAL_FOCUS_SINCE_UTC, "%ROYAL-FOCUS-NBA-NFL-NHL-NCAAF%" )).fetchone()
         all_picks = c.execute("SELECT COUNT(*) FROM royal_predictions_v34").fetchone()[0]
     return dict(picks), dict(paper), parlays['n'], all_picks
 
@@ -617,7 +617,7 @@ def royal_results_dashboard():
     b.metric('Focus accuracy',f'{w/(w+l):.1%}' if w+l else '—')
     c.metric('Focus pending',focus['pending'])
     d.metric('Focus paper P&L',f"${papers['pnl']:+,.2f}")
-    st.caption(f"NBA · NFL · NHL | Since Nov 20, 2026 at 9:07 AM CT · {w} wins / {l} losses · {papers['n']} paper trades · {focus_parlays} new parlays")
+    st.caption(f"NBA · NFL · NHL · NCAAF | Since Nov 20, 2026 at 9:07 AM CT · {w} wins / {l} losses · {papers['n']} paper trades · {focus_parlays} new parlays")
     if not w+l:
         st.caption('No graded Royal Focus picks yet. Accuracy will appear after verified final results.')
     st.caption('Paper results are provisional until exchange settlement; no actual orders placed.')
@@ -938,7 +938,7 @@ def display_row(x, number=None):
         main = "No verified quote"
         secondary = "Price unavailable"
     if locked:
-        action = "PENDING" if locked["result"]=="PENDING" else locked["result"]
+        action = ("WATCH" if locked.get("model")=="Market-favorite baseline" and locked["result"]=="PENDING" else "PENDING" if locked["result"]=="PENDING" else locked["result"])
         main = f"👑 FORECAST: {html.escape(locked['selection'])} to WIN"
         secondary = f"{html.escape(locked['confidence'])} · {secondary}"
         units,unit_reason=royal_paper_test_units(locked)
@@ -1203,8 +1203,8 @@ with st.expander("📚 Historical archive, units & backups", expanded=False):
 
 # Automatic discovery covers live games and the next three calendar days.
 # One stable daily session prevents duplicate parlays from changing filters.
-max_quotes = 60
-ACTIVE_SPORTS = ("NBA", "NFL", "NHL")
+max_quotes = 120
+ACTIVE_SPORTS = ("NBA", "NFL", "NHL", "NCAAF")
 window = "Next 3 Days"
 
 @st.fragment(run_every="120s")
@@ -1305,8 +1305,8 @@ def royal_auto_scan():
 
 
 
-    st.subheader("👑 Queen’s Featured Picks")
-    st.caption("NBA · NFL · NHL | Up to five paper-test picks. Not verified betting edges.")
+    st.subheader("👑 Queen’s Top 10 Picks")
+    st.caption("NBA · NFL · NHL · NCAAF | Up to ten research picks. Not verified betting edges.")
     watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
 
     def evidence_rank(x):
@@ -1322,10 +1322,10 @@ def royal_auto_scan():
     for x in watch:
         if x["event_id"] in seen_events: continue
         locked = st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"), {})
-        if locked.get("model") == "Uninformed baseline": continue
+        if locked.get("model") != "Season-record baseline": continue
         featured.append(x)
         seen_events.add(x["event_id"])
-        if len(featured) >= 5: break
+        if len(featured) >= 10: break
 
     if featured:
         for offset in range(0,len(featured),2):
@@ -1334,7 +1334,7 @@ def royal_auto_scan():
             if offset+1<len(featured):
                 with col2: display_row(featured[offset+1],offset+2)
     else:
-        st.info("No evidence-backed featured picks found in this scan. Queen says WAIT rather than guess.")
+        st.info("No season-record-based candidates found in this scan. Queen says WAIT rather than copy market favorites.")
 
     with st.expander("ℹ️ How Queen ranks picks", expanded=False):
         st.caption("Season-record estimates are uncalibrated. Market-favorite selections repeat market sentiment and are not independent forecasts.")
@@ -1348,36 +1348,50 @@ def royal_auto_scan():
     # V3.7: Separate, automatically locked prediction combinations. They are NOT
     # exchange parlay contracts, verified quotes, simulated fills, or priced trades.
     def royal_parlay_candidates():
-        candidates = []
-        seen = set()
-        for x in sorted(watch, key=evidence_rank):
-            phase = "LIVE" if x.get("live") else "PREGAME"
-            r = st.session_state["royal_locked"].get((x["event_id"], x["slug"], phase))
-            if not r or r.get("result") != "PENDING" or r.get("model") == "Uninformed baseline":
+        pool=[]
+        used=set()
+        for x in sorted(watch,key=evidence_rank):
+            phase="LIVE" if x.get("live") else "PREGAME"
+            r=st.session_state["royal_locked"].get((x["event_id"],x["slug"],phase))
+            if not r or r.get("result")!="PENDING" or r.get("model")!="Season-record baseline":
                 continue
-            # One side of one game per parlay. Do not put contradictory or repeated
-            # markets for the same event into the same ticket.
-            if x["event_id"] in seen: continue
-            seen.add(x["event_id"])
-            candidates.append(dict(r))
-        return candidates
+            if x["event_id"] in used: continue
+            used.add(x["event_id"])
+            pool.append(dict(r))
+        # Interleave sports: basketball cannot monopolize all parlay options.
+        by_sport={sport:[] for sport in ACTIVE_SPORTS}
+        for r in pool: by_sport[r["sport"]].append(r)
+        ordered=[]
+        while any(by_sport.values()):
+            for sport in ACTIVE_SPORTS:
+                if by_sport[sport]: ordered.append(by_sport[sport].pop(0))
+        return ordered
 
-    def royal_lock_parlays(candidates, session_key):
-        """Create each available size once per session; no reroll on rescans."""
-        created = []
+    def royal_lock_parlays(candidates,session_key):
+        """Lock distinct combinations, preserving previous tickets and their legs."""
+        created=[]
+        used_across=set()
         with db() as c:
             for n in (2,3,5,10):
-                if len(candidates) < n: continue
-                pid = hashlib.sha256(("royal-parlay-v37|"+session_key+"|"+str(n)).encode()).hexdigest()[:32]
-                before = c.total_changes
+                pid=hashlib.sha256(("royal-parlay-v48|"+session_key+"|"+str(n)).encode()).hexdigest()[:32]
+                if c.execute("SELECT 1 FROM royal_parlays_v37 WHERE id=?",(pid,)).fetchone():
+                    continue
+                # Prefer new games in each ticket, then allow limited overlap if necessary.
+                fresh=[r for r in candidates if r["event_id"] not in used_across]
+                repeat=[r for r in candidates if r["event_id"] in used_across]
+                chosen=(fresh+repeat)[:n]
+                if len(chosen)<n: continue
+                before=c.total_changes
                 c.execute("INSERT OR IGNORE INTO royal_parlays_v37 (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)",
-                          (pid,session_key,n,utc().isoformat(),"Automatic paper-only prediction combo. No executable parlay price, payout or edge verified."))
-                if c.total_changes == before: continue
-                for i,r in enumerate(candidates[:n],1):
+                    (pid,session_key,n,utc().isoformat(),
+                     "V4.8 diversified research-only combination; no verified parlay price or betting edge."))
+                if c.total_changes==before: continue
+                for i,r in enumerate(chosen,1):
                     c.execute("""INSERT OR IGNORE INTO royal_parlay_legs_v37
-                       (parlay_id,leg_number,prediction_id,event_id,sport,title,selection,model)
-                       VALUES (?,?,?,?,?,?,?,?)""",
-                       (pid,i,r["id"],r["event_id"],r["sport"],r["title"],r["selection"],r["model"]))
+                        (parlay_id,leg_number,prediction_id,event_id,sport,title,selection,model)
+                        VALUES (?,?,?,?,?,?,?,?)""",
+                        (pid,i,r["id"],r["event_id"],r["sport"],r["title"],r["selection"],r["model"]))
+                used_across.update(r["event_id"] for r in chosen)
                 created.append(n)
             c.commit()
         return created
@@ -1411,16 +1425,27 @@ def royal_auto_scan():
 
     # Session is local calendar date + scan window + sport selector; a repeated scan
     # never changes the picks already locked for that session.
-    royal_session=f"{current.isoformat()}|{window}|ROYAL-FOCUS-NBA-NFL-NHL"
+    royal_session=f"{current.isoformat()}|{window}|ROYAL-FOCUS-NBA-NFL-NHL-NCAAF-V48"
     royal_candidates=royal_parlay_candidates()
     royal_new=royal_lock_parlays(royal_candidates,royal_session)
     royal_grade_parlays()
     royal_tickets,royal_legs=royal_parlay_history()
 
     st.subheader("🔥 Queen's Underdog Sniper")
-    dogs=[x for x in watch if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"]<.5]
+    dogs=[x for x in checked if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"]<.5]
+    dogs=sorted(dogs,key=lambda x:(x["sport"],x["quote"]["ask"]))
+    # Select across leagues first, then fill remaining slots.
+    dog_choices=[]; used_events=set()
+    for sport in ACTIVE_SPORTS:
+        for x in dogs:
+            if x["sport"]==sport and x["event_id"] not in used_events:
+                dog_choices.append(x);used_events.add(x["event_id"]);break
+    for x in dogs:
+        if len(dog_choices)>=5:break
+        if x["event_id"] not in used_events:
+            dog_choices.append(x);used_events.add(x["event_id"])
     if dogs:
-        for x in sorted(dogs,key=lambda a:a["quote"]["ask"])[:5]:
+        for x in dog_choices[:5]:
             ask=x["quote"]["ask"]
             recommended,reason=royal_under_dog_units(x)
             # Separate deliberately small shadow experiments from Queen's own pick.
@@ -1446,13 +1471,13 @@ def royal_auto_scan():
                     st.caption(f"Per 1 U ($20) hypothetical gross win profit: +${per_unit:,.2f} · Actual allocation $0")
                 st.caption("Hypothetical quote-based payout before fees. No fill, wager, or guaranteed value. Shadow tests are NOT Queen's picks.")
     else:
-        st.caption("No verified lower-priced YES contracts in this scan.")
+        st.caption("No verified underdog quotes available right now. Queen will not invent candidates.")
     st.caption("Underdog prices alone do not establish value. Paper testing only.")
 
     st.subheader("🎯 Queen’s Royal Parlays")
     with st.container():
         st.markdown("**👑 Automatic Royal Parlay Builder**")
-        st.caption("Queen automatically locks the best available tracked predictions once per scan session. Choose a bubble to view your ticket. No manual picking required.")
+        st.caption("Queen searches beyond the Featured Top 10 and spreads tickets across sports when qualifying games exist. These are uncalibrated research combinations, not verified value bets.")
         selected_legs=st.radio("Choose your parlay",[2,3,5,10],horizontal=True,
                                format_func=lambda n:{2:"👑 2 Legs",3:"👑 3 Legs",5:"👑 5 Legs",10:"🎰 10 Lotto"}[n],
                                key="royal_parlay_size_v37")
@@ -1486,7 +1511,7 @@ def royal_auto_scan():
                     if score_line: st.caption(score_line)
             st.caption("Checks update from matched ESPN final scores. Live games show 🔴 until graded; locked picks stay unchanged.")
         else:
-            st.info(f"Only {len(royal_candidates)} eligible tracked games in this scan; {selected_legs} different games are required. Queen won't invent extra legs.")
+            st.info(f"Only {len(royal_candidates)} independently assessed games in this scan; {selected_legs} different games are required. Queen won't invent extra legs.")
         with st.expander("ℹ️ Parlay limitations",expanded=False):
             st.caption("Locked prediction combinations are not purchasable Polymarket US parlays. No verified combined odds, payout or paper P&L. Season-record estimates are uncalibrated and market-favorite baselines are not independent edges.")
     with st.expander("ℹ️ Paper testing & data storage",expanded=False):
