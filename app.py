@@ -40,7 +40,7 @@ div.stButton>button{background:linear-gradient(110deg,#7426bd,#aa48eb);color:whi
 
 
 def get_json(url, params=None):
-    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.6"}, timeout=15)
+    response = requests.get(url, params=params, headers={"Accept": "application/json", "User-Agent": "RoyalSportsSniper/2.6.1"}, timeout=15)
     response.raise_for_status()
     return response.json(), response.headers
 
@@ -551,12 +551,39 @@ def paper_strip(account):
     st.markdown(html, unsafe_allow_html=True)
 
 
+def queen_call(row):
+    """Separate team lean from trade: sportsbook consensus is a benchmark, not proof of edge."""
+    e = row["event"]
+    if not e.get("probs"):
+        return None, None, "WAIT", "No matched sportsbook benchmark to assess this game."
+    team, prob = max(e["probs"].items(), key=lambda pair: pair[1])
+    if row["state"] != "pre":
+        return team, prob, "WAIT", "Live or uncertain game state; pregame consensus cannot support an in-play trade."
+    options = []
+    for m in row["markets"]:
+        if norm(m["verified_yes_team"]) != norm(team) or m.get("yes") is None:
+            continue
+        # A Polymarket last/traded price is not an executable ask; never issue BUY from it.
+        if m["platform"] != "Kalshi": continue
+        gap = prob - m["yes"]
+        options.append((gap, m))
+    if not options:
+        return team, prob, "WAIT", "No verified Kalshi YES ask for Queen's favored team; Polymarket reference prices are not executable asks."
+    gap, best = max(options, key=lambda item: item[0])
+    if e.get("books", 0) < 3:
+        return team, prob, "WAIT", "Too few sportsbook observations to compare prices responsibly."
+    if gap >= 0.10:
+        return team, prob, "WATCH", f"Indicative {gap:.1%} benchmark-versus-ask gap on Kalshi; fees, liquidity, settlement and independent edge are unverified."
+    return team, prob, "WAIT", f"Benchmark-versus-ask gap {gap:.1%}; no independently established value after costs."
+
+
+
 banner = Path("royal_sports_banner.png")
 if banner.exists():
     st.image(str(banner), use_container_width=True)
 else:
     st.title("👑 QUEEN'S EDGE | 254 — ROYAL SPORTS SNIPER")
-st.caption("V2.6 · ESPN-first Top 5 · Kalshi + Polymarket research · PAPER ONLY")
+st.caption("V2.6.1 · ESPN-first Top 5 · Kalshi + Polymarket research · PAPER ONLY")
 st.markdown("### 👑 Today's Royal Top 5")
 st.caption("Team lean and contract decision are separate. LIVE games remain visible even when markets are unavailable.")
 
@@ -687,31 +714,6 @@ else:
             if row["markets"]:
                 st.caption("K = Kalshi · P = Polymarket · Prices are platform-specific and may not be executable. No automatic trades.")
 
-def queen_call(row):
-    """Separate team lean from trade: sportsbook consensus is a benchmark, not proof of edge."""
-    e = row["event"]
-    if not e.get("probs"):
-        return None, None, "WAIT", "No matched sportsbook benchmark to assess this game."
-    team, prob = max(e["probs"].items(), key=lambda pair: pair[1])
-    if row["state"] != "pre":
-        return team, prob, "WAIT", "Live or uncertain game state; pregame consensus cannot support an in-play trade."
-    options = []
-    for m in row["markets"]:
-        if norm(m["verified_yes_team"]) != norm(team) or m.get("yes") is None:
-            continue
-        # A Polymarket last/traded price is not an executable ask; never issue BUY from it.
-        if m["platform"] != "Kalshi": continue
-        gap = prob - m["yes"]
-        options.append((gap, m))
-    if not options:
-        return team, prob, "WAIT", "No verified Kalshi YES ask for Queen's favored team; Polymarket reference prices are not executable asks."
-    gap, best = max(options, key=lambda item: item[0])
-    if e.get("books", 0) < 3:
-        return team, prob, "WAIT", "Too few sportsbook observations to compare prices responsibly."
-    if gap >= 0.10:
-        return team, prob, "WATCH", f"Indicative {gap:.1%} benchmark-versus-ask gap on Kalshi; fees, liquidity, settlement and independent edge are unverified."
-    return team, prob, "WAIT", f"Benchmark-versus-ask gap {gap:.1%}; no independently established value after costs."
-
 
 st.markdown("#### 💜 Royal Paper Bankroll")
 try:
@@ -826,12 +828,31 @@ with st.expander("🔴 Live Sports Scoreboard", expanded=False):
         else:
             st.caption("No confirmed live games returned.")
 
+def research_market_type(m):
+    """Text classification for discovery only; never verifies settlement or a bet."""
+    text = norm(" ".join(str(m.get(k) or "") for k in ("title", "subtitle", "context")))
+    if any(x in text for x in ("rebound", "assist", "touchdown", "passing yard", "rushing yard",
+                               "receiving yard", "player point", "three pointer", "three pointers")):
+        return "Player props"
+    if any(x in text for x in ("point spread", "spread", "handicap", "win by")):
+        return "Point spreads"
+    if any(x in text for x in ("total points", "combined points", "over under", "total yards",
+                               "game total", "points scored")):
+        return "Game totals"
+    return "Moneyline / other"
+
 with st.expander("🔎 Sports Market Scanner & Data Details", expanded=False):
     st.caption(f"Scanned {sum(m['platform']=='Kalshi' for m in contracts)} Kalshi markets from {series_count} series and {sum(m['platform']=='Polymarket' for m in contracts)} Polymarket outcome references. Bounded, not exhaustive.")
     st.caption("Kalshi asks and Polymarket indicative outcome prices are different quote types; neither guarantees a fill.")
+    st.caption("Research categories include player props, spreads and totals when found in the sampled markets. "
+               "Text classification is not contract verification; no prop model or mixed-parlay pricing is active.")
+    market_type = st.radio("Market research type",
+                           ["All", "Moneyline / other", "Point spreads", "Game totals", "Player props"],
+                           horizontal=True)
     search = st.text_input("Search team or market")
     platform = st.radio("Platform", ["All", "Kalshi", "Polymarket"], horizontal=True)
     filtered = [m for m in contracts if (platform == "All" or m["platform"] == platform)
+                and (market_type == "All" or research_market_type(m) == market_type)
                 and norm(search) in norm(m["title"] + " " + m["context"])]
     for m in filtered[:15]:
         st.markdown(f"**{escape(m['platform'])} — {escape(m['title'])}**")
@@ -884,4 +905,4 @@ with st.expander("📊 Royal Tracking Center — Paper Trades & History", expand
         st.warning("Tracking unavailable: " + str(exc)[:120])
     st.caption("Streamlit Community Cloud local SQLite storage is not durable; page refreshes are not 24/7 background monitoring.")
 
-st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.6 · PAPER ONLY · NO REAL ORDERS")
+st.caption("QUEEN'S EDGE | 254 · ROYAL SPORTS SNIPER V2.6.1 · PAPER ONLY · NO REAL ORDERS")
