@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis"}
@@ -752,7 +752,7 @@ def display_row(x, number=None):
         main = "No verified quote"
         secondary = "Price unavailable"
     if locked:
-        action = "TRACKED" if locked["result"]=="PENDING" else locked["result"]
+        action = "PENDING" if locked["result"]=="PENDING" else locked["result"]
         main = f"👑 FORECAST: {html.escape(locked['selection'])} to WIN"
         secondary = f"{html.escape(locked['confidence'])} · {secondary}"
         units,unit_reason=royal_paper_test_units(locked)
@@ -765,6 +765,27 @@ def display_row(x, number=None):
             secondary+=" · payout unverified"
     with st.container(border=True):
         game=x.get("score_game")
+        # Prominent, mutually exclusive status: grading is authoritative only for
+        # a locked prediction, while live score is an observation, not a win.
+        outcome = str(locked.get("result") or "PENDING").upper() if locked else "UNTRACKED"
+        if outcome == "WIN":
+            status_text, status_color = "✅ WON · QUEEN CALLED IT", "#16a34a"
+        elif outcome == "LOSS":
+            status_text, status_color = "❌ LOST · QUEEN MISSED", "#dc2626"
+        elif game and game.get("state") == "in":
+            status_text, status_color = "🔴 LIVE · IN PROGRESS", "#e11d48"
+        elif game and game.get("state") == "post":
+            status_text, status_color = "⏳ FINAL · AWAITING VERIFIED GRADING", "#d97706"
+        elif locked:
+            status_text, status_color = "⏳ PENDING · GAME NOT FINAL", "#a16207"
+        else:
+            status_text, status_color = "👀 WATCH · NO LOCKED FORECAST", "#64748b"
+        st.markdown(
+            '<div style="background:'+status_color+'20;border:1px solid '+status_color+
+            ';border-radius:10px;padding:9px 12px;margin-bottom:7px;'
+            'font-size:1.06rem;font-weight:800;color:inherit;">'+status_text+'</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown(f"**{royal_game_clock(game, x.get('start'))}**")
         score_line=royal_score_line(game,locked.get("selection") if locked else None)
         if score_line: st.markdown(score_line)
@@ -947,7 +968,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.2 · LIVE SCORES & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V4.3 · FEATURED LIVE RESULTS & PARLAY CHECKLIST · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
