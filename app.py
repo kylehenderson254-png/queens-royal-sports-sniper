@@ -483,8 +483,12 @@ def royal_under_dog_units(x):
     return 0.0,"WATCH ONLY · no sufficient modeled margin"
 
 def royal_parlay_units(legs):
-    """No positive staking recommendation without a verifiable combined quote."""
-    return 0.0,"PAYOUT UNAVAILABLE · no verified combined price"
+    """A small shadow-paper allocation for testing combos; NOT a bet recommendation."""
+    n=len(legs)
+    if n<2: return 0.0,"NO TEST · insufficient legs"
+    # Small, fixed research budgets avoid inventing a statistical edge.
+    amount={2:0.25,3:0.15,5:0.10,10:0.05}.get(n,0.0)
+    return amount,"SHADOW PAPER TEST ONLY · no validated edge or executable combined price"
 
 def royal_unit_manager():
     with db() as c:
@@ -523,8 +527,8 @@ def _pick_card(r, paper=None):
             elif status=="LOSS": st.error("LOST")
             else: st.warning("PENDING")
         st.markdown(f"**👑 QUEEN'S PICK: {r['selection']} TO WIN**")
-        units,why=royal_unit_advice(r)
-        st.caption(f"Royal units: {units:g} U · ${units*BASE_UNIT:.2f} · {why}")
+        units,why=royal_paper_test_units(r)
+        st.caption(f"Experimental paper test: {units:g} U · ${units*BASE_UNIT:.2f} · {why}")
         st.caption(f"🔒 Locked {local(r['created_at'])} · {r['model'] or 'Prediction method not saved'}")
         if paper:
             price=paper["entry_ask"]
@@ -626,8 +630,14 @@ def display_row(x, number=None):
         action = "TRACKED" if locked["result"]=="PENDING" else locked["result"]
         main = f"👑 FORECAST: {html.escape(locked['selection'])} to WIN"
         secondary = f"{html.escape(locked['confidence'])} · {secondary}"
-        units,_=royal_unit_advice(locked)
-        secondary+=f" · {units:g} U (${units*BASE_UNIT:.0f})"
+        units,unit_reason=royal_paper_test_units(locked)
+        secondary+=f" · PAPER {units:g} U (${units*BASE_UNIT:.0f})"
+        if valid and verified and clean(x.get("selection"))==clean(locked.get("selection")):
+            profit=royal_profit_preview(q["ask"],units)
+            if profit is not None and units>0:
+                secondary+=f" · WIN +${profit:.2f} / LOSS -${units*BASE_UNIT:.2f}"
+        elif units>0:
+            secondary+=" · payout unverified"
     with st.container(border=True):
         st.markdown(f'''<div class="royal-game">
           <div class="royal-game-head"><span class="sport-icon">{icon}</span>
@@ -807,7 +817,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V3.8.1 · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V3.8.2 · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 # Saved records load without a new market scan.
 with db() as _quick_db:
@@ -1086,17 +1096,25 @@ dogs=[x for x in watch if x.get("verified_side") and x.get("quote") and x["quote
 if dogs:
     for x in sorted(dogs,key=lambda a:a["quote"]["ask"])[:5]:
         ask=x["quote"]["ask"]
-        u,reason=royal_under_dog_units(x)
+        recommended,reason=royal_under_dog_units(x)
+        # Separate deliberately small shadow experiments from Queen's own pick.
+        # A contrary-side longshot must NEVER be called a recommended bet.
+        u=recommended if recommended>0 else .10
+        shadow=recommended==0
         profit=royal_profit_preview(ask,u)
         per_unit=royal_profit_preview(ask,1.0)
         with st.container(border=True):
             st.markdown(f"**{SPORT_ICON.get(x['sport'],'🏆')} {html.escape(str(x['selection']))}** · {ask*100:.1f}¢ YES")
-            st.markdown(f"**Paper units: {u:g} U · ${u*BASE_UNIT:.2f}** · {reason}")
+            if shadow:
+                st.markdown(f"**Queen: 0 U · WATCH ONLY** · {reason}")
+                st.caption(f"Optional shadow-paper test: {u:g} U (${u*BASE_UNIT:.2f}) · NOT a recommended wager")
+            else:
+                st.markdown(f"**Experimental paper units: {u:g} U · ${u*BASE_UNIT:.2f}** · {reason}")
             if u>0 and profit is not None:
-                st.caption(f"If YES wins: +${profit:,.2f} gross · If wrong: -${u*BASE_UNIT:,.2f} · Per 1 U gross: +${per_unit:,.2f}")
+                st.caption(f"Shadow test if YES wins: +${profit:,.2f} gross · If wrong: -${u*BASE_UNIT:,.2f} · Per 1 U gross: +${per_unit:,.2f}")
             else:
                 st.caption(f"Per 1 U ($20) hypothetical gross win profit: +${per_unit:,.2f} · Actual allocation $0")
-            st.caption("Illustrative quote-based payout before fees; only valid if this verified YES contract pays on the named outcome. No real order.")
+            st.caption("Hypothetical quote-based payout before fees. No fill, wager, or guaranteed value. Shadow tests are NOT Queen's picks.")
 else:
     st.caption("No verified lower-priced YES contracts in this scan.")
 st.caption("Low prices are not proof of value. Experimental allocations are for paper evaluation, not betting advice.")
@@ -1117,8 +1135,8 @@ with st.container():
         st.markdown(f"**{'🟢 WON' if status=='WIN' else '🔴 LOST' if status=='LOSS' else '🟡 PENDING'} · {selected_legs}-leg {'Royal Lotto' if selected_legs==10 else 'Royal Parlay'}**")
         st.caption(f"🔒 Locked {local(ticket['created_at'])} · {ticket['wins']} won · {ticket['losses']} lost · {len(tlegs)-ticket['wins']-ticket['losses']} pending")
         pu,preason=royal_parlay_units(tlegs)
-        st.markdown(f"**👑 Parlay risk: {pu:g} U · ${pu*BASE_UNIT:.2f} | Potential profit: unavailable**")
-        st.caption(preason + " · A parlay's payout cannot be calculated from its legs' separate YES prices.")
+        st.markdown(f"**👑 Experimental parlay paper stake: {pu:g} U · ${pu*BASE_UNIT:.2f} | Potential profit: unavailable**")
+        st.caption(preason + " · This is a research budget, not a recommendation to wager. No purchasable parlay or combined payout verified.")
         with st.expander(f"View {len(tlegs)} locked legs",expanded=False):
             for leg in tlegs:
                 icon=SPORT_ICON.get(leg["sport"],"🏆")
