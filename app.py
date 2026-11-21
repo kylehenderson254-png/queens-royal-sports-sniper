@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.4.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -936,58 +936,81 @@ def _royal_compact_unmatched(r):
 
 
 def royal_current_picks_panel(sport_filter='FOCUS'):
-    """Read-only active picks; no locks or model calls on this page."""
-    if sport_filter=='TENNIS':
+    """Read-only deduplicated picks; show active saved games regardless of original lock era.
+
+    V5.4 wrongly applied the Royal Focus creation cutoff to the canonical earliest
+    prediction. If the same game was already locked in the earlier experimental
+    period, its original was hidden entirely from Current Picks. Preserve the
+    original lock and its true cohort, but show its current game when confirmed.
+    """
+    if sport_filter == 'TENNIS':
         st.subheader('🎾 Tennis Watch · Saved Picks Only')
         st.caption('Historical selections only. No new tennis locks, paper entries or parlays.')
         with db() as c:
-            rows=[dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54 WHERE sport='Tennis'
-                AND result='PENDING' ORDER BY created_at DESC,id DESC LIMIT 16""")]
-            stats=dict(c.execute("""SELECT COUNT(*) n, SUM(result='WIN') w, SUM(result='LOSS') l,
-                SUM(result='PENDING') pending FROM royal_primary_predictions_v54 WHERE sport='Tennis'""").fetchone())
-        a,b,c=st.columns(3)
+            rows = [dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
+                WHERE sport='Tennis' AND result='PENDING'
+                ORDER BY created_at DESC,id DESC LIMIT 16""")]
+            stats = dict(c.execute("""SELECT COUNT(*) n, SUM(result='WIN') w,
+                SUM(result='LOSS') l, SUM(result='PENDING') pending
+                FROM royal_primary_predictions_v54 WHERE sport='Tennis'""").fetchone())
+        a,b,c = st.columns(3)
         a.metric('Saved tennis',stats['n'] or 0)
         b.metric('Graded W / L',f"{stats['w'] or 0} / {stats['l'] or 0}")
         c.metric('Not graded',stats['pending'] or 0)
+        if not rows:
+            st.info('No saved tennis picks awaiting verified results.')
+            return
+        idx = score_index(['Tennis'],[r.get('created_at') for r in rows])
+        enriched = [(r,_match_saved_game(r,idx)) for r in rows]
+        st.caption('Historical saved selections only; an unverified match is not graded.')
     else:
         st.subheader('👑 Current Royal Focus Picks')
-        st.caption('Locked picks · NBA · NFL · NHL · NCAAF (NCAA Football) · paper research only')
+        st.caption('NBA · NFL · NHL · NCAAF · One original selection per game · Paper research only')
+        # Do not filter original locks by created_at: this would hide older
+        # canonical locks when newer duplicates have been suppressed.
         with db() as c:
-            rows=[dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
-                WHERE sport IN (?,?,?,?) AND created_at>=? AND result='PENDING'
-                ORDER BY created_at DESC,id DESC LIMIT 30""",(*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC))]
-            stats=dict(c.execute("""SELECT COUNT(*) n,
-                COALESCE(SUM(result='WIN'),0) w,COALESCE(SUM(result='LOSS'),0) l,
-                COALESCE(SUM(result='PENDING'),0) pending
-                FROM royal_primary_predictions_v54 WHERE sport IN (?,?,?,?) AND created_at >= ?""",
-                (*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC)).fetchone())
-        a,b,c=st.columns(3)
-        a.metric('Focus picks',stats['n'])
-        b.metric('Graded W / L',f"{stats['w']} / {stats['l']}")
-        c.metric('Awaiting grade',stats['pending'])
-    if not rows:
-        st.info('No saved picks awaiting results in this group. See Results for completed games.')
+            candidates = [dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
+                WHERE sport IN (?,?,?,?) AND result='PENDING'
+                ORDER BY created_at DESC,id DESC LIMIT 1500""",ROYAL_FOCUS_SPORTS)]
+            focus = dict(c.execute("""SELECT COUNT(*) n,
+                COALESCE(SUM(result='WIN'),0) w, COALESCE(SUM(result='LOSS'),0) l
+                FROM royal_primary_predictions_v54 WHERE sport IN (?,?,?,?)
+                AND created_at>=?""",(*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC)).fetchone())
+        idx = score_index(list(ROYAL_FOCUS_SPORTS),[r.get('created_at') for r in candidates[:60]])
+        enriched = []
+        for r in candidates:
+            game = _match_saved_game(r,idx)
+            # A match must actually be in progress or scheduled shortly.
+            # A stale unmatched archive record is not a current pick.
+            if not game or game.get('state') not in ('in','pre'):
+                continue
+            start = parse_date(game.get('date'))
+            if not start or not (-timedelta(days=1) <= start-utc() <= timedelta(days=4)):
+                continue
+            enriched.append((r,game))
+        a,b,c = st.columns(3)
+        a.metric('Current tracked games',len(enriched))
+        b.metric('New Focus locks',focus['n'] or 0)
+        c.metric('New Focus W / L',f"{focus['w'] or 0} / {focus['l'] or 0}")
+        st.caption('Current tracked includes original saved picks made before Royal Focus began. '
+                   'Those carryovers appear once here but are NOT counted as new Focus locks or wins.')
+    if not enriched:
+        st.info('No verified live or upcoming saved games right now. Completed games appear in Results; saved records remain in History.')
         return
-    # A single scoreboard lookup for all visible predictions; no new market locks.
-    idx=score_index(sorted({r['sport'] for r in rows if r['sport'] in ESPN}),
-                    [r.get('created_at') for r in rows])
-    enriched=[(r,_match_saved_game(r,idx)) for r in rows]
-    # Live first, then upcoming, then unmatched/older. Already-graded items are in Results.
-    rank={'in':0,'pre':1,'post':2}
+    rank = {'in':0,'pre':1,'post':2}
     enriched.sort(key=lambda pair:(rank.get((pair[1] or {}).get('state'),3),
                                    (pair[1] or {}).get('date') or '9999',
                                    pair[0].get('created_at') or ''))
-    if sport_filter=='TENNIS':
-        st.caption('Showing saved tennis predictions still awaiting a reliable final grade. Live tennis coverage may be unavailable.')
-    else:
-        st.caption('Live matches first · grade remains PENDING until verified final score')
+    st.caption('Live first · Upcoming next · Original locked side preserved')
     for i in range(0,min(len(enriched),16),2):
-        cols=st.columns(2,gap='small')
+        cols = st.columns(2,gap='small')
         for col,(r,game) in zip(cols,enriched[i:i+2]):
             with col:
-                if not royal_scoreboard(game,r['sport'],r['selection'],r['result'],r.get('created_at'),compact=True):
+                if not royal_scoreboard(game,r['sport'],r['selection'],r['result'],
+                                       r.get('created_at'),compact=True):
                     _royal_compact_unmatched(r)
-    if len(enriched)>16: st.caption('Additional saved picks remain in History; results tracking continues for all of them.')
+    if len(enriched)>16:
+        st.caption(f'Showing 16 of {len(enriched)} current games. No duplicates are created.')
 
 
 def prediction_panel():
@@ -1362,7 +1385,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.4 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V5.4.1 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
