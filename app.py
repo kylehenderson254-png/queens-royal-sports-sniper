@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -598,22 +598,35 @@ def royal_verified_start(x):
 def royal_slate_day(dt):
     return dt.astimezone(CT).date().isoformat() if dt else None
 
+def royal_fixture_key(r):
+    """Fixture identity for parlay safety. Missing opponent => not eligible."""
+    sport=str(r.get("sport") or "")
+    a=clean(r.get("selection") or "")
+    b=clean(r.get("opponent") or "")
+    day=str(r.get("royal_slate_day") or "")
+    if not (sport in ("NBA","NFL","NHL","NCAAF") and a and b and a!=b and day):
+        return None
+    return sport, day, tuple(sorted((a,b)))
+
+
 def royal_fit_ticket(candidates, size, slate_day, exclude=None):
     """Pick distinct events scheduled on exactly one Chicago-local calendar date."""
     already=set(exclude or [])
     eligible=[r for r in candidates if r.get('royal_slate_day')==slate_day
               and r.get('royal_verified_start') and r.get('id') and r.get('event_id')
+              and royal_fixture_key(r) is not None
               ]
     distinct=[]; seen=set()
     for r in sorted(eligible,key=lambda row:(row.get('id') in already, 0 if size>=3 and row.get('sport')=='NCAAF' else 1, -(numeric(row.get('model_probability')) or 0), row.get('royal_verified_start') or '')):
-        identity=(r.get('sport'),r.get('event_id'))
+        identity=royal_fixture_key(r)
         if identity in seen: continue
         seen.add(identity); distinct.append(r)
         if len(distinct)==size: break
     return distinct if len(distinct)==size else []
 
 def royal_ticket_is_valid(legs, slate_day=None):
-    if len(legs)<2 or len({(r.get('sport'),r.get('event_id')) for r in legs})!=len(legs):
+    fixtures=[royal_fixture_key(r) for r in legs]
+    if len(legs)<2 or any(f is None for f in fixtures) or len(set(fixtures))!=len(fixtures):
         return False
     days={r.get('royal_slate_day') for r in legs}
     if len(days)!=1 or None in days or (slate_day and slate_day not in days):
@@ -1930,6 +1943,30 @@ def display_row(x, number=None):
         elif not shown:
             bits.append('QUOTE UNAVAILABLE')
         if bits: st.caption('  ·  '.join(bits))
+        if locked:
+            model=str(locked.get("model") or "")
+            p=numeric(locked.get("model_probability"))
+            selected=str(locked.get("selection") or "")
+            st.markdown(f"**👑 Queen favors:** {html.escape(selected)}")
+            if model=="Season-record baseline" and p is not None:
+                st.caption(f"Record-based estimate: {p*100:.1f}% · UNCALIBRATED · Not a proven edge")
+            else:
+                st.caption(f"Research method: {model or 'Unknown'} · No independent calibrated probability")
+            if valid and verified:
+                yes_team=str(x.get("selection") or "")
+                st.caption(f"🟣 POLYMARKET US · YES = {yes_team} · ask {q['ask']*100:.1f}¢ · bid {q['bid']*100:.1f}¢")
+                if clean(yes_team)==clean(selected):
+                    if model=="Season-record baseline" and p is not None:
+                        edge=p-q["ask"]
+                        verdict="👑 RESEARCH PICK" if edge>=.05 and q["ask"]-q["bid"]<=.03 else "👀 WATCH"
+                        st.caption(f"{verdict} · Estimated gross probability-price gap {edge*100:+.1f} pp · fees excluded; not validated value")
+                    else:
+                        st.caption("👀 WATCH · No independent price comparison available")
+                else:
+                    st.caption("👀 WATCH · Verified YES quote is for the opposing side; no verified ask for Queen's selection")
+            else:
+                st.caption("👀 WATCH · Queen's selection has no verified executable-side quote; not eligible as a priced pick")
+
 
 
 def paper_reason(x):
@@ -2503,14 +2540,20 @@ def royal_auto_scan():
             # Prevent stale lock belonging to a past match from being attached
             # to a new matchup with similar player/team names.
             if x.get('sport')!=r.get('sport') or x.get('event_id')!=r.get('event_id'): continue
+            # Only trust fixture identities backed by the matched scoreboard.
+            score_teams=(x.get('score_game') or {}).get('teams') or []
+            if len(score_teams)!=2: continue
+            if not all(any(_team_name_match(n,t)>=.90 for t in score_teams)
+                       for n in (r.get('selection'),r.get('opponent'))): continue
             identity=(r['sport'],r['event_id'])
-            fixture=(r['sport'],frozenset(clean(n) for n in (x.get('score_game') or {}).get('teams',[]) ),royal_slate_day(dt))
+            fixture=(r['sport'],frozenset(clean(n) for n in score_teams),royal_slate_day(dt))
             if identity in used or (fixture[1] and fixture in used_fixture): continue
             used.add(identity)
             if fixture[1]:used_fixture.add(fixture)
             item=dict(r)
             item['royal_slate_day']=royal_slate_day(dt)
             item['royal_verified_start']=dt.isoformat()
+            if royal_fixture_key(item) is None: continue
             pool.append(item)
         return pool
 
@@ -2664,6 +2707,23 @@ def royal_auto_scan():
             if errors: st.caption("Feed errors: "+" | ".join(errors))
             st.caption("No qualifying games means WATCH, not an invented selection. Season records are uncalibrated.")
 
+        st.caption("👑 Research picks are directional forecasts; WATCH means price/evidence needs verification. No forced daily quota.")
+        priced_research=[]
+        for item in eligible:
+            pred=st.session_state["royal_locked"].get((item["event_id"],item["slug"],"LIVE" if item.get("live") else "PREGAME"),{})
+            quote_data=item.get("quote") or {}
+            if (pred.get("model")=="Season-record baseline" and quote_data.get("valid")
+                and item.get("verified_side") and clean(item.get("selection"))==clean(pred.get("selection"))):
+                p=numeric(pred.get("model_probability"))
+                if p is not None:
+                    priced_research.append((p-quote_data["ask"],item))
+        priced_research.sort(key=lambda pair:pair[0],reverse=True)
+        st.markdown("#### 🟣 Polymarket US · Priced Research Shortlist")
+        if priced_research:
+            for edge,item in priced_research[:5]:
+                st.caption(f"{item.get('sport')} · {item.get('title')} · Queen: {st.session_state['royal_locked'].get((item['event_id'],item['slug'],'LIVE' if item.get('live') else 'PREGAME'),{}).get('selection')} · YES ask {item['quote']['ask']*100:.1f}¢ · model-minus-ask {edge*100:+.1f} pp (uncalibrated)")
+        else:
+            st.info("No current Queen selections with a verified matching Polymarket US YES quote. Directional picks remain visible below.")
         if featured:
             for offset in range(0,len(featured),2):
                 col1,col2=st.columns(2,gap="small")
@@ -2768,8 +2828,8 @@ def royal_auto_scan():
         # on the same fixture must never count as separate legs.
         unique_candidates=[];seen_fixtures=set()
         for r in same_day_candidates:
-            fixture=(r.get('sport'),r.get('event_id'))
-            if fixture in seen_fixtures:continue
+            fixture=royal_fixture_key(r)
+            if fixture is None or fixture in seen_fixtures:continue
             seen_fixtures.add(fixture);unique_candidates.append(r)
         same_day_candidates=unique_candidates
         sport_counts={sport:sum(r.get('sport')==sport for r in same_day_candidates) for sport in ACTIVE_SPORTS}
@@ -2799,8 +2859,8 @@ def royal_auto_scan():
                 pool=mixed
             selection=[];fixtures=set()
             for r in pool:
-                fixture=(r.get('sport'),r.get('event_id'))
-                if fixture in fixtures:continue
+                fixture=royal_fixture_key(r)
+                if fixture is None or fixture in fixtures:continue
                 fixtures.add(fixture);selection.append(r)
                 if len(selection)==n:break
             return selection if len(selection)==n else []
