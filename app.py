@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -740,7 +740,7 @@ def royal_results_dashboard():
     d.metric("Paper P&L*",f"${paper['pnl']:+,.2f}")
     accuracy = f"{total['w']/(total['w']+total['l']):.1%}" if total['w']+total['l'] else "—"
     st.caption(f"Graded accuracy: {accuracy} (based on {total['w']+total['l']} predictions ONLY) · Paper: {paper['n']} entries, {paper['w']} wins, {paper['l']} losses")
-    st.caption("V5.4 counts each game once. Earlier repeated locks are retained in the raw CSV audit, not counted again.")
+    st.caption("Each game counts once. Earlier repeated locks are retained in the raw CSV audit, not counted again.")
     st.caption("*Simulation only. Grading based on ESPN is provisional; exchange settlement and executable fills are NOT verified.")
     st.markdown("**👑 Royal Focus — Newer Test**")
     x,y,z=st.columns(3)
@@ -1130,7 +1130,7 @@ def royal_tennis_archive_summary():
     a.metric('Tennis W / L',f'{graded[0]} / {graded[1]}')
     b.metric('Still unverified',len(pending))
     c.metric('Original picks',len(pending)+graded[0]+graded[1])
-    st.caption('Unverified is not necessarily upcoming. Some matches may have finished without a reliable final-score match. Never assume a WIN or LOSS from missing scores.')
+    st.caption(f'{len(pending)} historical selections may include completed games. They remain UNVERIFIED until a unique, completed final can be matched to both players and the original event date. Live score-only matches are never Queen wins or losses.')
     # All unmatched history is still retained in History. Avoid an enormous list
     # of dated/unknown selections on the main scoreboard.
     if pending:
@@ -1157,83 +1157,96 @@ def royal_tennis_parlay_status():
 
 
 def royal_current_picks_panel(sport_filter='FOCUS'):
-    """Read-only deduplicated picks; show active saved games regardless of original lock era.
-
-    V5.4 wrongly applied the Royal Focus creation cutoff to the canonical earliest
-    prediction. If the same game was already locked in the earlier experimental
-    period, its original was hidden entirely from Current Picks. Preserve the
-    original lock and its true cohort, but show its current game when confirmed.
-    """
-    if sport_filter == 'TENNIS':
-        st.subheader('🎾 Tennis · Queen’s Saved Picks')
-        st.caption('Old picks remain unchanged; new tennis research is enabled, but a new lock needs independent pre-match evidence.')
+    """Verified active saved picks; full list optional, original picks immutable."""
+    is_tennis = sport_filter == 'TENNIS'
+    if is_tennis:
+        st.subheader('🎾 Tennis · Queen’s Locked Picks')
+        st.caption('Original saved predictions only. The separate live scoreboard may also show matches Queen never picked.')
         with db() as c:
-            rows = [dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
-                WHERE sport='Tennis' AND result='PENDING'
-                ORDER BY created_at DESC,id DESC LIMIT 16""")]
-            stats = dict(c.execute("""SELECT COUNT(*) n, SUM(result='WIN') w,
-                SUM(result='LOSS') l, SUM(result='PENDING') pending
-                FROM royal_primary_predictions_v54 WHERE sport='Tennis'""").fetchone())
-        a,b,c = st.columns(3)
-        a.metric('Saved tennis',stats['n'] or 0)
-        b.metric('Graded W / L',f"{stats['w'] or 0} / {stats['l'] or 0}")
-        c.metric('Not graded',stats['pending'] or 0)
-        if not rows:
-            st.info('No saved tennis picks awaiting verified results.')
-            return
-        idx = score_index(['Tennis'],[r.get('created_at') for r in rows])
-        enriched = [(r,_match_saved_game(r,idx)) for r in rows]
-        st.caption('Historical saved selections only; an unverified match is not graded.')
+            candidates=[dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
+                WHERE sport='Tennis' AND result='PENDING' ORDER BY created_at DESC,id DESC""")]
+            stats=dict(c.execute("""SELECT COUNT(*) n,COALESCE(SUM(result='WIN'),0) w,
+                COALESCE(SUM(result='LOSS'),0) l FROM royal_primary_predictions_v54
+                WHERE sport='Tennis'""").fetchone())
+        idx=score_index(['Tennis'], [r.get('created_at') for r in candidates[:70]])
+        enriched=[]
+        for r in candidates:
+            game=_match_saved_game(r,idx)
+            if game and game.get('state') in ('in','pre'):
+                enriched.append((r,game))
+        a,b,c=st.columns(3)
+        a.metric('Current tennis picks',len(enriched))
+        b.metric('Tennis W / L',f"{stats['w']} / {stats['l']}")
+        c.metric('Unverified history',stats['n']-stats['w']-stats['l'])
     else:
         st.subheader('👑 Current Royal Picks')
-        st.caption('NBA · NFL · NHL · NCAAF · One original selection per game · Paper research only')
-        # Do not filter original locks by created_at: this would hide older
-        # canonical locks when newer duplicates have been suppressed.
+        st.caption('👑 = Queen’s saved prediction · 👀 = score watch only · Paper research')
         with db() as c:
-            candidates = [dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
+            candidates=[dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
                 WHERE sport IN (?,?,?,?) AND result='PENDING'
                 ORDER BY created_at DESC,id DESC LIMIT 1500""",ROYAL_FOCUS_SPORTS)]
-            focus = dict(c.execute("""SELECT COUNT(*) n,
-                COALESCE(SUM(result='WIN'),0) w, COALESCE(SUM(result='LOSS'),0) l
+            focus=dict(c.execute("""SELECT COUNT(*) n,
+                COALESCE(SUM(result='WIN'),0) w,COALESCE(SUM(result='LOSS'),0) l
                 FROM royal_primary_predictions_v54 WHERE sport IN (?,?,?,?)
                 AND created_at>=?""",(*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC)).fetchone())
         if sport_filter in ROYAL_FOCUS_SPORTS:
             candidates=[r for r in candidates if r.get('sport')==sport_filter]
-        idx = score_index([sport_filter] if sport_filter in ROYAL_FOCUS_SPORTS else list(ROYAL_FOCUS_SPORTS),[r.get('created_at') for r in candidates[:60]])
-        enriched = []
+        idx=score_index([sport_filter] if sport_filter in ROYAL_FOCUS_SPORTS else list(ROYAL_FOCUS_SPORTS),
+                        [r.get('created_at') for r in candidates[:60]])
+        enriched=[]
         for r in candidates:
-            game = _match_saved_game(r,idx)
-            # A match must actually be in progress or scheduled shortly.
-            # A stale unmatched archive record is not a current pick.
-            if not game or game.get('state') not in ('in','pre'):
-                continue
-            start = parse_date(game.get('date'))
-            if not start or not (-timedelta(days=1) <= start-utc() <= timedelta(days=4)):
-                continue
+            game=_match_saved_game(r,idx)
+            if not game or game.get('state') not in ('in','pre'): continue
+            dt=parse_date(game.get('date'))
+            if not dt or not (-timedelta(days=1)<=dt-utc()<=timedelta(days=4)): continue
             enriched.append((r,game))
-        a,b,c = st.columns(3)
+        a,b,c=st.columns(3)
         a.metric('Current tracked games',len(enriched))
         b.metric('New Focus locks',focus['n'] or 0)
         c.metric('New Focus W / L',f"{focus['w'] or 0} / {focus['l'] or 0}")
-        st.caption('Current tracked includes original saved picks made before Royal Focus began. '
-                   'Those carryovers appear once here but are NOT counted as new Focus locks or wins.')
+        st.caption('Includes earlier saved picks still awaiting games. New Focus statistics count only newer locks.')
     if not enriched:
-        st.info('No verified live or upcoming saved games right now. Completed games appear in Results; saved records remain in History.')
+        st.info('No verified live or upcoming saved picks for this sport. Completed games appear in Results; older records remain in History.')
         return
-    rank = {'in':0,'pre':1,'post':2}
-    enriched.sort(key=lambda pair:(rank.get((pair[1] or {}).get('state'),3),
-                                   (pair[1] or {}).get('date') or '9999',
-                                   pair[0].get('created_at') or ''))
-    st.caption('Live first · Upcoming next · Original locked side preserved')
-    for i in range(0,min(len(enriched),16),2):
-        cols = st.columns(2,gap='small')
-        for col,(r,game) in zip(cols,enriched[i:i+2]):
+    priority={'in':0,'pre':1,'post':2}
+    enriched.sort(key=lambda pair:(priority.get(pair[1].get('state'),3),pair[1].get('date') or '9999',pair[0].get('created_at') or ''))
+    # All dates use the game start, never the pick's creation date.
+    today=utc().astimezone(CT).date()
+    options=['All Upcoming','Today','Tomorrow','Next 3 Days']
+    choice=st.segmented_control('📅 Game date',options,default='All Upcoming',
+        key='royal_v563_date_'+str(sport_filter))
+    def belongs(pair):
+        dt=parse_date(pair[1].get('date'))
+        if not dt:return choice=='All Upcoming'
+        day=dt.astimezone(CT).date()
+        return (choice=='All Upcoming' or
+                (choice=='Today' and day==today) or
+                (choice=='Tomorrow' and day==today+timedelta(days=1)) or
+                (choice=='Next 3 Days' and today<=day<=today+timedelta(days=2)))
+    visible=[pair for pair in enriched if belongs(pair)]
+    if not visible:
+        st.info('No qualifying saved games for that date. Select All Upcoming to see the full list.')
+        return
+    show_key='royal_v563_show_all_'+str(sport_filter)
+    show_all=bool(st.session_state.get(show_key,False))
+    st.markdown(f'**👑 {len(visible)} saved picks · {choice}**')
+    if len(visible)>16:
+        if st.button('📋 Show Fewer Picks' if show_all else f'📋 Show All {len(visible)} Picks',
+                     key='royal_v563_show_button_'+str(sport_filter),use_container_width=True):
+            show_all=not show_all
+            st.session_state[show_key]=show_all
+    displayed=visible if show_all else visible[:16]
+    for i in range(0,len(displayed),2):
+        cols=st.columns(2,gap='small')
+        for col,(r,game) in zip(cols,displayed[i:i+2]):
             with col:
                 if not royal_scoreboard(game,r['sport'],r['selection'],r['result'],
-                                       r.get('created_at'),compact=True):
+                                        r.get('created_at'),compact=True):
                     _royal_compact_unmatched(r)
-    if len(enriched)>16:
-        st.caption(f'Showing 16 of {len(enriched)} current games. No duplicates are created.')
+    if len(displayed)<len(visible):
+        st.caption(f'Showing {len(displayed)} of {len(visible)}. Use Show All to view every saved pick.')
+    else:
+        st.caption(f'Showing all {len(visible)} saved picks. One original prediction per game.')
 
 
 def prediction_panel():
@@ -1344,51 +1357,73 @@ def royal_status_label(game, result="PENDING"):
 
 
 def royal_scoreboard(game, sport, selected=None, result="PENDING", start=None, compact=False):
-    """ESPN-inspired compact board; one score immediately beside its own team."""
-    if not game or len(game.get("teams") or [])!=2:
+    """Clearly distinguish one saved Queen selection from a score-only game.
+
+    Score and clock are always provider-derived. Never infer a final result.
+    """
+    if not game or len(game.get('teams') or []) != 2:
         return False
-    names=game["teams"]
-    raw=game.get("scores") or {}
-    game_status,pick_status=royal_status_label(game,result)
-    details=str(game.get("detail") or "").strip()
-    if game_status=="LIVE":
-        game_label="LIVE"+(" · "+details if details else "")
-    elif game_status=="FINAL":
-        game_label="FINAL"+(" · "+details if details.lower() not in ("", "final") else "")
-    elif game_status=="UPCOMING":
-        game_label=local(game.get("date") or start)
+    names = game['teams']
+    raw = game.get('scores') or {}
+    game_status, pick_status = royal_status_label(game, result)
+    details = str(game.get('detail') or '').strip()
+    if game_status == 'LIVE':
+        game_label = '🔴 LIVE' + (' · ' + details if details else '')
+    elif game_status == 'FINAL':
+        game_label = '🏁 FINAL'
+    elif game_status == 'UPCOMING':
+        game_label = '⏳ PENDING'
     else:
-        game_label="TIME UNVERIFIED"
-    game_color={"LIVE":"#fb7185","FINAL":"#c4b5fd","UPCOMING":"#94a3b8","UNVERIFIED":"#fbbf24"}[game_status]
-    pick_color={"WIN":"#86efac","LOSS":"#fca5a5","PENDING":"#fbbf24"}.get(pick_status,"#fbbf24")
-    line_rows=[]
-    for team in names:
-        chosen=bool(selected and _team_name_match(selected,team)>=.90)
-        crown='<span style="margin-left:6px;color:#d8b4fe" aria-label="Queen pick" title="Queen pick">👑</span>' if chosen else ''
-        val=raw.get(team)
-        score=html.escape(str(val)) if val is not None and str(val).strip()!='' and game_status in ('LIVE','FINAL') else '—'
-        team_safe=html.escape(str(team))
-        name_color='#efdcff' if chosen else '#e5e7eb'
-        line_rows.append(f'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0"><span style="font-size:clamp(13px,2.6vw,17px);font-weight:{"800" if chosen else "600"};color:{name_color};min-width:0">{team_safe}{crown}</span><span style="font-size:clamp(21px,4vw,29px);font-weight:850;font-variant-numeric:tabular-nums;color:{name_color};text-align:right;min-width:36px">{score}</span></div>')
-    note=''
+        game_label = '⚠️ UNVERIFIED'
+    date_label = local(game.get('date') or start) if game_status == 'UPCOMING' else ''
+    date_label = date_label.replace('Time unconfirmed','')
+    team_match = _person_name_match if sport == 'Tennis' else _team_name_match
+    chosen_idx = None
     if selected:
-        if game_status=='LIVE':
-            scores=[numeric(raw.get(n)) for n in names]
-            if scores[0] is not None and scores[1] is not None:
-                picked=next((i for i,n in enumerate(names) if _team_name_match(selected,n)>=.90),None)
-                if picked is not None:
-                    delta=scores[picked]-scores[1-picked]
-                    note=('LEADING BY '+str(int(delta)) if delta>0 else 'TRAILING BY '+str(int(-delta)) if delta<0 else 'TIED')
-        if not note:
-            note='QUEEN PICK MARKED 👑'
-    footer=(f'<span style="color:{pick_color};font-size:11px;font-weight:750">PICK {html.escape(pick_status)}</span>' if selected else '<span style="color:#9ca3af;font-size:11px">WATCHING</span>')
-    if note:
-        footer+=f'<span style="color:#c4b5d1;font-size:11px">{html.escape(note)}</span>'
-    padding='9px 12px' if compact else '13px 16px'
-    st.markdown(f'<div style="background:#1b1326;border:1px solid #624076;border-radius:12px;padding:{padding};margin:4px 0 8px">'
-      f'<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:5px"><span style="font-size:11px;font-weight:700;color:#c4b5d1">{html.escape("NCAAF · NCAA Football" if sport=="NCAAF" else str(sport))}</span><span style="font-size:11px;font-weight:800;color:{game_color}">{html.escape(game_label)}</span></div>'
-      +''.join(line_rows)
-      +f'<div style="border-top:1px solid #463653;padding-top:7px;margin-top:5px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:5px">{footer}</div></div>',unsafe_allow_html=True)
+        ranks=[team_match(selected,t) for t in names]
+        if max(ranks) >= .90 and abs(ranks[0]-ranks[1]) >= .06:
+            chosen_idx = 0 if ranks[0]>ranks[1] else 1
+    # A marked crown must refer to the original saved selection, never a guess.
+    line_rows=[]
+    for i,team in enumerate(names):
+        picked = selected is not None and chosen_idx == i
+        shown = html.escape(str(team))
+        val = raw.get(team)
+        score = html.escape(str(val)) if val is not None and str(val).strip() and game_status in ('LIVE','FINAL') else '—'
+        text_color = '#f1d9ff' if picked else '#e5e7eb'
+        badge = (' <span style="display:inline-block;background:#53316e;border:1px solid #b48bd5;'
+                 'border-radius:20px;padding:2px 6px;font-size:10px;color:#fff;font-weight:850;'
+                 'white-space:nowrap;margin-left:5px">👑 QUEEN’S PICK</span>') if picked else ''
+        line_rows.append('<div style="display:flex;justify-content:space-between;align-items:center;'
+            'gap:6px;padding:7px 0"><span style="font-size:clamp(13px,2.6vw,17px);'
+            f'font-weight:{"850" if picked else "600"};color:{text_color};min-width:0;'
+            f'overflow-wrap:anywhere">{shown}{badge}</span>'
+            '<strong style="font-size:clamp(21px,4vw,29px);font-variant-numeric:tabular-nums;'
+            f'color:{text_color};flex-shrink:0">{score}</strong></div>')
+    game_color = {'LIVE':'#fb7185','FINAL':'#c4b5fd','UPCOMING':'#fbbf24','UNVERIFIED':'#fbbf24'}[game_status]
+    pick_color={'WIN':'#86efac','LOSS':'#fca5a5','PENDING':'#fbbf24'}.get(pick_status,'#fbbf24')
+    footer = (f'<strong style="font-size:12px;color:{pick_color}">'
+              f'{"✅ PICK WIN" if pick_status=="WIN" else "❌ PICK LOSS" if pick_status=="LOSS" else "⏳ PICK PENDING"}'
+              '</strong>') if selected else '<strong style="font-size:11px;color:#cbd5e1">👀 WATCH ONLY · NO SAVED PICK</strong>'
+    if selected and game_status == 'LIVE' and chosen_idx is not None:
+        vals=[numeric(raw.get(n)) for n in names]
+        if all(v is not None for v in vals):
+            delta=vals[chosen_idx]-vals[1-chosen_idx]
+            footer+=f'<span style="font-size:11px;color:#c4b5d1">'
+            footer+=('LEADING BY '+str(int(delta)) if delta>0 else 'TRAILING BY '+str(int(-delta)) if delta<0 else 'TIED')+'</span>'
+    sport_icon={'NBA':'🏀','NFL':'🏈','NHL':'🏒','NCAAF':'🏈','Tennis':'🎾'}.get(sport,'🏆')
+    label=f'{sport_icon} '+('NCAAF · COLLEGE FOOTBALL' if sport=='NCAAF' else str(sport).upper())
+    top_line=f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px"><strong style="font-size:12px;color:#d8b4fe">{html.escape(label)}</strong><strong style="font-size:12px;color:{game_color}">{html.escape(game_label)}</strong></div>'
+    if date_label:
+        top_line+=f'<div style="font-size:11px;color:#c4b5d1;margin:0 0 6px">📅 {html.escape(date_label)}</div>'
+    elif game_status in ('LIVE','FINAL') and game.get('date'):
+        top_line+=f'<div style="font-size:10px;color:#bba9ca;margin:0 0 4px">{html.escape(local(game["date"]))}</div>'
+    padding='10px 13px' if compact else '13px 16px'
+    st.markdown('<div style="background:#1b1326;border:1px solid #754b90;border-radius:12px;'
+        f'padding:{padding};margin:4px 0 8px">'+top_line+''.join(line_rows)
+        +'<div style="border-top:1px solid #463653;padding-top:8px;margin-top:5px;'
+        f'display:flex;justify-content:space-between;gap:6px;flex-wrap:wrap">{footer}</div></div>',
+        unsafe_allow_html=True)
     return True
 
 
@@ -1608,7 +1643,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.6.2 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.6.3 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
@@ -1624,6 +1659,7 @@ with tab_current:
         royal_tennis_parlay_status()
         royal_tennis_archive_summary()
     elif selected_sport=='Tennis':
+        royal_current_picks_panel('TENNIS')
         royal_tennis_live_panel()
         royal_tennis_parlay_status()
         royal_tennis_archive_summary()
