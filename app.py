@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.9 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -180,6 +180,35 @@ def _royal_tennis_seed(competitor):
             return int(number)
     return None
 
+def _provider_image_url(value):
+    """Read an actual provider-supplied image URL; never synthesize a helmet URL."""
+    if isinstance(value, str):
+        return safe_logo(value) if 'safe_logo' in globals() else (value if value.startswith('https://') else '')
+    if isinstance(value, dict):
+        for key in ('href', 'url', 'src'):
+            item = value.get(key)
+            if isinstance(item, str) and item.startswith('https://'):
+                return item
+    if isinstance(value, list):
+        for item in value:
+            url = _provider_image_url(item)
+            if url: return url
+    return ''
+
+
+def _team_provider_picture(competitor, image_type='logo'):
+    team=(competitor or {}).get('team') or {}
+    if not isinstance(team, dict): return ''
+    if image_type == 'helmet':
+        # Only true, explicitly supplied helmet assets count as helmet art.
+        for key in ('helmetImage', 'helmet', 'helmetLogo'):
+            url=_provider_image_url(team.get(key))
+            if url:return url
+        return ''
+    return (_provider_image_url(team.get('logo')) or
+            _provider_image_url(team.get('logos')))
+
+
 def _score_record(event, sport, competition=None):
     """Normalize either a team game or a tennis match nested in a tournament."""
     comp = competition or ((event.get("competitions") or [None])[0])
@@ -197,7 +226,8 @@ def _score_record(event, sport, competition=None):
     return {"state":state,"detail":detail,"date":comp.get("date") or event.get("date"),
             "teams":names,"scores":scores,"sets":sets,
             "winner":next((n for n,p in zip(names,participants) if p.get("winner") is True),None),
-            "logos":{n:(p.get("team") or {}).get("logo","") for n,p in zip(names,participants)},
+            "logos":{n:_team_provider_picture(p) for n,p in zip(names,participants)},
+            "helmets":{n:_team_provider_picture(p,'helmet') for n,p in zip(names,participants)},
             "team_colors":{n:(p.get("team") or {}).get("color","") for n,p in zip(names,participants)},
             "records":{n:p.get("records") or [] for n,p in zip(names,participants)},
             "tennis_seed":{n:_royal_tennis_seed(p) for n,p in zip(names,participants)} if sport == "Tennis" else {},
@@ -1312,6 +1342,36 @@ def royal_tennis_parlay_status():
     st.caption('Tennis-only parlays are not generated from completed matches or live scores alone. When qualified original picks exist, automatic tickets and manual suggestions use the same-day Central Time rule.')
 
 
+def royal_ncaaf_record_evaluation(game):
+    """Uncalibrated season-record lean for a *research-only* forecast.
+
+    The earlier 0.60 cutoff hid record differences such as 8-2 versus 4-6.
+    Require a meaningful smoothed record-rate gap before saving a lean.
+    This is NOT a true win probability or a tradable edge.
+    """
+    names=game.get('teams') or []
+    if game.get('state')!='pre' or len(names)!=2:return None
+    records=[win_record((game.get('records') or {}).get(name)) for name in names]
+    if not all(records) or any(sum(r)<5 for r in records):return None
+    rates=[(w+5)/(w+l+10) for w,l in records]
+    margin=1.65*(rates[0]-rates[1]) + (.10 if names[0]==game.get('home') else -.10 if names[1]==game.get('home') else 0)
+    estimate=1/(1+math.exp(-margin))
+    choice=0 if estimate>=.5 else 1
+    strength=max(estimate,1-estimate)
+    if abs(rates[0]-rates[1])<.15 or strength<.55:return None
+    return records,choice,strength
+
+
+def royal_ncaaf_watch_reason(game):
+    if game.get('state')!='pre':return 'NO NEW PREGAME FORECAST'
+    names=game.get('teams') or []
+    if len(names)!=2:return 'MATCHUP UNVERIFIED'
+    records=[win_record((game.get('records') or {}).get(name)) for name in names]
+    if not all(records):return 'TEAM RECORDS UNAVAILABLE'
+    if any(sum(r)<5 for r in records):return 'TOO FEW GAMES FOR RECORD MODEL'
+    return 'NO CLEAR RECORD-BASED LEAN'
+
+
 def royal_ncaaf_research_picks(games):
     """Save independently evidenced ESPN-only forecasts, without invented trades.
 
@@ -1334,15 +1394,9 @@ def royal_ncaaf_research_picks(games):
                 if _team_name_match(row.get('selection',''),names[0])>=.9 and _team_name_match(row.get('opponent',''),names[1])>=.9 or _team_name_match(row.get('selection',''),names[1])>=.9 and _team_name_match(row.get('opponent',''),names[0])>=.9:
                     existing=True;break
             if existing:continue
-            records=[win_record((game.get('records') or {}).get(name)) for name in names]
-            if not all(records) or any(sum(r)<5 for r in records):continue
-            rates=[(w+5)/(w+l+10) for w,l in records]
-            # Identical transparent season-record baseline as other sports.
-            margin=1.65*(rates[0]-rates[1]) + (.10 if names[0]==game.get('home') else -.10 if names[1]==game.get('home') else 0)
-            raw_p=1/(1+math.exp(-margin))
-            choice=0 if raw_p>=.5 else 1
-            confidence=max(raw_p,1-raw_p)
-            if confidence<.60:continue
+            evaluation=royal_ncaaf_record_evaluation(game)
+            if evaluation is None:continue
+            records,choice,confidence=evaluation
             event_id='ESPN-NCAAF-'+str(game.get('event_id') or '')
             if event_id=='ESPN-NCAAF-':continue
             if conn.execute('SELECT 1 FROM royal_predictions_v34 WHERE sport=? AND event_id=?',( 'NCAAF',event_id)).fetchone():continue
@@ -1354,8 +1408,8 @@ def royal_ncaaf_research_picks(games):
               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",(
                 pid,event_id,slug,'NCAAF',names[0]+' vs '+names[1],
                 names[choice],names[1-choice],'PREGAME','ESPN NCAAF season-record research',
-                confidence,'RESEARCH · NO VERIFIED CONTRACT PRICE',
-                f'ESPN season records: {names[0]} {records[0][0]}-{records[0][1]}; {names[1]} {records[1][0]}-{records[1][1]}. Smoothed record + small home adjustment; not calibrated or evidence of market value. No executable contract quote or paper allocation.',
+                None,'RESEARCH · RECORD LEAN · NO MARKET EDGE',
+                f'ESPN season records: {names[0]} {records[0][0]}-{records[0][1]}; {names[1]} {records[1][0]}-{records[1][1]}. Smoothed records and home adjustment crossed a research-only direction threshold ({confidence:.1%} formula score, NOT a calibrated win probability). No market edge, executable quote or paper allocation.',
                 None,now.isoformat()))
             if conn.total_changes>before:
                 created+=1
@@ -1364,7 +1418,7 @@ def royal_ncaaf_research_picks(games):
     return created
 
 def royal_ncaaf_games_panel():
-    """Full available college-football schedule. Never creates paper locks."""
+    """Full college-football schedule, with separate evidence-limited research picks."""
     st.subheader('🏈 College Football · Games & Live Scores')
     st.caption('👀 All available FBS games, whether or not Queen selected one. Only saved, independently verified picks receive a 👑.')
     today=utc().astimezone(CT).date()
@@ -1445,12 +1499,13 @@ def royal_ncaaf_games_panel():
                 picked=matched[0][1] if matched and (len(matched)==1 or matched[0][0]-matched[1][0]>.06) else None
                 royal_scoreboard(game,'NCAAF',picked.get('selection') if picked else None,
                                 picked.get('result','PENDING') if picked else 'PENDING',
-                                game.get('date'),compact=True,pick_record=picked)
+                                game.get('date'),compact=True,pick_record=picked,
+                                watch_reason=royal_ncaaf_watch_reason(game) if not picked else None)
     if len(visible)<len(games):
         st.caption(f'Showing {len(visible)} of {len(games)} games. Tap Show All to see the complete available schedule.')
     if errors:
         st.caption('Some schedule requests failed; displayed games are verified from available ESPN responses.')
-    st.caption('ESPN-only forecasts require clear season-record evidence and are research picks with $0 paper allocation; no exchange quote or bet is assumed. Market picks still require contract verification.')
+    st.caption('ESPN-only directional forecasts are uncalibrated research selections (0 U, no contract pricing). WATCH cards explain missing evidence. Contract-priced paper testing still requires verified market identity, bid/ask and official settlement checks.')
 
 
 def royal_current_picks_panel(sport_filter='FOCUS'):
@@ -1660,36 +1715,39 @@ def royal_status_label(game, result="PENDING"):
 
 
 def royal_team_visual(team, game, sport):
-    """ESPN official marks with a football helmet silhouette fallback.
+    """Prefer provider-authenticated helmet art; otherwise show the real team mark.
 
-    Helmet silhouette is local SVG; ESPN team color/logo is used only if
-    it belongs to the scoreboard's verified competitor. No downloaded art.
+    ESPN team logos are reliable across much more of the NCAA slate than helmet
+    photographs. Never paste a logo on a synthetic helmet silhouette.
     """
     team=str(team or '')
     logos=(game or {}).get('logos') or {}
+    helmets=(game or {}).get('helmets') or {}
     colors=(game or {}).get('team_colors') or {}
     source=safe_logo(logos.get(team))
+    helmet=safe_logo(helmets.get(team)) if sport in ('NCAAF','NFL') else ''
     raw=str(colors.get(team) or '').strip().lstrip('#')
     color='#70459b'
     if re.fullmatch(r'[a-fA-F0-9]{6}',raw): color='#'+raw
-    initials=''.join(w[0] for w in re.findall(r'[A-Za-z]+',team)[:2]).upper() or '?'
-    if sport in ('NCAAF','NFL'):
-        # Football-specific silhouette, not a claim to official helmet artwork.
-        crest=(f'<img loading="lazy" src="{html.escape(source,quote=True)}" '
-               f'alt="{html.escape(team,quote=True)} team logo" onerror="this.style.display=\'none\'">') if source else html.escape(initials)
-        return (f'<span class="qe568-helmet" title="{html.escape(team,quote=True)}" '
-                f'style="--helmet-color:{color}">'
-                '<svg viewBox="0 0 64 64" aria-hidden="true" focusable="false">'
-                '<path d="M9 35C9 18 22 8 37 8c14 0 23 11 23 24v6H45l-4 14H23l-3-13H9Z" '
-                'fill="var(--helmet-color)" stroke="#e1d9eb" stroke-width="3"/>'
-                '<path d="M42 37h18M43 44h14M50 37l-4 18" stroke="#e1d9eb" '
-                'stroke-width="3.3" stroke-linecap="round" fill="none"/>'
-                '</svg><span class="qe568-helmet-crest">'+crest+'</span></span>')
+    tokens=re.findall(r'[A-Za-z]+',team)
+    initials=''.join(w[0] for w in tokens[:2]).upper() or '?'
+    name=html.escape(team,quote=True)
+    if helmet:
+        return (f'<span class="qe569-team-art qe569-helmet-photo" title="{name}">'
+                f'<img loading="lazy" src="{html.escape(helmet,quote=True)}" '
+                f'alt="{name} football helmet" onerror="this.style.display=\'none\'">'
+                '</span>')
     if source:
-        return f'<span class="qe568-team-logo"><img loading="lazy" src="{html.escape(source,quote=True)}" alt="{html.escape(team,quote=True)} logo" onerror="this.parentElement.textContent=\'{html.escape(initials)}\'"></span>'
-    return f'<span class="qe568-team-logo qe568-initial" style="background:{color}">{html.escape(initials)}</span>'
+        # If a real helmet photo is unavailable, an authentic team logo looks
+        # much more professional than a fictitious helmet decal.
+        return (f'<span class="qe569-team-art qe569-logo" title="{name}" style="--team-color:{color}">'
+                f'<img loading="lazy" src="{html.escape(source,quote=True)}" '
+                f'alt="{name} official team mark" onerror="this.style.display=\'none\'">'
+                '</span>')
+    return (f'<span class="qe569-team-art qe569-initial" title="{name}" '
+            f'style="--team-color:{color}">{html.escape(initials)}</span>')
 
-def royal_scoreboard(game, sport, selected=None, result="PENDING", start=None, compact=False, pick_record=None):
+def royal_scoreboard(game, sport, selected=None, result="PENDING", start=None, compact=False, pick_record=None, watch_reason=None):
     """Clearly distinguish one saved Queen selection from a score-only game.
 
     Score and clock are always provider-derived. Never infer a final result.
@@ -1736,9 +1794,11 @@ def royal_scoreboard(game, sport, selected=None, result="PENDING", start=None, c
             f'color:{text_color};flex-shrink:0">{score}</strong></div>')
     game_color = {'LIVE':'#fb7185','FINAL':'#c4b5fd','UPCOMING':'#fbbf24','UNVERIFIED':'#fbbf24'}[game_status]
     pick_color={'WIN':'#86efac','LOSS':'#fca5a5','PENDING':'#fbbf24'}.get(pick_status,'#fbbf24')
+    research=bool(pick_record and str(pick_record.get('slug') or '').startswith('ESPN-RESEARCH-'))
     footer = (f'<strong style="font-size:12px;color:{pick_color}">'
-              f'{"✅ PICK WIN" if pick_status=="WIN" else "❌ PICK LOSS" if pick_status=="LOSS" else "⏳ PICK PENDING"}'
-              '</strong>') if selected else '<strong style="font-size:11px;color:#cbd5e1">👀 WATCH ONLY · NO SAVED PICK</strong>'
+              f'{"✅ PICK WIN" if pick_status=="WIN" else "❌ PICK LOSS" if pick_status=="LOSS" else "⏳ RESEARCH PICK · PENDING" if research else "⏳ PICK PENDING"}'
+              '</strong>') if selected else ('<strong style="font-size:11px;color:#cbd5e1">👀 WATCH ONLY · '
+              +html.escape(str(watch_reason or 'NO SAVED PICK'))+'</strong>')
     if selected and game_status == 'LIVE' and chosen_idx is not None:
         vals=[numeric(raw.get(n)) for n in names]
         if all(v is not None for v in vals):
@@ -1962,14 +2022,13 @@ h2{font-size:clamp(1.15rem,3vw,1.5rem)!important}
 
 st.markdown("""<style>
 .qe568-teamline{display:flex;align-items:center;gap:9px;min-width:0;flex:1}
-.qe568-helmet{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:0 0 45px;width:45px;height:45px}
-.qe568-helmet svg{width:45px;height:45px;filter:drop-shadow(0 1px 3px #0008)}
-.qe568-helmet-crest{position:absolute;left:9px;top:12px;width:25px;height:22px;display:flex;align-items:center;justify-content:center;color:white;font-weight:900;font-size:10px;text-shadow:0 1px 2px black}
-.qe568-helmet-crest img{width:24px;height:22px;object-fit:contain}
-.qe568-team-logo{display:inline-flex;width:35px;height:35px;flex:0 0 35px;border-radius:50%;border:1px solid #71508f;align-items:center;justify-content:center;overflow:hidden}
-.qe568-team-logo img{width:31px;height:31px;object-fit:contain}
-.qe568-initial{color:white;font-weight:900;font-size:11px}
-@media(max-width:650px){.qe568-helmet{width:36px;height:36px;flex-basis:36px}.qe568-helmet svg{width:36px;height:36px}.qe568-helmet-crest{left:7px;top:10px;width:19px;height:18px;font-size:8px}.qe568-helmet-crest img{width:18px;height:17px}.qe568-teamline{gap:5px}.qe568-team-logo{width:29px;height:29px;flex-basis:29px}.qe568-team-logo img{width:25px;height:25px}}
+.qe569-team-art{width:42px;height:42px;flex:0 0 42px;display:inline-flex;align-items:center;justify-content:center;overflow:hidden;border-radius:10px;background:color-mix(in srgb,var(--team-color,#443153) 25%,#18131f);border:1px solid #614678}
+.qe569-team-art img{width:36px;height:36px;object-fit:contain}
+.qe569-helmet-photo{border:0;background:transparent;overflow:visible}
+.qe569-helmet-photo img{width:44px;height:44px}
+.qe569-initial{background:var(--team-color,#443153);color:white;font-size:12px;font-weight:900;letter-spacing:.03em}
+@media(max-width:650px){.qe569-team-art{width:34px;height:34px;flex-basis:34px}.qe569-team-art img{width:30px;height:30px}.qe569-helmet-photo img{width:36px;height:36px}.qe568-teamline{gap:6px}}
+
 </style>""",unsafe_allow_html=True)
 
 st.markdown("""<style>
@@ -1994,7 +2053,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.6.8 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.6.9 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
