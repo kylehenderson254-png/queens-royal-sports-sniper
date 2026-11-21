@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -2103,7 +2103,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V6.3 · ROYAL FOCUS · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
+st.caption("V6.4 · ROYAL FOCUS · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
 st.markdown("""<style>
 .stApp {background:linear-gradient(160deg,#0e0920 0%,#100e1d 55%,#090b16 100%);}
 div[data-testid="stMetric"] {background:linear-gradient(130deg,#261447,#14142d);border:1px solid #65449b;border-radius:15px;padding:13px;}
@@ -2112,8 +2112,10 @@ div[data-testid="stTabs"] button {font-weight:700;border-radius:999px;padding:0.
 div[data-testid="stTabs"] [data-baseweb="tab-list"] {gap:0.45rem;flex-wrap:wrap;}
 div[data-testid="stTabs"] button[aria-selected="true"] {background:#552b87;color:#fff;}
 div[data-testid="stVerticalBlockBorderWrapper"] {border-radius:16px;}
+div[data-testid="stPills"] button {border-radius:999px !important;border:1px solid #8756c7 !important;background:#23133e !important;color:#f0e2ff !important;font-weight:750 !important;padding:0.65rem 1.1rem !important;}
+div[data-testid="stPills"] button[aria-pressed="true"] {background:linear-gradient(115deg,#8a37e8,#bc347f) !important;border-color:#e9a5ff !important;color:white !important;box-shadow:0 0 16px #853ed080 !important;}
 </style>""",unsafe_allow_html=True)
-st.info("👑 V6.3 ROYAL FOCUS · Fresh records only. Old V6.1 picks are not imported. Your downloaded CSV backups remain unchanged.")
+st.info("👑 V6.4 ROYAL FOCUS · Fresh records only. Old V6.1 picks are not imported. Your downloaded CSV backups remain unchanged.")
 
 # V6.1: Do not replay bundled historical exports on every new deployment.
 # Old history remains available in the database until explicitly archived.
@@ -2440,11 +2442,13 @@ def royal_auto_scan():
 
     # V5.3: Top 10 cards already show the matched game score and clock.
     # A second live-board on this page duplicated those same fixtures.
-    st.markdown("### 👑 Choose Your Focus")
-    focus_scores, focus_parlays, focus_underdog, focus_archive = st.tabs(
-        ["🔴 LIVE SCORES & PICKS", "🏆 PARLAYS", "🔥 UNDERDOG", "📊 PAST TICKETS"]
+    st.markdown("### 👑 ROYAL FOCUS · SELECT YOUR SCREEN")
+    focus_choice = st.pills(
+        "Choose one focus",
+        ["🏀 LIVE PICKS & SCORES", "🏆 PARLAYS", "🔥 UNDERDOG", "📊 PAST TICKETS"],
+        default="🏀 LIVE PICKS & SCORES", key="royal_v64_focus", label_visibility="collapsed"
     )
-    with focus_scores:
+    if focus_choice == "🏀 LIVE PICKS & SCORES":
         st.subheader("🏆 MATCHUP BOARD · LIVE SCORES & TEAM LOGOS")
         st.caption("Research candidates with available live scores and team logos. Tennis is view-only; these are not verified best-value bets.")
         watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
@@ -2628,7 +2632,7 @@ def royal_auto_scan():
         royal_grade_parlays()
         royal_tickets,royal_legs=royal_parlay_history()
 
-    with focus_underdog:
+    if focus_choice == "🔥 UNDERDOG":
         st.subheader("🔥 Queen's Underdog Sniper")
         dogs=[x for x in checked if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"]<.5]
         dogs=sorted(dogs,key=lambda x:(x["sport"],x["quote"]["ask"]))
@@ -2712,7 +2716,7 @@ def royal_auto_scan():
             else:risk='🟡 MULTI-LEG RISK'
             return grade,risk
 
-    with focus_parlays:
+    if focus_choice == "🏆 PARLAYS":
         st.subheader('👑 Queen’s Original Locked Parlays')
         st.caption('Automatic first qualifying same-day paper tickets. Past tickets are in Previous Parlays below.')
         if royal_new:
@@ -2857,7 +2861,7 @@ def royal_auto_scan():
             st.info(f'Only {len(same_day_candidates)} eligible saved picks for {chosen_day} CT ({sport_option}); {selected_legs} needed. Queen won’t invent picks, include started games, or mix dates.')
 
         st.divider()
-    with focus_archive:
+    if focus_choice == "📊 PAST TICKETS":
         st.subheader('📋 Previous Parlays')
         st.caption('Compact history: choose a time period, then select ONE ticket to see its legs. All saved tickets remain intact.')
         if not royal_tickets:
