@@ -851,11 +851,11 @@ def royal_results_dashboard():
                    FROM royal_primary_predictions_v54 ORDER BY
                    CASE WHEN result IN ('WIN','LOSS') THEN 0 ELSE 1 END,
                    COALESCE(graded_at,created_at) DESC LIMIT 40""")]
-    st.subheader("📊 Queen's Results — All Time")
+    st.subheader("📊 Queen's Verified Results — All Time")
     a,b,c,d = st.columns(4)
     a.metric("Saved picks",total['n'])
     b.metric("Graded W / L",f"{total['w']} / {total['l']}")
-    c.metric("Not graded",total['pending'])
+    c.metric("Unresolved (excluded)",total['pending'])
     d.metric("Paper P&L*",f"${paper['pnl']:+,.2f}")
     accuracy = f"{total['w']/(total['w']+total['l']):.1%}" if total['w']+total['l'] else "—"
     st.caption(f"Graded accuracy: {accuracy} (based on {total['w']+total['l']} predictions ONLY) · Paper: {paper['n']} entries, {paper['w']} wins, {paper['l']} losses")
@@ -882,9 +882,9 @@ def royal_results_dashboard():
     st.caption("Historical results remain separate. New tennis markets are monitored; Queen skips new locks without reliable pre-match evidence and pricing. No proven edge yet.")
     st.markdown("**🏁 Latest Results & Saved Picks**")
     if recent:
-        view=st.segmented_control("Show",["Results","Pending","All"],default="Results",key="royal_results_quick_filter")
+        view=st.segmented_control("Show",["Results","Pending (audit)","All (audit)"],default="Results",key="royal_results_quick_filter_v59")
         sport_choice=st.selectbox("Sport",["All Sports","NBA","NFL","NHL","NCAAF","Tennis"],key="royal_results_sport")
-        displayed=[r for r in recent if (view=="All" or (r['result'] in ('WIN','LOSS') if view=="Results" else r['result']=='PENDING'))
+        displayed=[r for r in recent if (view=="All (audit)" or (r['result'] in ('WIN','LOSS') if view=="Results" else r['result']=='PENDING'))
                    and (sport_choice=="All Sports" or r['sport']==sport_choice)]
         if not displayed:
             st.info("No records match these filters. Other saved predictions remain in History.")
@@ -1648,7 +1648,8 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
 
 
 def prediction_panel():
-    st.subheader("👑 Saved Pick History")
+    st.subheader("👑 Verified Pick History")
+    st.caption("Unresolved historical picks are hidden by default. Select Unresolved (optional) only to audit them; no records are silently graded or deleted.")
     with db() as c:
         # No 150-row limit on statistics: historical totals must reflect all saved picks.
         totals=c.execute("SELECT COUNT(*), SUM(result='WIN'), SUM(result='LOSS') FROM royal_primary_predictions_v54").fetchone()
@@ -1666,12 +1667,14 @@ def prediction_panel():
     a.metric("Locked picks",totals[0]);b.metric("Pick accuracy",f"{100*wins/(wins+losses):.0f}%" if wins+losses else "—")
     c.metric("$100 paper entries",ptotals[0]);d.metric("Provisional paper P&L",f"${ptotals[3]:+,.2f}")
     st.caption(f"Predictions: {wins} won / {losses} lost · Paper trades: {pw} won / {pl} lost · Results are provisional until exchange settlement is checked.")
-    filter_choice=st.radio("Show history",["All Picks","Paper Trades","Results"],horizontal=True,key="royal_history_filter")
+    filter_choice=st.radio("Show history",["Verified Results","Paper Trades","Unresolved (optional)","All Picks (audit)"],horizontal=True,key="royal_history_filter_v59")
     paper_by_prediction={r["prediction_id"]:r for r in papers}
     if filter_choice=="Paper Trades":
         filtered=[r for r in rows if r["id"] in paper_by_prediction]
-    elif filter_choice=="Results":
+    elif filter_choice=="Verified Results":
         filtered=[r for r in rows if r["result"] in ("WIN","LOSS","VOID","PUSH")]
+    elif filter_choice=="Unresolved (optional)":
+        filtered=[r for r in rows if r["result"] == "PENDING"]
     else:
         filtered=rows
     st.caption(f"Showing {min(len(filtered),st.session_state.get('royal_history_limit',6))} of {len(filtered)} saved picks · Newest first")
@@ -1695,7 +1698,7 @@ def prediction_panel():
         if st.button("Show 20 more saved picks",use_container_width=True):
             st.session_state["royal_history_limit"]=limit+20
             st.rerun()
-    if not filtered: st.info("No picks in this filter yet. Try All Picks.")
+    if not filtered: st.info("No picks in this view yet. Choose another history filter if needed.")
     with st.expander("💾 Back up or restore locked picks — no deletions",expanded=False):
         st.write("Save both CSV files to your phone or computer. These contain the original locked predictions and paper trades, including entry prices and timestamps.")
         st.download_button("⬇️ Download all locked picks (CSV)",_csv_bytes(raw_backup_rows),"royal_locked_picks_v34_backup.csv","text/csv",disabled=not rows,use_container_width=True)
