@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -242,11 +242,11 @@ def _game_similarity(row, game):
     x,y=game['teams']
     return max(min(score(a,x),score(b,y)),min(score(a,y),score(b,x)))
 
-def score_index(sports, extra_dates=None):
+def score_index(sports, extra_dates=None, future_days=3):
     """Scoreboard snapshots for today and selected saved-event dates, not just a fixed window."""
     result={}
     today=utc().astimezone(CT).date()
-    dates={today+timedelta(days=d) for d in (-2,-1,0,1,2,3)}
+    dates={today+timedelta(days=d) for d in range(-2, future_days+1)}
     for value in (extra_dates or []):
         dt=parse_date(value)
         if dt and abs((dt.astimezone(CT).date()-today).days)<=14:
@@ -1168,7 +1168,7 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
             stats=dict(c.execute("""SELECT COUNT(*) n,COALESCE(SUM(result='WIN'),0) w,
                 COALESCE(SUM(result='LOSS'),0) l FROM royal_primary_predictions_v54
                 WHERE sport='Tennis'""").fetchone())
-        idx=score_index(['Tennis'], [r.get('created_at') for r in candidates[:70]])
+        idx=score_index(['Tennis'], [r.get('created_at') for r in candidates[:70]], future_days=6)
         enriched=[]
         for r in candidates:
             game=_match_saved_game(r,idx)
@@ -1192,47 +1192,49 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
         if sport_filter in ROYAL_FOCUS_SPORTS:
             candidates=[r for r in candidates if r.get('sport')==sport_filter]
         idx=score_index([sport_filter] if sport_filter in ROYAL_FOCUS_SPORTS else list(ROYAL_FOCUS_SPORTS),
-                        [r.get('created_at') for r in candidates[:60]])
+                        [r.get('created_at') for r in candidates[:60]], future_days=6)
         enriched=[]
         for r in candidates:
             game=_match_saved_game(r,idx)
             if not game or game.get('state') not in ('in','pre'): continue
             dt=parse_date(game.get('date'))
-            if not dt or not (-timedelta(days=1)<=dt-utc()<=timedelta(days=4)): continue
+            if not dt or not (utc().astimezone(CT).date()-timedelta(days=1) <= dt.astimezone(CT).date() <= utc().astimezone(CT).date()+timedelta(days=6)): continue
             enriched.append((r,game))
         a,b,c=st.columns(3)
         a.metric('Current tracked games',len(enriched))
         b.metric('New Focus locks',focus['n'] or 0)
         c.metric('New Focus W / L',f"{focus['w'] or 0} / {focus['l'] or 0}")
-        st.caption('Includes earlier saved picks still awaiting games. New Focus statistics count only newer locks.')
+        st.caption('Includes earlier saved picks still awaiting games. New Focus statistics count only newer locks. Date filters below use confirmed game start times.')
     if not enriched:
         st.info('No verified live or upcoming saved picks for this sport. Completed games appear in Results; older records remain in History.')
         return
     priority={'in':0,'pre':1,'post':2}
     enriched.sort(key=lambda pair:(priority.get(pair[1].get('state'),3),pair[1].get('date') or '9999',pair[0].get('created_at') or ''))
-    # All dates use the game start, never the pick's creation date.
+    # Display-only date filters: no API request is triggered by changing the
+    # selection; scoreboard results use the existing cached source.
+    # Date windows include TODAY in America/Chicago: 3 days = today + 2,
+    # 7 days = today + 6. Never use a pick's saved timestamp as game date.
     today=utc().astimezone(CT).date()
-    options=['All Upcoming','Today','Tomorrow','Next 3 Days']
-    choice=st.segmented_control('📅 Game date',options,default='All Upcoming',
-        key='royal_v563_date_'+str(sport_filter))
+    options=['Today','Next 3 Days','Next 7 Days']
+    choice=st.segmented_control('📅 Game date',options,default='Next 3 Days',
+        key='royal_v564_date_'+str(sport_filter))
+    window_days={'Today':0,'Next 3 Days':2,'Next 7 Days':6}
+    last_day=today+timedelta(days=window_days.get(choice,2))
     def belongs(pair):
         dt=parse_date(pair[1].get('date'))
-        if not dt:return choice=='All Upcoming'
+        if not dt:return False
         day=dt.astimezone(CT).date()
-        return (choice=='All Upcoming' or
-                (choice=='Today' and day==today) or
-                (choice=='Tomorrow' and day==today+timedelta(days=1)) or
-                (choice=='Next 3 Days' and today<=day<=today+timedelta(days=2)))
+        return today<=day<=last_day
     visible=[pair for pair in enriched if belongs(pair)]
     if not visible:
-        st.info('No qualifying saved games for that date. Select All Upcoming to see the full list.')
+        st.info('No verified upcoming saved picks in this date range. Try Next 7 Days or another sport.')
         return
-    show_key='royal_v563_show_all_'+str(sport_filter)
+    show_key='royal_v564_show_all_'+str(sport_filter)
     show_all=bool(st.session_state.get(show_key,False))
     st.markdown(f'**👑 {len(visible)} saved picks · {choice}**')
     if len(visible)>16:
         if st.button('📋 Show Fewer Picks' if show_all else f'📋 Show All {len(visible)} Picks',
-                     key='royal_v563_show_button_'+str(sport_filter),use_container_width=True):
+                     key='royal_v564_show_button_'+str(sport_filter),use_container_width=True):
             show_all=not show_all
             st.session_state[show_key]=show_all
     displayed=visible if show_all else visible[:16]
@@ -1643,7 +1645,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.6.3 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.6.4 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
