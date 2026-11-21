@@ -13,7 +13,9 @@ CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
 ESPN = {"NBA":"basketball/nba", "NFL":"football/nfl", "NCAAB":"basketball/mens-college-basketball", "NCAAF":"football/college-football", "NHL":"hockey/nhl", "MLB":"baseball/mlb", "WNBA":"basketball/wnba", "MLS":"soccer/usa.1", "EPL":"soccer/eng.1", "Tennis":"tennis/all"}
-DB = Path(os.getenv("ROYAL_DB_PATH", "royal_sports_history.db"))
+DB = Path(os.getenv("ROYAL_V62_DB_PATH", "royal_sports_v62_fresh.db"))
+# V6.2 starts a NEW, isolated research database. Previous databases are untouched.
+# Configure ROYAL_V62_DB_PATH to a persistent mounted volume for durable history.
 DB.parent.mkdir(parents=True, exist_ok=True)
 
 def utc(): return datetime.now(timezone.utc)
@@ -2101,7 +2103,15 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V6.1 · ROYAL FRESH START · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
+st.caption("V6.2 · ROYAL FRESH START · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
+st.markdown("""<style>
+.stApp {background:linear-gradient(160deg,#0e0920 0%,#100e1d 55%,#090b16 100%);}
+div[data-testid="stMetric"] {background:linear-gradient(130deg,#261447,#14142d);border:1px solid #65449b;border-radius:15px;padding:13px;}
+div[data-testid="stMetricValue"] {color:#e7d4ff;}
+div[data-testid="stTabs"] button {font-weight:700;}
+div[data-testid="stVerticalBlockBorderWrapper"] {border-radius:16px;}
+</style>""",unsafe_allow_html=True)
+st.info("👑 NEW V6.2 SEASON · Fresh records only. Old V6.1 picks are not imported. Your downloaded CSV backups remain unchanged.")
 
 # V6.1: Do not replay bundled historical exports on every new deployment.
 # Old history remains available in the database until explicitly archived.
@@ -2116,8 +2126,8 @@ tab_home, tab_results, tab_history = st.tabs(
 tab_current = tab_home
 tab_live = tab_home
 with tab_current:
-    st.subheader("👑 ROYAL COMMAND CENTER · LOCKED PICKS")
-    st.caption("Compact view of original paper-locked selections. Grades are research quality, not validated win probabilities. No actual bets.")
+    st.subheader("👑 ROYAL COMMAND CENTER · NEW SEASON")
+    st.caption("Fresh V6.2 paper picks only · Scoreboard starts at zero · No actual bets.")
     with db() as conn:
         best_rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_primary_predictions_v54
             WHERE sport IN ('NBA','NFL','NHL','NCAAF') AND result='PENDING'
@@ -2141,7 +2151,7 @@ with tab_current:
     cols[0].metric('Verified focus wins',int(graded[0] or 0))
     cols[1].metric('Verified focus losses',int(graded[1] or 0))
     cols[2].metric('Recent unresolved locks',len(recent))
-    st.caption('Historical unresolved picks are hidden here, not deleted. A recent lock is NOT proof that its game has not ended.')
+    st.caption('Only picks created in the fresh V6.2 database are shown. A pending pick is not proof the game is still active.')
     if recent:
         st.markdown('**👑 Latest recorded paper lock · NOT a verified best-value ranking**')
         r=recent[0]
@@ -2162,7 +2172,7 @@ with tab_current:
                 if logo_url and safe_logo(logo_url):
                     st.image(logo_url,width=68)
                 st.write(team_name)
-                st.caption((r.get('confidence') or 'Unrated')+' · HISTORICAL PAPER LOCK')
+                st.caption((r.get('confidence') or 'Unrated')+' · V6.2 PAPER PICK')
             else: st.caption('No recent qualifying pick')
     with st.expander('📚 All saved picks, tennis research, and detailed game views',expanded=False):
         selected_sport=st.segmented_control('Sport',["All","NBA","NFL","NHL","NCAAF","Tennis"],default='All',key='royal_v562_sport_filter')
@@ -2270,42 +2280,8 @@ with tab_results:
 with tab_history:
     st.subheader("📚 Full Saved History")
     st.caption("All sports and older experiments are here. Backup files preserve original entry prices and pick timestamps.")
-    with st.expander("🧹 V6.1 · Clean up old unresolved picks", expanded=False):
-        st.caption("Only old PENDING picks are eligible. Verified WIN/LOSS picks and paper-trade-linked or parlay-linked picks are protected. Download the archive before confirming.")
-        import json as _v61_json
-        cutoff=(utc()-timedelta(days=3)).isoformat()
-        with db() as _c:
-            _rows=[dict(r) for r in _c.execute("""SELECT p.* FROM royal_predictions_v34 p
-                WHERE p.result='PENDING' AND p.created_at < ?
-                AND NOT EXISTS(SELECT 1 FROM royal_paper_v34 t WHERE t.prediction_id=p.id)
-                AND NOT EXISTS(SELECT 1 FROM royal_parlay_legs_v37 l WHERE l.prediction_id=p.id)
-                ORDER BY p.created_at""",(cutoff,))]
-        st.write(f"{len(_rows)} old unresolved picks eligible for archiving")
-        if _rows:
-            st.download_button("⬇️ Download old picks CSV FIRST",_csv_bytes(_rows),"royal_v61_old_unresolved_backup.csv","text/csv",key="v61_old_export")
-            _ack=st.checkbox("I have downloaded my backup and want these unresolved picks archived",key="v61_archive_ack")
-            if st.button("Archive old unresolved picks",disabled=not _ack,key="v61_archive_button"):
-                _done=0
-                with db() as _c:
-                    for _r in _rows:
-                        _id=_r['id']
-                        _live=_c.execute("SELECT * FROM royal_predictions_v34 WHERE id=? AND result='PENDING'",(_id,)).fetchone()
-                        if not _live: continue
-                        if _c.execute("SELECT 1 FROM royal_paper_v34 WHERE prediction_id=?",(_id,)).fetchone(): continue
-                        if _c.execute("SELECT 1 FROM royal_parlay_legs_v37 WHERE prediction_id=?",(_id,)).fetchone(): continue
-                        _data=dict(_live)
-                        _c.execute("INSERT OR IGNORE INTO royal_v61_archived_predictions VALUES (?,?,?)",(_id,_v61_json.dumps(_data),utc().isoformat()))
-                        if _data.get('event_id'):
-                            _c.execute("INSERT OR IGNORE INTO royal_v61_archived_events VALUES (?,?)",(_data['sport'],_data['event_id']))
-                        _c.execute("DELETE FROM royal_predictions_v34 WHERE id=? AND result='PENDING'",(_id,))
-                        _done+=1
-                    _c.commit()
-                st.success(f"Archived {_done} old unresolved picks. Verified results and linked tickets were preserved.")
-                st.rerun()
-        with db() as _c:
-            _archive=[dict(r) for r in _c.execute("SELECT * FROM royal_v61_archived_predictions ORDER BY archived_at DESC")]
-        if _archive:
-            st.download_button("⬇️ Download complete archived history",_csv_bytes(_archive),"royal_v61_archived_history.csv","text/csv",key="v61_archive_export")
+    st.success("👑 Fresh V6.2 history is isolated from the previous database. No old-pick cleanup is needed.")
+    st.caption("Previous history remains in your downloaded CSV files and old database. Do not import old CSVs if you want a clean season.")
     prediction_panel()
     with st.expander("⚙️ Advanced unit manager",expanded=False):
         royal_unit_manager()
@@ -2317,12 +2293,12 @@ with tab_history:
     st.download_button("⬇️ Parlay legs CSV", _csv_bytes(_parlay_legs), "royal_parlay_legs_v37_backup.csv", "text/csv", disabled=not _parlay_legs, use_container_width=True)
 
 with tab_home:
-    st.subheader("🔴 LIVE GAMES · SCORES · ROYAL PARLAYS")
+    st.subheader("🔴 LIVE SCORES · TEAM EMBLEMS · ROYAL PARLAYS")
     if st.button("👑 Refresh scores & prices", type="primary", use_container_width=True):
         api.clear()
         scores.clear()
         st.rerun()
-    st.caption("ESPN score updates as available; Polymarket US quote scans every ~2 minutes while awake. Streaming prices are not guaranteed.")
+    st.caption("🏀 NBA  ·  🏈 NFL  ·  🏒 NHL  ·  🎓 NCAAF  |  ESPN logos and scores when supplied; icons otherwise. Quotes are indicative. Scans refresh while the app is awake.")
 
 # Automatic discovery covers live games and the next three calendar days.
 # One stable daily session prevents duplicate parlays from changing filters.
@@ -2332,7 +2308,7 @@ window = st.segmented_control("📅 Scan games", ["Today", "Next 3 Days", "Next 
 
 @st.fragment(run_every="120s")
 def royal_auto_scan():
-    # All five sports may be researched; only independently qualified pregame
+    # Four Royal Focus sports only; only independently qualified pregame
     # predictions are auto-locked. Tennis is not forced into an unproven model.
     selected = list(ACTIVE_SPORTS)
     with st.spinner("Finding Polymarket US sports events and checking market quotes..."):
