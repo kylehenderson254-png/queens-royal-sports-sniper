@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.7.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -578,7 +578,7 @@ def win_record(records):
 
 # V5.6 — verified, same-day parlay scheduling. Never infer a start date from
 # the prediction creation time or the time the API happened to return a market.
-ROYAL_PARLAY_SIZES = (2, 3, 5, 10)
+ROYAL_PARLAY_SIZES = (2, 3)  # 5/10 remain available via optional manual parlay builder
 
 def royal_verified_start(x):
     """Only use a scoreboard-confirmed scheduled start, not market or text guesses."""
@@ -2093,7 +2093,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.7.2 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.8 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
@@ -2101,25 +2101,67 @@ royal_enable_one_game_lock_v54()
 tab_current, tab_live, tab_results, tab_history = st.tabs(
     ["🏆 ALL SPORTS", "📡 PICKS / PARLAYS", "🏁 RESULTS", "⚙️ HISTORY"])
 with tab_current:
-    selected_sport=st.segmented_control('Sport',["All","NBA","NFL","NHL","NCAAF","Tennis"],default='All',key='royal_v562_sport_filter')
-    if selected_sport=='All':
-        royal_current_picks_panel('FOCUS')
-        st.divider()
-        royal_tennis_live_panel()
-        royal_tennis_parlay_status()
-        royal_tennis_archive_summary()
-    elif selected_sport=='Tennis':
-        royal_current_picks_panel('TENNIS')
-        royal_tennis_live_panel()
-        royal_tennis_parlay_status()
-        royal_tennis_archive_summary()
+    st.subheader("👑 QUEEN'S BEST LOCKED PICKS")
+    st.caption("Compact view of original paper-locked selections. Grades are research quality, not validated win probabilities. No actual bets.")
+    with db() as conn:
+        best_rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_primary_predictions_v54
+            WHERE sport IN ('NBA','NFL','NHL','NCAAF') AND result='PENDING'
+            ORDER BY created_at DESC, id DESC""")]
+        graded=conn.execute("""SELECT COALESCE(SUM(result='WIN'),0),COALESCE(SUM(result='LOSS'),0)
+            FROM royal_primary_predictions_v54 WHERE sport IN ('NBA','NFL','NHL','NCAAF')
+            AND created_at >= ?""",(ROYAL_FOCUS_SINCE_UTC,)).fetchone()
+    # Do not present an old ungraded selection as a fresh recommendation.
+    now=utc()
+    recent=[]
+    seen=set()
+    for r in best_rows:
+        dt=parse_date(r.get('created_at'))
+        if not dt or (now-dt).total_seconds()>3*86400 or dt>now: continue
+        k=(r.get('sport'),r.get('event_id'))
+        if k in seen: continue
+        seen.add(k)
+        recent.append(r)
+    cols=st.columns(3)
+    cols[0].metric('Verified focus wins',int(graded[0] or 0))
+    cols[1].metric('Verified focus losses',int(graded[1] or 0))
+    cols[2].metric('Recent unresolved locks',len(recent))
+    st.caption('Historical unresolved picks are hidden here, not deleted. A recent lock is NOT proof that its game has not ended.')
+    if recent:
+        st.markdown('**👑 Latest qualifying locked selection (not a guaranteed best-value bet)**')
+        r=recent[0]
+        st.info(f"{r.get('sport','')} · {r.get('selection','Unknown')} · {r.get('title','')} · {r.get('confidence') or 'Confidence unverified'}")
     else:
-        # NCAAF schedule is distinct from saved picks; display the slate FIRST.
-        # Filtering to NCAAF never creates a new locked selection.
-        if selected_sport=='NCAAF':
-            royal_ncaaf_games_panel()
+        st.info('No recent qualifying locked selection. Queen says WAIT rather than invent a pick.')
+    sport_cols=st.columns(4)
+    for col,sport in zip(sport_cols,('NBA','NFL','NHL','NCAAF')):
+        picks=[r for r in recent if r.get('sport')==sport]
+        with col:
+            st.markdown(f'**{SPORT_ICON.get(sport,"🏆")} {sport}**')
+            if picks:
+                r=picks[0]
+                st.write(r.get('selection') or 'Unknown')
+                st.caption((r.get('confidence') or 'Unrated')+' · PAPER LOCK')
+            else: st.caption('No recent qualifying pick')
+    with st.expander('📚 All saved picks, tennis research, and detailed game views',expanded=False):
+        selected_sport=st.segmented_control('Sport',["All","NBA","NFL","NHL","NCAAF","Tennis"],default='All',key='royal_v562_sport_filter')
+        if selected_sport=='All':
+            royal_current_picks_panel('FOCUS')
             st.divider()
-        royal_current_picks_panel(selected_sport)
+            royal_tennis_live_panel()
+            royal_tennis_parlay_status()
+            royal_tennis_archive_summary()
+        elif selected_sport=='Tennis':
+            royal_current_picks_panel('TENNIS')
+            royal_tennis_live_panel()
+            royal_tennis_parlay_status()
+            royal_tennis_archive_summary()
+        else:
+            # NCAAF schedule is distinct from saved picks; display the slate FIRST.
+            # Filtering to NCAAF never creates a new locked selection.
+            if selected_sport=='NCAAF':
+                royal_ncaaf_games_panel()
+                st.divider()
+            royal_current_picks_panel(selected_sport)
 # ========================================================
 # V5.7.2 COMPACT DAILY SUMMARY · VERIFIED RESULTS ONLY
 # ========================================================
