@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.9 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.7.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -574,9 +574,9 @@ def royal_fit_ticket(candidates, size, slate_day, exclude=None):
     already=set(exclude or [])
     eligible=[r for r in candidates if r.get('royal_slate_day')==slate_day
               and r.get('royal_verified_start') and r.get('id') and r.get('event_id')
-              and not str(r.get('slug') or '').startswith('ESPN-RESEARCH-')]
+              ]
     distinct=[]; seen=set()
-    for r in sorted(eligible,key=lambda row:(row.get('id') in already, -(numeric(row.get('model_probability')) or 0), row.get('royal_verified_start') or '')):
+    for r in sorted(eligible,key=lambda row:(row.get('id') in already, 0 if size>=3 and row.get('sport')=='NCAAF' else 1, -(numeric(row.get('model_probability')) or 0), row.get('royal_verified_start') or '')):
         identity=(r.get('sport'),r.get('event_id'))
         if identity in seen: continue
         seen.add(identity); distinct.append(r)
@@ -590,7 +590,7 @@ def royal_ticket_is_valid(legs, slate_day=None):
     if len(days)!=1 or None in days or (slate_day and slate_day not in days):
         return False
     for r in legs:
-        if str(r.get('slug') or '').startswith('ESPN-RESEARCH-'): return False
+        # ESPN-only forecasts qualify for RESEARCH combinations, not priced wagers.
         start=parse_date(r.get('royal_verified_start'))
         if not start or start <= utc() + timedelta(minutes=5):
             return False
@@ -1013,11 +1013,19 @@ def royal_pick_units_line(p):
     return f"🧪 QUEEN PAPER GUIDE: {units:g} U · ${dollars:,.2f}" + (" · NO PAPER ALLOCATION" if not units else " · RESEARCH ONLY")
 
 
-def royal_parlay_units_line(leg_count, historical=False):
-    """Existing parlay headers have no stored stake; never invent an entry."""
+def royal_parlay_units_line(leg_count, historical=False, research_only=False):
+    """No stake or executable payout may be assumed for ESPN-only research legs."""
+    if research_only:
+        return "🧪 RESEARCH PARLAY: 0 U · $0.00 · NO PAPER ALLOCATION OR VERIFIED PRICES"
     units, _ = royal_parlay_units([None] * int(leg_count or 0))
     text = f"🧪 PARLAY PAPER GUIDE: {units:g} U · ${units * BASE_UNIT:,.2f}"
     return text + (" · NOT A RECORDED STAKE" if historical else " · ILLUSTRATIVE, NO VERIFIED FILL")
+
+
+def royal_parlay_has_unpriced_research(legs):
+    return any(str(r.get('slug') or '').startswith('ESPN-RESEARCH-') or
+               str(r.get('model') or '') == 'ESPN NCAAF season-record research'
+               for r in legs)
 
 def royal_unit_manager():
     with db() as c:
@@ -2053,7 +2061,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.6.9 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.7.0 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
@@ -2219,9 +2227,9 @@ def royal_auto_scan():
     grade_predictions(rows)
     # College-football research must keep working even when the user is
     # viewing All Sports, Tennis, or Picks / Parlays rather than the NCAAF tab.
+    research_games={}
     try:
         today_ct=utc().astimezone(CT).date()
-        research_games={}
         with ThreadPoolExecutor(max_workers=3) as _pool:
             _future_dates={_pool.submit(royal_ncaaf_schedule_day,(today_ct+timedelta(days=offset)).strftime('%Y%m%d')):offset for offset in range(3)}
             for _future in as_completed(_future_dates):
@@ -2321,21 +2329,53 @@ def royal_auto_scan():
     # V3.7: Separate, automatically locked prediction combinations. They are NOT
     # exchange parlay contracts, verified quotes, simulated fills, or priced trades.
     def royal_parlay_candidates():
-        pool=[];used=set()
+        pool=[];used=set();used_fixture=set()
+        # Read the original saved ESPN research picks, never fabricate new parlay legs.
+        # The upcoming ESPN fixture is the authoritative date; created_at is not kickoff.
+        saved_research=[]
+        with db() as conn:
+            saved_research=[dict(r) for r in conn.execute("""
+                SELECT * FROM royal_predictions_v34
+                WHERE sport='NCAAF' AND slug LIKE 'ESPN-RESEARCH-%'
+                  AND phase='PREGAME' AND result='PENDING'
+                ORDER BY created_at DESC""").fetchall()]
+        for game in research_games.values():
+            if game.get('state')!='pre' or len(game.get('teams') or [])!=2:continue
+            dt=parse_date(game.get('date'))
+            if not dt or dt<=utc()+timedelta(minutes=5):continue
+            event_id='ESPN-NCAAF-'+str(game.get('event_id') or '')
+            matches=[r for r in saved_research if r['event_id']==event_id]
+            if not matches:continue
+            names=game['teams']
+            for r in matches[:1]:
+                if not any(_team_name_match(r.get('selection'),name)>=.90 for name in names):continue
+                if not any(_team_name_match(r.get('opponent'),name)>=.90 for name in names):continue
+                # Fail closed if stale imported history was saved after kickoff.
+                made=parse_date(r.get('created_at'))
+                if not made or made>=dt:continue
+                fixture=('NCAAF',frozenset(clean(n) for n in names),dt.astimezone(CT).date().isoformat())
+                if fixture in used_fixture:continue
+                item=dict(r)
+                item['royal_slate_day']=royal_slate_day(dt)
+                item['royal_verified_start']=dt.isoformat()
+                item['royal_research_only']=True
+                pool.append(item);used.add(('NCAAF',r['event_id']));used_fixture.add(fixture)
         for x in sorted(watch,key=evidence_rank):
             dt=royal_verified_start(x)
             if not dt: continue
             phase='LIVE' if x.get('live') else 'PREGAME'
             r=st.session_state['royal_locked'].get((x['event_id'],x['slug'],phase))
             if not r or r.get('result')!='PENDING': continue
-            if r.get('model')!='Season-record baseline': continue
-            if (numeric(r.get('model_probability')) or 0)<.58: continue
+            if r.get('model') not in ('Season-record baseline','Tennis verified-seed baseline'): continue
+            if r.get('model')=='Season-record baseline' and (numeric(r.get('model_probability')) or 0)<.58: continue
             # Prevent stale lock belonging to a past match from being attached
             # to a new matchup with similar player/team names.
             if x.get('sport')!=r.get('sport') or x.get('event_id')!=r.get('event_id'): continue
             identity=(r['sport'],r['event_id'])
-            if identity in used: continue
+            fixture=(r['sport'],frozenset(clean(n) for n in (x.get('score_game') or {}).get('teams',[]) ),royal_slate_day(dt))
+            if identity in used or (fixture[1] and fixture in used_fixture): continue
             used.add(identity)
+            if fixture[1]:used_fixture.add(fixture)
             item=dict(r)
             item['royal_slate_day']=royal_slate_day(dt)
             item['royal_verified_start']=dt.isoformat()
@@ -2357,7 +2397,7 @@ def royal_auto_scan():
                 c.execute("""INSERT OR IGNORE INTO royal_parlays_v37
                        (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)""",
                           (pid,session_key,n,utc().isoformat(),
-                           f'QUEEN AUTO V5.6 · Same-day {slate_day} CT · Research/paper only. No verified parlay price.'))
+                           f'QUEEN AUTO V5.7.1 · Same-day {slate_day} CT · 0 U unpriced research if ESPN legs included. No executable parlay price.'))
                 if c.total_changes==before: continue
                 for i,r in enumerate(chosen,1):
                     c.execute("""INSERT OR IGNORE INTO royal_parlay_legs_v37
@@ -2450,6 +2490,46 @@ def royal_auto_scan():
         st.caption("No verified underdog quotes available right now. Queen will not invent candidates.")
     st.caption("Underdog prices alone do not establish value. Paper testing only.")
 
+    def royal_pick_research_grade(r):
+        """Evidence-tier labels, not empirically validated accuracy estimates."""
+        model=str(r.get('model') or '')
+        prob=numeric(r.get('model_probability'))
+        evidence=str(r.get('evidence') or '')
+        if model=='Season-record baseline' and prob is not None:
+            if prob>=.67:return 'B','RECORD LEAN · LIMITED MODEL'
+            if prob>=.60:return 'B','RECORD LEAN · LIMITED MODEL'
+            return 'C','MODEST RECORD LEAN'
+        if model=='ESPN NCAAF season-record research':
+            return 'C','ESPN RECORD RESEARCH · UNPRICED'
+        if model=='Tennis verified-seed baseline':
+            return 'C','SEED COMPARISON · UNCALIBRATED'
+        return 'WATCH','NO QUALIFIED INDEPENDENT EVIDENCE'
+
+    def royal_pick_risk(r):
+        """Underdog designation needs a same-side verified YES quote.
+        Never misrepresent an unquoted research selection as a favorite.
+        """
+        ask=numeric(r.get('quote_ask'))
+        if ask is not None and 0<ask<.5:
+            return '🔴 HIGH RISK · QUOTED UNDERDOG'
+        if ask is not None and .5<=ask<1:
+            return '🟡 MARKET FAVORITE · RISK REMAINS'
+        return '⚪ UNPRICED · UNDERDOG STATUS UNKNOWN'
+
+    def royal_parlay_research_grade(legs):
+        grades=[royal_pick_research_grade(r)[0] for r in legs]
+        if any(g=='WATCH' for g in grades):grade='WATCH'
+        elif len(legs)>=5 or 'C' in grades:grade='C'
+        elif len(legs)>=3:grade='B'
+        else:grade='B'  # An A parlay needs backtested/calibrated evidence.
+        underdogs=sum('QUOTED UNDERDOG' in royal_pick_risk(r) for r in legs)
+        if len(legs)>=10:risk='🔴 VERY HIGH RISK · 10 LEGS'
+        elif len(legs)>=5:risk='🔴 HIGH RISK · MANY LEGS'
+        elif underdogs:risk=f'🔴 HIGH RISK · {underdogs} UNDERDOG LEG'+('S' if underdogs!=1 else '')
+        elif len(legs)>=3:risk='🟠 ELEVATED RISK · MULTI-LEG'
+        else:risk='🟡 MULTI-LEG RISK'
+        return grade,risk
+
     st.subheader('👑 Queen’s Original Locked Parlays')
     st.caption('Automatic first qualifying same-day paper tickets. Past tickets are in Previous Parlays below.')
     if royal_new:
@@ -2463,113 +2543,135 @@ def royal_auto_scan():
             status={'WIN':'✅ WIN','LOSS':'❌ LOSS','PENDING':'⏳ PENDING'}.get(t.get('status'),'⏳ PENDING')
             teams=' · '.join(str(leg.get('selection') or '?') for leg in legs)
             st.markdown(f"**🔒 {t['leg_count']}-leg · {status}**")
-            st.markdown(f"**{royal_parlay_units_line(t['leg_count'],historical=True)}**")
+            saved_leg_lookup={r['id']:r for r in royal_candidates}
+            originals=[saved_leg_lookup[l['prediction_id']] for l in legs if l.get('prediction_id') in saved_leg_lookup]
+            if len(originals)==len(legs) and originals:
+                automatic_grade,automatic_risk=royal_parlay_research_grade(originals)
+                st.caption(f'👑 GRADE {automatic_grade} · {automatic_risk}')
+            st.markdown(f"**{royal_parlay_units_line(t['leg_count'],historical=True,research_only=royal_parlay_has_unpriced_research(legs))}**")
             st.caption(teams if teams else 'Original ticket awaiting recovered leg details')
     st.caption('🎾 Tennis-only automatic tickets require independent pre-match evidence; scores alone do not qualify.')
     st.divider()
     st.subheader('🎯 My Parlay Builder')
-    st.caption('Suggestions stay UNLOCKED until you press paper lock. All legs must start on the SAME Central Time calendar day.')
+    st.caption('Build from Queen’s ALREADY LOCKED predictions only. Generate Another changes the combination, never the original game picks. Same-day Central Time, future games only.')
+    sport_option=st.selectbox('Parlay sports', ['All Sports','NBA','NFL','NHL','NCAAF','Tennis'],key='royal_v571_parlay_sport')
     selected_legs=st.radio('Choose your parlay',[2,3,5,10],horizontal=True,
         format_func=lambda n:{2:'👑 2 Legs',3:'👑 3 Legs',5:'👑 5 Legs',10:'🎰 10 Lotto'}[n],
         key='royal_parlay_size_v56')
-    if royal_slate_days:
-        chosen_day=st.selectbox('Games on (Central Time)',royal_slate_days,
-                                index=royal_slate_days.index(current.isoformat()) if current.isoformat() in royal_slate_days else 0,
-                                key='royal_v56_slate_day')
+    selected_pool=[r for r in royal_candidates if sport_option=='All Sports' or r.get('sport')==sport_option]
+    available_days=sorted({r['royal_slate_day'] for r in selected_pool if r.get('royal_slate_day')})
+    if available_days:
+        chosen_day=st.selectbox('Games on (Central Time)',available_days,
+                                index=available_days.index(current.isoformat()) if current.isoformat() in available_days else 0,
+                                key='royal_v571_slate_day')
     else:
         chosen_day=current.isoformat()
-        st.caption('No independently qualifying upcoming games with verified start times.')
-    same_day_candidates=[r for r in royal_candidates if r.get('royal_slate_day')==chosen_day]
+    same_day_candidates=[r for r in selected_pool if r.get('royal_slate_day')==chosen_day]
+    # Selection is a recombination of original prediction IDs. Multiple contracts
+    # on the same fixture must never count as separate legs.
+    unique_candidates=[];seen_fixtures=set()
+    for r in same_day_candidates:
+        fixture=(r.get('sport'),r.get('event_id'))
+        if fixture in seen_fixtures:continue
+        seen_fixtures.add(fixture);unique_candidates.append(r)
+    same_day_candidates=unique_candidates
+    sport_counts={sport:sum(r.get('sport')==sport for r in same_day_candidates) for sport in ACTIVE_SPORTS}
+    counts=' · '.join(f'{sport} {n}' for sport,n in sport_counts.items() if n)
+    st.caption(f'✅ {len(same_day_candidates)} eligible saved picks for {chosen_day} CT'+(f' · {counts}' if counts else ' · None yet'))
 
-    # Build independent combinations for every leg count, with reproducible
-    # variation across sizes and fresh variations on user request.
-    def royal_v55_propose(n, iteration=0):
+    def royal_v571_propose(n,iteration=0):
         import random
-        if len(same_day_candidates)<n: return []
-        eligible=[r for r in same_day_candidates if r.get('event_id') and r.get('id')]
-        rng=random.Random(int(hashlib.sha256((royal_session+'|'+chosen_day+'|'+str(n)+'|'+str(iteration)).encode()).hexdigest()[:16],16))
-        # This uses qualifying season-record baseline picks only; not validated edges.
-        rng.shuffle(eligible)
-        # Remove earlier ticket's teams when possible, but never sacrifice the minimum.
-        already=set()
-        for size in (2,3,5,10):
-            if size==n: continue
-            ids=st.session_state.get('royal_v56_proposal_'+chosen_day+'_'+str(size),[])
-            already.update(ids)
-        first=[r for r in eligible if r['id'] not in already]
-        rest=[r for r in eligible if r['id'] in already]
-        result=[]; events=set()
-        for r in first+rest:
-            if r['event_id'] in events: continue
-            events.add(r['event_id']);result.append(r)
-            if len(result)>=n:break
-        return result if len(result)==n else []
+        if len(same_day_candidates)<n:return []
+        seed=f'{chosen_day}|{sport_option}|{n}|{iteration}|ROYAL-V571'
+        rng=random.Random(int(hashlib.sha256(seed.encode()).hexdigest()[:16],16))
+        pool=same_day_candidates.copy()
+        rng.shuffle(pool)
+        if sport_option=='All Sports':
+            # Round-robin sports when possible. Always fill available positions
+            # rather than requiring every sport to have a game today.
+            buckets={sport:[r for r in pool if r.get('sport')==sport] for sport in ACTIVE_SPORTS}
+            sports=[sport for sport in ACTIVE_SPORTS if buckets[sport]]
+            rng.shuffle(sports)
+            mixed=[]
+            while sports:
+                remaining=[]
+                for sport in sports:
+                    if buckets[sport]:mixed.append(buckets[sport].pop(0))
+                    if buckets[sport]:remaining.append(sport)
+                sports=remaining
+            pool=mixed
+        selection=[];fixtures=set()
+        for r in pool:
+            fixture=(r.get('sport'),r.get('event_id'))
+            if fixture in fixtures:continue
+            fixtures.add(fixture);selection.append(r)
+            if len(selection)==n:break
+        return selection if len(selection)==n else []
 
-    # Keep user-visible proposals stable across the 120-second market rescans.
-    pkey='royal_v56_proposal_'+chosen_day+'_'+str(selected_legs)
-    iteration_key='royal_v56_iteration_'+chosen_day+'_'+str(selected_legs)
+    pkey=f'royal_v571_proposal|{chosen_day}|{sport_option}|{selected_legs}'
+    iteration_key=f'royal_v571_iteration|{chosen_day}|{sport_option}|{selected_legs}'
     st.session_state.setdefault(iteration_key,0)
     available_by_id={r['id']:r for r in same_day_candidates}
     proposal_ids=st.session_state.get(pkey,[])
-    if not proposal_ids or any(i not in available_by_id for i in proposal_ids):
-        st.session_state[pkey]=[r['id'] for r in royal_v55_propose(selected_legs,st.session_state[iteration_key])]
-    if st.button('🔄 Generate Another',key='royal_v56_another',use_container_width=True):
+    if not proposal_ids or len(proposal_ids)!=selected_legs or any(i not in available_by_id for i in proposal_ids):
+        st.session_state[pkey]=[r['id'] for r in royal_v571_propose(selected_legs,st.session_state[iteration_key])]
+    if st.button('🔄 Generate Another',key='royal_v571_another',use_container_width=True):
         if len(same_day_candidates)>=selected_legs:
             old=tuple(st.session_state.get(pkey,[]))
-            for _ in range(24):
+            for _ in range(80):
                 st.session_state[iteration_key]+=1
-                attempt=[r['id'] for r in royal_v55_propose(selected_legs,st.session_state[iteration_key])]
+                attempt=[r['id'] for r in royal_v571_propose(selected_legs,st.session_state[iteration_key])]
                 if tuple(attempt)!=old:
                     st.session_state[pkey]=attempt
                     break
             else:
-                st.info('No distinct qualified combination is available right now.')
+                st.info('There is only one distinct eligible combination right now.')
         else:
-            st.info('Not enough eligible games for this parlay size.')
+            st.info(f'{len(same_day_candidates)} eligible saved picks; {selected_legs} needed. Try 3 legs, All Sports, or a different date.')
     proposal=[available_by_id[i] for i in st.session_state.get(pkey,[]) if i in available_by_id]
     if len(proposal)==selected_legs and royal_ticket_is_valid(proposal,chosen_day):
-        st.markdown(f'**🎯 {chosen_day} CT · Suggested {selected_legs}-leg · NOT LOCKED**')
-        st.markdown(f'**{royal_parlay_units_line(selected_legs)}**')
+        grade,risk=royal_parlay_research_grade(proposal)
+        st.markdown(f'**🎯 {chosen_day} CT · {sport_option} · {selected_legs}-LEG · NOT LOCKED**')
+        st.markdown(f'**👑 PARLAY GRADE {grade} · {risk}**')
+        st.markdown(f'**{royal_parlay_units_line(selected_legs,research_only=royal_parlay_has_unpriced_research(proposal))}**')
         with st.container(border=True):
-            for r in proposal:
-                time_label=parse_date(r.get('royal_verified_start')).astimezone(CT).strftime('%I:%M %p CT')
-                st.markdown(f"👑 **{html.escape(str(r['selection']))}** · {html.escape(str(r['sport']))} · {time_label}")
-                st.caption('📊 '+html.escape(str(r.get('model') or 'Unverified model'))+' · '+html.escape(str(r.get('evidence') or 'No evidence')))
-            st.caption('Same-day Central Time. Historical season-record estimates are uncalibrated; odds and combined payout unverified. Paper research only.')
-        if st.button('🔒 Lock this parlay for PAPER tracking',key='royal_v56_lock',use_container_width=True):
+            for pos,r in enumerate(proposal,1):
+                time=parse_date(r.get('royal_verified_start'))
+                time_label=time.astimezone(CT).strftime('%I:%M %p CT') if time else 'Time unavailable'
+                pgrade,reason=royal_pick_research_grade(r)
+                st.markdown(f"**{pos}. {SPORT_ICON.get(r['sport'],'🏆')} {html.escape(str(r['selection']))}** · {html.escape(str(r['sport']))} · {time_label}")
+                st.caption(f'GRADE {pgrade} · {reason} · {royal_pick_risk(r)}')
+            st.caption('Research grades indicate evidence quality, not verified win probabilities. 3/5/10-leg combinations have compounding loss risk. No combined executable odds or verified fills.')
+        if st.button('🔒 Lock this parlay for PAPER tracking',key='royal_v571_lock',use_container_width=True):
             if not royal_ticket_is_valid(proposal,chosen_day):
-                st.warning('Game dates or start times changed. Regenerate before locking.')
+                st.warning('Start times changed. Regenerate before locking.')
                 st.stop()
             ids=tuple(r['id'] for r in proposal)
             with db() as conn:
-                # Prevent locking the exact same combination again, regardless of order.
-                prior=conn.execute("""SELECT l.parlay_id, GROUP_CONCAT(l.prediction_id) AS ids
-                    FROM royal_parlay_legs_v37 l JOIN royal_parlays_v37 p ON p.id=l.parlay_id
-                    WHERE p.leg_count=? GROUP BY l.parlay_id""",(selected_legs,)).fetchall()
+                prior=conn.execute('SELECT id FROM royal_parlays_v37 WHERE leg_count=?',(selected_legs,)).fetchall()
                 duplicates=False
                 for prev in prior:
-                    prior_ids=[x['prediction_id'] for x in conn.execute('SELECT prediction_id FROM royal_parlay_legs_v37 WHERE parlay_id=?',(prev['parlay_id'],))]
-                    if set(prior_ids)==set(ids): duplicates=True;break
+                    prior_ids=[x['prediction_id'] for x in conn.execute('SELECT prediction_id FROM royal_parlay_legs_v37 WHERE parlay_id=?',(prev['id'],))]
+                    if set(prior_ids)==set(ids):duplicates=True;break
                 if duplicates:
-                    st.warning('This exact combination was already locked. Generate Another to get a different ticket.')
+                    st.warning('This exact combination is already locked. Generate Another for a different set.')
                 else:
                     fingerprint=hashlib.sha256(('|'.join(sorted(ids))+'|'+utc().isoformat()).encode()).hexdigest()[:32]
-                    session_key='V56-MANUAL-'+chosen_day+'-'+fingerprint
-                    conn.execute("""INSERT INTO royal_parlays_v37
-                        (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)""",
-                        (fingerprint,session_key,selected_legs,utc().isoformat(),
-                        f'V5.6 user-confirmed same-day {chosen_day} CT paper ticket; uncalibrated picks, no combined executable price.'))
+                    session_key='V571-MANUAL-'+chosen_day+'-'+fingerprint
+                    conn.execute('INSERT INTO royal_parlays_v37 (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)',
+                         (fingerprint,session_key,selected_legs,utc().isoformat(),
+                          f'V5.7.1 saved original picks, {sport_option}, CT {chosen_day}. Research grade {grade}; {risk}; no executable combined prices.'))
                     for pos,r in enumerate(proposal,1):
                         conn.execute("""INSERT INTO royal_parlay_legs_v37
                             (parlay_id,leg_number,prediction_id,event_id,sport,title,selection,model)
                             VALUES (?,?,?,?,?,?,?,?)""",
                             (fingerprint,pos,r['id'],r['event_id'],r['sport'],r['title'],r['selection'],r.get('model','')))
                     conn.commit()
-                    st.success('Paper parlay locked for tracking. Original game predictions remain unchanged.')
+                    st.success('Paper parlay locked for tracking. Queen’s original picks have NOT changed.')
                     st.session_state[iteration_key]+=1
                     st.session_state.pop(pkey,None)
     else:
-        st.info(f'Only {len(same_day_candidates)} qualified games on {chosen_day} CT; {selected_legs} are needed. Queen will not mix dates or invent legs.')
+        st.info(f'Only {len(same_day_candidates)} eligible saved picks for {chosen_day} CT ({sport_option}); {selected_legs} needed. Queen won’t invent picks, include started games, or mix dates.')
 
     st.divider()
     st.subheader('📋 Previous Parlays')
@@ -2601,7 +2703,7 @@ def royal_auto_scan():
             status={'WIN':'✅ WIN','LOSS':'❌ LOSS','PENDING':'⏳ PENDING'}.get(ticket.get('status'),'⏳ PENDING')
             with st.container(border=True):
                 st.markdown(f"**{status} · {ticket['leg_count']}-leg paper parlay**")
-                st.markdown(f"**{royal_parlay_units_line(ticket['leg_count'],historical=True)}**")
+                st.markdown(f"**{royal_parlay_units_line(ticket['leg_count'],historical=True,research_only=royal_parlay_has_unpriced_research(legs))}**")
                 st.caption(f"{ticket.get('wins') or 0} won · {ticket.get('losses') or 0} lost · {max(0,len(legs)-(ticket.get('wins') or 0)-(ticket.get('losses') or 0))} pending")
                 if not legs:
                     st.caption('This older backup preserved the ticket header but not the leg details.')
