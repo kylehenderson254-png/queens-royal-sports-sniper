@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -525,6 +525,12 @@ def lock_predictions(items):
     now=utc().isoformat()
     with db() as c:
         for x in items:
+            # If Queen has ever locked this event, reuse that first saved pick.
+            # This is in addition to the database trigger against race conditions.
+            if c.execute("""SELECT 1 FROM royal_predictions_v34
+                    WHERE sport=? AND event_id=? LIMIT 1""",
+                    (x.get("sport"), x.get("event_id"))).fetchone():
+                continue
             # Never create a new prediction after the match has ended.
             game=x.get("score_game")
             if game and game["state"]=="post": continue
@@ -537,10 +543,13 @@ def lock_predictions(items):
             pid=hashlib.sha256((x["event_id"]+"|"+x["slug"]+"|"+phase).encode()).hexdigest()[:32]
             q=x.get("quote")
             ask=q["ask"] if q and q.get("valid") and x.get("verified_side") and clean(x["selection"])==clean(pred["selection"]) else None
+            before_insert = c.total_changes
             c.execute("""INSERT OR IGNORE INTO royal_predictions_v34
                 (id,event_id,slug,sport,title,selection,opponent,phase,model,model_probability,confidence,evidence,quote_ask,created_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (pid,x["event_id"],x["slug"],x["sport"],x["title"],pred["selection"],pred["opponent"],phase,pred["model"],pred["prob"],pred["confidence"],pred["evidence"],ask,now))
+            if c.total_changes == before_insert:
+                continue
             # $100 paper entry only when Queen's chosen side IS the verified YES contract.
             # No pretending a NO-side prediction has an executable quoted YES ask.
             if pred["model"]=="Season-record baseline" and ask is not None and q["ask"]-q["bid"]<=.03 and "OPEN" in q["state"].upper() and .05<=ask<=.95:
@@ -644,15 +653,15 @@ def royal_focus_stats():
             COALESCE(SUM(result='WIN'),0) w,
             COALESCE(SUM(result='LOSS'),0) l,
             COALESCE(SUM(result='PENDING'),0) pending
-            FROM royal_predictions_v34 WHERE {where}""", args).fetchone()
+            FROM royal_primary_predictions_v54 WHERE {where}""", args).fetchone()
         paper = c.execute("""SELECT COUNT(*) n,
             COALESCE(SUM(CASE WHEN t.status IN ('WIN','LOSS') THEN t.pnl ELSE 0 END),0) pnl
-            FROM royal_paper_v34 t JOIN royal_predictions_v34 p ON p.id=t.prediction_id
+            FROM royal_paper_v34 t JOIN royal_primary_predictions_v54 p ON p.id=t.prediction_id
             WHERE p.sport IN (?,?,?,?) AND p.created_at >= ?""", args).fetchone()
         parlays = c.execute("""SELECT COUNT(*) n FROM royal_parlays_v37
             WHERE created_at >= ? AND session_key LIKE ?""",
             (ROYAL_FOCUS_SINCE_UTC, "%ROYAL-FOCUS-NBA-NFL-NHL-NCAAF%" )).fetchone()
-        all_picks = c.execute("SELECT COUNT(*) FROM royal_predictions_v34").fetchone()[0]
+        all_picks = c.execute("SELECT COUNT(*) FROM royal_primary_predictions_v54").fetchone()[0]
     return dict(picks), dict(paper), parlays['n'], all_picks
 
 
@@ -664,13 +673,13 @@ def royal_results_dashboard():
             COALESCE(SUM(result='WIN'),0) w,
             COALESCE(SUM(result='LOSS'),0) l,
             COALESCE(SUM(result='PENDING'),0) pending
-            FROM royal_predictions_v34""").fetchone())
+            FROM royal_primary_predictions_v54""").fetchone())
         paper = dict(c.execute("""SELECT COUNT(*) n,
             COALESCE(SUM(status='WIN'),0) w,COALESCE(SUM(status='LOSS'),0) l,
             COALESCE(SUM(CASE WHEN status IN ('WIN','LOSS') THEN pnl ELSE 0 END),0) pnl
-            FROM royal_paper_v34""").fetchone())
+            FROM royal_paper_v34 t JOIN royal_primary_predictions_v54 p ON p.id=t.prediction_id""").fetchone())
         recent = [dict(r) for r in c.execute("""SELECT sport,title,selection,phase,result,created_at,graded_at,grade_note
-                   FROM royal_predictions_v34 ORDER BY
+                   FROM royal_primary_predictions_v54 ORDER BY
                    CASE WHEN result IN ('WIN','LOSS') THEN 0 ELSE 1 END,
                    COALESCE(graded_at,created_at) DESC LIMIT 40""")]
     st.subheader("📊 Queen's Results — All Time")
@@ -681,6 +690,7 @@ def royal_results_dashboard():
     d.metric("Paper P&L*",f"${paper['pnl']:+,.2f}")
     accuracy = f"{total['w']/(total['w']+total['l']):.1%}" if total['w']+total['l'] else "—"
     st.caption(f"Graded accuracy: {accuracy} (based on {total['w']+total['l']} predictions ONLY) · Paper: {paper['n']} entries, {paper['w']} wins, {paper['l']} losses")
+    st.caption("V5.4 counts each game once. Earlier repeated locks are retained in the raw CSV audit, not counted again.")
     st.caption("*Simulation only. Grading based on ESPN is provisional; exchange settlement and executable fills are NOT verified.")
     st.markdown("**👑 Royal Focus — Newer Test**")
     x,y,z=st.columns(3)
@@ -694,7 +704,7 @@ def royal_results_dashboard():
         tennis=dict(c.execute("""SELECT COUNT(*) n,
             COALESCE(SUM(result='WIN'),0) w, COALESCE(SUM(result='LOSS'),0) l,
             COALESCE(SUM(result='PENDING'),0) pending
-            FROM royal_predictions_v34 WHERE sport='Tennis'""").fetchone())
+            FROM royal_primary_predictions_v54 WHERE sport='Tennis'""").fetchone())
     st.markdown("**🎾 Tennis Watch — Historical Only**")
     ta,tb,tc=st.columns(3)
     ta.metric("Tennis W / L",f"{tennis['w']} / {tennis['l']}")
@@ -716,9 +726,40 @@ def royal_results_dashboard():
         st.info("No saved picks found in this database. Check the storage connection and restore a backup if needed.")
 
 
-def prediction_lookup():
+def royal_enable_one_game_lock_v54():
+    # Must run AFTER restoring bundled historical records: legacy duplicates remain
+    # intact for a faithful audit, while all subsequent inserts are protected.
     with db() as c:
-        return {(r["event_id"],r["slug"],r["phase"]):dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34")}
+    # V5.4: keep every legacy audit row, but prevent ANY new lock for a game
+    # already present, including opposite sides, other slugs, or LIVE phases.
+    # Existing rows are never deleted, rewritten, or merged.
+        c.execute("""CREATE TRIGGER IF NOT EXISTS royal_one_game_one_lock_v54
+      BEFORE INSERT ON royal_predictions_v34
+      WHEN NEW.event_id IS NOT NULL AND TRIM(NEW.event_id) NOT IN ('', 'None', 'null')
+       AND EXISTS (SELECT 1 FROM royal_predictions_v34 old
+        WHERE old.sport=NEW.sport AND old.event_id=NEW.event_id)
+      BEGIN SELECT RAISE(IGNORE); END""")
+    # View is for main counters/cards only. Pick earliest original lock for each
+    # event; use row ID for missing event identifiers so unrelated games do not merge.
+        c.execute("""CREATE VIEW IF NOT EXISTS royal_primary_predictions_v54 AS
+       SELECT id,event_id,slug,sport,title,selection,opponent,phase,model,
+              model_probability,confidence,evidence,quote_ask,created_at,
+              result,graded_at,grade_note
+       FROM (SELECT p.*,
+         ROW_NUMBER() OVER (PARTITION BY sport,
+           CASE WHEN event_id IS NULL OR TRIM(event_id) IN ('','None','null')
+                THEN 'row:'||id ELSE 'event:'||event_id END
+           ORDER BY created_at ASC, id ASC) AS pick_rank
+         FROM royal_predictions_v34 p)
+       WHERE pick_rank=1""")
+        c.commit()
+
+def prediction_lookup():
+    # Canonical original locks only. Different market slugs and LIVE/PREGAME
+    # phases resolve to this same event-level selection in the scan below.
+    with db() as c:
+        return {(r["event_id"],r["slug"],r["phase"]):dict(r)
+                for r in c.execute("SELECT * FROM royal_primary_predictions_v54")}
 
 def _csv_bytes(rows):
     if not rows: return b""
@@ -812,7 +853,7 @@ def royal_parlay_units(legs):
 
 def royal_unit_manager():
     with db() as c:
-        picks=[dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 ORDER BY created_at DESC")]
+        picks=[dict(r) for r in c.execute("SELECT * FROM royal_primary_predictions_v54 ORDER BY created_at DESC")]
         papers=[dict(r) for r in c.execute("SELECT * FROM royal_paper_v34")]
     st.markdown("**👑 Queen's Automatic Unit Manager**")
     st.caption("Base unit $20. Queen decides units per play; no manual adjustment needed.")
@@ -900,10 +941,10 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
         st.subheader('🎾 Tennis Watch · Saved Picks Only')
         st.caption('Historical selections only. No new tennis locks, paper entries or parlays.')
         with db() as c:
-            rows=[dict(r) for r in c.execute("""SELECT * FROM royal_predictions_v34 WHERE sport='Tennis'
+            rows=[dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54 WHERE sport='Tennis'
                 AND result='PENDING' ORDER BY created_at DESC,id DESC LIMIT 16""")]
             stats=dict(c.execute("""SELECT COUNT(*) n, SUM(result='WIN') w, SUM(result='LOSS') l,
-                SUM(result='PENDING') pending FROM royal_predictions_v34 WHERE sport='Tennis'""").fetchone())
+                SUM(result='PENDING') pending FROM royal_primary_predictions_v54 WHERE sport='Tennis'""").fetchone())
         a,b,c=st.columns(3)
         a.metric('Saved tennis',stats['n'] or 0)
         b.metric('Graded W / L',f"{stats['w'] or 0} / {stats['l'] or 0}")
@@ -912,13 +953,13 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
         st.subheader('👑 Current Royal Focus Picks')
         st.caption('Locked picks · NBA · NFL · NHL · NCAAF (NCAA Football) · paper research only')
         with db() as c:
-            rows=[dict(r) for r in c.execute("""SELECT * FROM royal_predictions_v34
+            rows=[dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
                 WHERE sport IN (?,?,?,?) AND created_at>=? AND result='PENDING'
                 ORDER BY created_at DESC,id DESC LIMIT 30""",(*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC))]
             stats=dict(c.execute("""SELECT COUNT(*) n,
                 COALESCE(SUM(result='WIN'),0) w,COALESCE(SUM(result='LOSS'),0) l,
                 COALESCE(SUM(result='PENDING'),0) pending
-                FROM royal_predictions_v34 WHERE sport IN (?,?,?,?) AND created_at >= ?""",
+                FROM royal_primary_predictions_v54 WHERE sport IN (?,?,?,?) AND created_at >= ?""",
                 (*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC)).fetchone())
         a,b,c=st.columns(3)
         a.metric('Focus picks',stats['n'])
@@ -953,10 +994,15 @@ def prediction_panel():
     st.subheader("👑 Saved Pick History")
     with db() as c:
         # No 150-row limit on statistics: historical totals must reflect all saved picks.
-        totals=c.execute("SELECT COUNT(*), SUM(result='WIN'), SUM(result='LOSS') FROM royal_predictions_v34").fetchone()
-        ptotals=c.execute("SELECT COUNT(*), SUM(status='WIN'), SUM(status='LOSS'), COALESCE(SUM(pnl),0) FROM royal_paper_v34").fetchone()
-        rows=[dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 ORDER BY created_at DESC, id DESC")]
-        papers=[dict(r) for r in c.execute("SELECT * FROM royal_paper_v34 ORDER BY entry_at DESC, id DESC")]
+        totals=c.execute("SELECT COUNT(*), SUM(result='WIN'), SUM(result='LOSS') FROM royal_primary_predictions_v54").fetchone()
+        ptotals=c.execute("""SELECT COUNT(*), SUM(t.status='WIN'), SUM(t.status='LOSS'), COALESCE(SUM(t.pnl),0)
+          FROM royal_paper_v34 t JOIN royal_primary_predictions_v54 p ON p.id=t.prediction_id""").fetchone()
+        rows=[dict(r) for r in c.execute("SELECT * FROM royal_primary_predictions_v54 ORDER BY created_at DESC, id DESC")]
+        raw_backup_rows=[dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 ORDER BY created_at DESC, id DESC")]
+        papers=[dict(r) for r in c.execute("""SELECT t.* FROM royal_paper_v34 t
+                JOIN royal_primary_predictions_v54 p ON p.id=t.prediction_id
+                ORDER BY t.entry_at DESC, t.id DESC""")]
+        raw_backup_papers=[dict(r) for r in c.execute("SELECT * FROM royal_paper_v34 ORDER BY entry_at DESC, id DESC")]
     wins,losses=totals[1] or 0,totals[2] or 0
     pw,pl=ptotals[1] or 0,ptotals[2] or 0
     a,b,c,d=st.columns(4)
@@ -995,8 +1041,8 @@ def prediction_panel():
     if not filtered: st.info("No picks in this filter yet. Try All Picks.")
     with st.expander("💾 Back up or restore locked picks — no deletions",expanded=False):
         st.write("Save both CSV files to your phone or computer. These contain the original locked predictions and paper trades, including entry prices and timestamps.")
-        st.download_button("⬇️ Download all locked picks (CSV)",_csv_bytes(rows),"royal_locked_picks_v34_backup.csv","text/csv",disabled=not rows,use_container_width=True)
-        st.download_button("⬇️ Download all paper trades (CSV)",_csv_bytes(papers),"royal_paper_trades_v34_backup.csv","text/csv",disabled=not papers,use_container_width=True)
+        st.download_button("⬇️ Download all locked picks (CSV)",_csv_bytes(raw_backup_rows),"royal_locked_picks_v34_backup.csv","text/csv",disabled=not rows,use_container_width=True)
+        st.download_button("⬇️ Download all paper trades (CSV)",_csv_bytes(raw_backup_papers),"royal_paper_trades_v34_backup.csv","text/csv",disabled=not papers,use_container_width=True)
         st.caption("Restore adds missing original records without changing existing saved picks. Upload the picks CSV first, then paper trades CSV.")
         up1=st.file_uploader("Restore locked picks CSV",type=["csv"],key="restore_royal_predictions")
         if up1 is not None and st.button("Import missing locked picks",key="restore_preds"):
@@ -1316,9 +1362,10 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.3 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V5.4 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 restore_bundled_royal_backup()
+royal_enable_one_game_lock_v54()
 # Simple primary navigation: every major page is one tap away, no nested archive menus.
 tab_current, tab_tennis, tab_live, tab_results, tab_history = st.tabs(
     ["👑 CURRENT PICKS", "🎾 TENNIS WATCH", "📡 LIVE / TOP 10", "🏁 RESULTS", "⚙️ HISTORY"])
@@ -1464,6 +1511,15 @@ def royal_auto_scan():
     lock_predictions(rows)
     grade_predictions(rows)
     st.session_state["royal_locked"] = prediction_lookup()
+    # Display/Top 10/parlays reuse the same first locked row for all later
+    # scans of the event, regardless of market slug or live phase.
+    event_first = {(p['sport'],p['event_id']):p
+        for p in st.session_state['royal_locked'].values()}
+    for x in rows:
+        original = event_first.get((x['sport'],x['event_id']))
+        if original:
+            phase = 'LIVE' if x.get('live') else 'PREGAME'
+            st.session_state['royal_locked'][(x['event_id'],x['slug'],phase)] = original
     matched_games = len({x['event_id'] for x in rows if x.get('score_game')})
     st.caption(f"Market scan {utc().astimezone(CT).strftime('%I:%M %p CT')} · {len(rows)} markets · {quoted} valid quotes · {matched_games} ESPN-matched events · {live_count} live events")
     if not matched_games and rows:
