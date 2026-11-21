@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.0 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -2096,15 +2096,17 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.8 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V6.0 · ROYAL COMMAND CENTER · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
 # V5.6.2: one All Sports page; Tennis is a sport filter, not another top tab.
-tab_current, tab_live, tab_results, tab_history = st.tabs(
-    ["🏆 ALL SPORTS", "📡 PICKS / PARLAYS", "🏁 RESULTS", "⚙️ HISTORY"])
+tab_home, tab_results, tab_history = st.tabs(
+    ["👑 HOME", "🏁 RESULTS", "📚 HISTORY"])
+tab_current = tab_home
+tab_live = tab_home
 with tab_current:
-    st.subheader("👑 QUEEN'S BEST LOCKED PICKS")
+    st.subheader("👑 ROYAL COMMAND CENTER · LOCKED PICKS")
     st.caption("Compact view of original paper-locked selections. Grades are research quality, not validated win probabilities. No actual bets.")
     with db() as conn:
         best_rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_primary_predictions_v54
@@ -2130,7 +2132,7 @@ with tab_current:
     cols[2].metric('Recent unresolved locks',len(recent))
     st.caption('Historical unresolved picks are hidden here, not deleted. A recent lock is NOT proof that its game has not ended.')
     if recent:
-        st.markdown('**👑 Latest qualifying locked selection (not a guaranteed best-value bet)**')
+        st.markdown('**👑 Latest recorded paper lock · NOT a verified best-value ranking**')
         r=recent[0]
         st.info(f"{r.get('sport','')} · {r.get('selection','Unknown')} · {r.get('title','')} · {r.get('confidence') or 'Confidence unverified'}")
     else:
@@ -2142,8 +2144,14 @@ with tab_current:
             st.markdown(f'**{SPORT_ICON.get(sport,"🏆")} {sport}**')
             if picks:
                 r=picks[0]
-                st.write(r.get('selection') or 'Unknown')
-                st.caption((r.get('confidence') or 'Unrated')+' · PAPER LOCK')
+                # Reuse the same ESPN team-logo catalog used by live matchup cards.
+                logo_map=st.session_state.get('royal_logo_catalog',{}).get(sport,{})
+                team_name=str(r.get('selection') or 'Unknown')
+                logo_url=logo_map.get(clean(team_name))
+                if logo_url and safe_logo(logo_url):
+                    st.image(logo_url,width=68)
+                st.write(team_name)
+                st.caption((r.get('confidence') or 'Unrated')+' · HISTORICAL PAPER LOCK')
             else: st.caption('No recent qualifying pick')
     with st.expander('📚 All saved picks, tennis research, and detailed game views',expanded=False):
         selected_sport=st.segmented_control('Sport',["All","NBA","NFL","NHL","NCAAF","Tennis"],default='All',key='royal_v562_sport_filter')
@@ -2261,8 +2269,8 @@ with tab_history:
     st.download_button("⬇️ Parlay tickets CSV", _csv_bytes(_parlay_tickets), "royal_parlays_v37_backup.csv", "text/csv", disabled=not _parlay_tickets, use_container_width=True)
     st.download_button("⬇️ Parlay legs CSV", _csv_bytes(_parlay_legs), "royal_parlay_legs_v37_backup.csv", "text/csv", disabled=not _parlay_legs, use_container_width=True)
 
-with tab_live:
-    st.subheader("🔴 Live Sports & Queen's Picks")
+with tab_home:
+    st.subheader("🔴 LIVE GAMES · SCORES · ROYAL PARLAYS")
     if st.button("👑 Refresh scores & prices", type="primary", use_container_width=True):
         api.clear()
         scores.clear()
@@ -2406,8 +2414,8 @@ def royal_auto_scan():
 
     # V5.3: Top 10 cards already show the matched game score and clock.
     # A second live-board on this page duplicated those same fixtures.
-    st.subheader("👑 Queen’s Top 10 Picks · Live Scores Included")
-    st.caption("NBA · NFL · NHL · NCAAF · Tennis | Up to ten qualified pregame candidates. Live tennis picks appear on Tennis cards; no forced selections.")
+    st.subheader("🏆 MATCHUP BOARD · LIVE SCORES & TEAM LOGOS")
+    st.caption("Research candidates with available live scores and team logos. Tennis is view-only; these are not verified best-value bets.")
     watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
 
     def evidence_rank(x):
@@ -2428,11 +2436,12 @@ def royal_auto_scan():
         eligible.append(x);used.add(x["event_id"])
     featured=[]; selected_events=set()
     # Reserve up to two positions per sport only where evidence exists.
-    for sport in ACTIVE_SPORTS:
+    for sport in ("NBA","NFL","NHL","NCAAF"):
         for x in [r for r in eligible if r["sport"]==sport][:2]:
             if len(featured)<10:
                 featured.append(x);selected_events.add(x["event_id"])
     for x in eligible:
+        if x["sport"] not in ("NBA","NFL","NHL","NCAAF"): continue
         if len(featured)>=10:break
         if x["event_id"] not in selected_events:
             featured.append(x);selected_events.add(x["event_id"])
@@ -2864,5 +2873,5 @@ def royal_auto_scan():
     with st.expander("ℹ️ Paper testing & data storage",expanded=False):
         st.caption("No real orders. Paper results do not establish profitability. Local SQLite on Streamlit Community Cloud may be lost on restart/redeploy; export backups or use persistent storage.")
 
-with tab_live:
+with tab_home:
     royal_auto_scan()
