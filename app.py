@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.0 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -686,6 +686,8 @@ def lock_predictions(items):
         for x in items:
             # If Queen has ever locked this event, reuse that first saved pick.
             # This is in addition to the database trigger against race conditions.
+            if c.execute("SELECT 1 FROM royal_v61_archived_events WHERE sport=? AND event_id=?", (x.get("sport"), x.get("event_id"))).fetchone():
+                continue
             if c.execute("""SELECT 1 FROM royal_predictions_v34
                     WHERE sport=? AND event_id=? LIMIT 1""",
                     (x.get("sport"), x.get("event_id"))).fetchone():
@@ -701,7 +703,8 @@ def lock_predictions(items):
             # high ranking in a media article is not a calibrated probability.
             # Tennis currently has no pre-match form/ranking model wired in;
             # discover it and report WATCH until independent evidence exists.
-            if pred['model'] not in ('Season-record baseline','Tennis verified-seed baseline'): continue
+            if x.get("sport") not in ("NBA","NFL","NHL","NCAAF"): continue
+            if pred['model'] != 'Season-record baseline': continue
             if pred['model']=='Season-record baseline' and (numeric(pred.get('prob')) or 0) < .58: continue
             phase="LIVE" if x.get("live") else "PREGAME"
             pid=hashlib.sha256((x["event_id"]+"|"+x["slug"]+"|"+phase).encode()).hexdigest()[:32]
@@ -1309,7 +1312,8 @@ def royal_tennis_live_panel():
         st.info("No live tennis matches returned by this provider. Saved predictions remain below.")
         return
     # One new immutable pick at most per verified live match identity; no betting quote.
-    royal_tennis_observe_live(matches)
+    # V6.1: tennis historical / live viewing only; no new tennis locks.
+    # royal_tennis_observe_live(matches)
     with db() as conn:
         saved=[dict(r) for r in conn.execute("SELECT * FROM royal_primary_predictions_v54 WHERE sport='Tennis'")]
     st.caption("%s live matches returned · %s saved selections · source: Live Tennis API" % (len(matches), len(saved)))
@@ -1500,7 +1504,8 @@ def royal_ncaaf_games_panel():
         if errors: st.caption('ESPN schedule may be unavailable. Saved Queen picks remain unchanged.')
         return
     # Research-only model: no matching executable quote means no paper stake.
-    royal_ncaaf_research_picks(games)
+    # V6.1: do not auto-lock additional research-only NCAAF predictions here.
+    # royal_ncaaf_research_picks(games)
     live=sum(g.get('state')=='in' for g in games)
     upcoming=sum(g.get('state')=='pre' for g in games)
     a,b,c=st.columns(3)
@@ -2096,10 +2101,15 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V6.0 · ROYAL COMMAND CENTER · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
+st.caption("V6.1 · ROYAL FRESH START · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
 
-restore_bundled_royal_backup()
+# V6.1: Do not replay bundled historical exports on every new deployment.
+# Old history remains available in the database until explicitly archived.
 royal_enable_one_game_lock_v54()
+with db() as _v61_db:
+    _v61_db.execute("CREATE TABLE IF NOT EXISTS royal_v61_archived_predictions (id TEXT PRIMARY KEY, original_json TEXT NOT NULL, archived_at TEXT NOT NULL)")
+    _v61_db.execute("CREATE TABLE IF NOT EXISTS royal_v61_archived_events (sport TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(sport,event_id))")
+    _v61_db.commit()
 # V5.6.2: one All Sports page; Tennis is a sport filter, not another top tab.
 tab_home, tab_results, tab_history = st.tabs(
     ["👑 HOME", "🏁 RESULTS", "📚 HISTORY"])
@@ -2126,6 +2136,7 @@ with tab_current:
         if k in seen: continue
         seen.add(k)
         recent.append(r)
+        if len(recent)>=12: break
     cols=st.columns(3)
     cols[0].metric('Verified focus wins',int(graded[0] or 0))
     cols[1].metric('Verified focus losses',int(graded[1] or 0))
@@ -2259,9 +2270,45 @@ with tab_results:
 with tab_history:
     st.subheader("📚 Full Saved History")
     st.caption("All sports and older experiments are here. Backup files preserve original entry prices and pick timestamps.")
+    with st.expander("🧹 V6.1 · Clean up old unresolved picks", expanded=False):
+        st.caption("Only old PENDING picks are eligible. Verified WIN/LOSS picks and paper-trade-linked or parlay-linked picks are protected. Download the archive before confirming.")
+        import json as _v61_json
+        cutoff=(utc()-timedelta(days=3)).isoformat()
+        with db() as _c:
+            _rows=[dict(r) for r in _c.execute("""SELECT p.* FROM royal_predictions_v34 p
+                WHERE p.result='PENDING' AND p.created_at < ?
+                AND NOT EXISTS(SELECT 1 FROM royal_paper_v34 t WHERE t.prediction_id=p.id)
+                AND NOT EXISTS(SELECT 1 FROM royal_parlay_legs_v37 l WHERE l.prediction_id=p.id)
+                ORDER BY p.created_at""",(cutoff,))]
+        st.write(f"{len(_rows)} old unresolved picks eligible for archiving")
+        if _rows:
+            st.download_button("⬇️ Download old picks CSV FIRST",_csv_bytes(_rows),"royal_v61_old_unresolved_backup.csv","text/csv",key="v61_old_export")
+            _ack=st.checkbox("I have downloaded my backup and want these unresolved picks archived",key="v61_archive_ack")
+            if st.button("Archive old unresolved picks",disabled=not _ack,key="v61_archive_button"):
+                _done=0
+                with db() as _c:
+                    for _r in _rows:
+                        _id=_r['id']
+                        _live=_c.execute("SELECT * FROM royal_predictions_v34 WHERE id=? AND result='PENDING'",(_id,)).fetchone()
+                        if not _live: continue
+                        if _c.execute("SELECT 1 FROM royal_paper_v34 WHERE prediction_id=?",(_id,)).fetchone(): continue
+                        if _c.execute("SELECT 1 FROM royal_parlay_legs_v37 WHERE prediction_id=?",(_id,)).fetchone(): continue
+                        _data=dict(_live)
+                        _c.execute("INSERT OR IGNORE INTO royal_v61_archived_predictions VALUES (?,?,?)",(_id,_v61_json.dumps(_data),utc().isoformat()))
+                        if _data.get('event_id'):
+                            _c.execute("INSERT OR IGNORE INTO royal_v61_archived_events VALUES (?,?)",(_data['sport'],_data['event_id']))
+                        _c.execute("DELETE FROM royal_predictions_v34 WHERE id=? AND result='PENDING'",(_id,))
+                        _done+=1
+                    _c.commit()
+                st.success(f"Archived {_done} old unresolved picks. Verified results and linked tickets were preserved.")
+                st.rerun()
+        with db() as _c:
+            _archive=[dict(r) for r in _c.execute("SELECT * FROM royal_v61_archived_predictions ORDER BY archived_at DESC")]
+        if _archive:
+            st.download_button("⬇️ Download complete archived history",_csv_bytes(_archive),"royal_v61_archived_history.csv","text/csv",key="v61_archive_export")
     prediction_panel()
-    st.divider()
-    royal_unit_manager()
+    with st.expander("⚙️ Advanced unit manager",expanded=False):
+        royal_unit_manager()
     with db() as _backup_db:
         _parlay_tickets=[dict(r) for r in _backup_db.execute("SELECT * FROM royal_parlays_v37")]
         _parlay_legs=[dict(r) for r in _backup_db.execute("SELECT * FROM royal_parlay_legs_v37")]
@@ -2280,8 +2327,8 @@ with tab_home:
 # Automatic discovery covers live games and the next three calendar days.
 # One stable daily session prevents duplicate parlays from changing filters.
 max_quotes = 120
-ACTIVE_SPORTS = ("NBA", "NFL", "NHL", "NCAAF", "Tennis")
-window = "Next 3 Days"
+ACTIVE_SPORTS = ("NBA", "NFL", "NHL", "NCAAF")
+window = st.segmented_control("📅 Scan games", ["Today", "Next 3 Days", "Next 7 Days"], default="Today", key="royal_v61_window")
 
 @st.fragment(run_every="120s")
 def royal_auto_scan():
@@ -2313,9 +2360,9 @@ def royal_auto_scan():
         date = parse_date(e.get("eventDate") or e.get("startTime") or e.get("startDate") or (game.get("date") if game else None))
         if not date: return False
         d = date.astimezone(CT).date()
-        if window == "📅 Today": return d == current
-        if window == "Tomorrow": return d == current + timedelta(days=1)
-        return current <= d <= current + timedelta(days=3)
+        if window == "Today": return d == current
+        if window == "Next 7 Days": return current <= d < current + timedelta(days=7)
+        return current <= d < current + timedelta(days=3)
 
     rows, live_count, quoted = [], 0, 0
     for s, e in all_events:
@@ -2389,7 +2436,8 @@ def royal_auto_scan():
                         _start=parse_date(_game.get('date'))
                         if _start and today_ct <= _start.astimezone(CT).date() <= today_ct+timedelta(days=2):
                             research_games[str(_game.get('event_id'))]=_game
-        royal_ncaaf_research_picks(list(research_games.values()))
+        # V6.1: research is watch-only, not an automatic lock.
+        pass
     except Exception:
         # Saved predictions and all other leagues remain operational.
         pass
