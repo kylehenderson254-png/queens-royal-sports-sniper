@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.4.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -935,6 +935,100 @@ def _royal_compact_unmatched(r):
     <div class='qe53-footer' style='color:{color}'>PICK {html.escape(result)} · original locked selection saved</div></div>""",unsafe_allow_html=True)
 
 
+# V5.5 — Free-tier tennis live feed. One shared request per 30-minute interval.
+# Reads Streamlit Secrets server-side; NEVER puts the key into a URL or output.
+TENNIS_API_BASE = "https://api.livetennisapi.com/api/public/v1"
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def royal_tennis_live_feed(api_key):
+    if not api_key:
+        return [], "Tennis key not configured"
+    try:
+        resp = requests.get(TENNIS_API_BASE + "/matches", params={"status":"live", "limit":100},
+            headers={"X-API-Key": api_key}, timeout=15)
+        if resp.status_code == 401: return [], "Tennis API authentication failed — check Streamlit Secrets"
+        if resp.status_code == 429: return [], "Tennis daily quota or rate limit reached"
+        if resp.status_code != 200: return [], "Tennis feed unavailable (HTTP %s)" % resp.status_code
+        payload = resp.json()
+        matches = payload.get("data",[]) if isinstance(payload,dict) else []
+        return [m for m in matches if isinstance(m,dict)], None
+    except (requests.RequestException, ValueError):
+        return [], "Tennis feed temporarily unreachable"
+
+def royal_tennis_key():
+    try: return str(st.secrets.get("LIVETENNISAPI_KEY", "")).strip()
+    except Exception: return ""
+
+def royal_tennis_names(m):
+    players = m.get("players") or {}
+    if isinstance(players,dict):
+        a,b=players.get("p1"),players.get("p2")
+        return (a.get("name") if isinstance(a,dict) else str(a or "")), (b.get("name") if isinstance(b,dict) else str(b or ""))
+    return "",""
+
+def royal_tennis_match_saved(m, saved):
+    a,b = royal_tennis_names(m)
+    if not a or not b: return None
+    a,b=clean(a),clean(b)
+    # Both athletes must match the saved original, in any orientation.
+    for r in saved:
+        p,q=clean(r.get("selection")),clean(r.get("opponent"))
+        if p and q and ((a==p and b==q) or (a==q and b==p)):
+            match_day=parse_date(m.get("scheduled_time") or m.get("live_at"))
+            saved_day=parse_date(r.get("created_at"))
+            # Exclude an archived record for a different meeting of the same athletes.
+            if match_day and saved_day and abs((match_day-saved_day).total_seconds())>7*86400:
+                continue
+            return r
+    return None
+
+def royal_tennis_score_text(m):
+    sc=m.get("score") or {}
+    if not isinstance(sc,dict): return "Score unavailable"
+    games=sc.get("games") or []
+    points=sc.get("points") or []
+    if isinstance(games,list) and len(games)>=2 and all(isinstance(v,list) for v in games[:2]):
+        setstr=" | ".join("%s-%s" % (x,y) for x,y in zip(games[0],games[1]))
+    else: setstr=""
+    pt = " · points %s-%s" % (points[0],points[1]) if isinstance(points,list) and len(points)>=2 else ""
+    return ("Sets " + setstr + pt) if setstr else ("Live score unavailable" + pt)
+
+def royal_tennis_live_panel():
+    st.subheader("🔴 Live Tennis · Queen's Saved Picks")
+    st.caption("Free-tier tennis scoreboard · refreshes at most every 30 minutes per running server. No new tennis picks or locks.")
+    key=royal_tennis_key()
+    if not key:
+        st.warning("Add LIVETENNISAPI_KEY to Streamlit Secrets to activate the live tennis scoreboard.")
+        return
+    with db() as conn:
+        saved=[dict(r) for r in conn.execute("SELECT * FROM royal_primary_predictions_v54 WHERE sport='Tennis'")]
+    matches,err=royal_tennis_live_feed(key)
+    if err:
+        st.warning(err)
+        return
+    if not matches:
+        st.info("No live tennis matches returned by this provider. Saved predictions remain below.")
+        return
+    st.caption("%s live matches returned · %s original saved selections · source: Live Tennis API" % (len(matches), len(saved)))
+    matched=[]; other=[]
+    for m in matches:
+        r=royal_tennis_match_saved(m,saved)
+        (matched if r else other).append((m,r))
+    st.caption("👑 Original saved Queen matches first · other live games are SCORE WATCH ONLY")
+    for group in (matched,other[:16]):
+        for i in range(0,len(group),2):
+            cols=st.columns(2,gap="small")
+            for col,(m,r) in zip(cols,group[i:i+2]):
+                a,b=royal_tennis_names(m)
+                with col:
+                    with st.container(border=True):
+                        st.caption("🔴 LIVE · " + str(m.get("tournament") or "Tennis"))
+                        st.markdown("**"+html.escape(a)+( " 👑" if r and clean(r.get('selection'))==clean(a) else "")+"** vs **"+html.escape(b)+( " 👑" if r and clean(r.get('selection'))==clean(b) else "")+"**")
+                        st.caption(royal_tennis_score_text(m))
+                        st.caption("QUEEN'S ORIGINAL PICK" if r else "SCORE WATCH ONLY · No original Queen prediction")
+    if len(other)>16: st.caption("Showing 16 additional live games to keep the mobile screen compact.")
+    st.caption("Provider coverage and score freshness vary. No result is graded from a live score alone; final validation remains separate.")
+
 def royal_current_picks_panel(sport_filter='FOCUS'):
     """Read-only deduplicated picks; show active saved games regardless of original lock era.
 
@@ -1385,7 +1479,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.4.1 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V5.5 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
@@ -1395,6 +1489,7 @@ tab_current, tab_tennis, tab_live, tab_results, tab_history = st.tabs(
 with tab_current:
     royal_current_picks_panel('FOCUS')
 with tab_tennis:
+    royal_tennis_live_panel()
     royal_current_picks_panel('TENNIS')
 with tab_results:
     if st.button("🔄 Check results now", key="refresh_results_now", use_container_width=True):
@@ -1697,7 +1792,7 @@ def royal_auto_scan():
     # never changes the picks already locked for that session.
     royal_session=f"{current.isoformat()}|{window}|ROYAL-FOCUS-NBA-NFL-NHL-NCAAF-V49"
     royal_candidates=royal_parlay_candidates()
-    royal_new=royal_lock_parlays(royal_candidates,royal_session)
+    royal_new=[]  # V5.5: generating suggestions must NEVER automatically lock tickets
     royal_grade_parlays()
     royal_tickets,royal_legs=royal_parlay_history()
 
@@ -1745,45 +1840,113 @@ def royal_auto_scan():
     st.caption("Underdog prices alone do not establish value. Paper testing only.")
 
     st.subheader("🎯 Queen’s Royal Parlays")
-    with st.container():
-        st.markdown("**👑 Automatic Royal Parlay Builder**")
-        st.caption("Queen searches beyond the Featured Top 10 and spreads tickets across sports when qualifying games exist. These are uncalibrated research combinations, not verified value bets.")
-        selected_legs=st.radio("Choose your parlay",[2,3,5,10],horizontal=True,
-                               format_func=lambda n:{2:"👑 2 Legs",3:"👑 3 Legs",5:"👑 5 Legs",10:"🎰 10 Lotto"}[n],
-                               key="royal_parlay_size_v37")
-        if selected_legs==10:
-            st.caption("🎰 Royal Lotto: all 10 selections must win. High-risk experimental combination.")
-        ticket=next((t for t in royal_tickets if t["session_key"]==royal_session and t["leg_count"]==selected_legs),None)
-        if ticket:
-            tlegs=royal_legs.get(ticket["id"],[])
-            status=ticket["status"]
-            st.markdown(f"**{'🟢 WON' if status=='WIN' else '🔴 LOST' if status=='LOSS' else '🟡 PENDING'} · {selected_legs}-leg {'Royal Lotto' if selected_legs==10 else 'Royal Parlay'}**")
-            st.caption(f"🔒 Locked {local(ticket['created_at'])} · ✅ {ticket['wins']}/{len(tlegs)} won · ❌ {ticket['losses']} lost · ⏳ {len(tlegs)-ticket['wins']-ticket['losses']} pending")
-            pu,preason=royal_parlay_units(tlegs)
-            st.markdown(f"**👑 Experimental parlay paper stake: {pu:g} U · ${pu*BASE_UNIT:.2f} | Potential profit: unavailable**")
-            st.caption(preason + " · This is a research budget, not a recommendation to wager. No purchasable parlay or combined payout verified.")
-            game_by_event={x["event_id"]:x for x in rows if x.get("score_game")}
-            with db() as _leg_db:
-                _saved_leg_rows={r['id']:dict(r) for r in _leg_db.execute('SELECT * FROM royal_predictions_v34 WHERE id IN ('+','.join('?' for _ in tlegs)+')',[leg['prediction_id'] for leg in tlegs])} if tlegs else {}
-            _leg_sports=sorted({r.get('sport') for r in _saved_leg_rows.values() if r.get('sport') in ESPN})
-            _leg_scores=score_index(_leg_sports,[r.get('created_at') for r in _saved_leg_rows.values()]) if _leg_sports else {}
-            with st.container(border=True):
-                for leg in tlegs:
-                    icon=SPORT_ICON.get(leg["sport"],"🏆")
-                    matched=game_by_event.get(str(leg.get("event_id")))
-                    saved_leg=_saved_leg_rows.get(leg['prediction_id'])
-                    game=(matched.get('score_game') if matched else None) or (_match_saved_game(saved_leg,_leg_scores) if saved_leg else None)
-                    result=leg["leg_result"]
-                    mark="✅" if result=="WIN" else "❌" if result=="LOSS" else "📡" if game and game.get("state")=="in" else "⏳"
-                    timing=royal_game_clock(game, matched.get('start') if matched else (saved_leg.get('created_at') if saved_leg else None)) if game else '🕒 Scoreboard not matched · time unverified' 
-                    st.markdown(f"{mark} **{icon} {leg['selection']}** · {timing}")
-                    score_line=royal_score_line(game,leg["selection"])
-                    if score_line: st.caption(score_line)
-            st.caption("Checks update from matched ESPN final scores. Live games show 🔴 until graded; locked picks stay unchanged.")
+    st.caption("Automatic research suggestions · Generate Another changes the proposed combination · only YOU can lock a paper ticket.")
+    selected_legs=st.radio("Choose your parlay",[2,3,5,10],horizontal=True,
+        format_func=lambda n:{2:"👑 2 Legs",3:"👑 3 Legs",5:"👑 5 Legs",10:"🎰 10 Lotto"}[n],
+        key="royal_parlay_size_v55")
+
+    # Build independent combinations for every leg count, with reproducible
+    # variation across sizes and fresh variations on user request.
+    def royal_v55_propose(n, iteration=0):
+        import random
+        if len(royal_candidates)<n: return []
+        eligible=[r for r in royal_candidates if r.get('event_id') and r.get('id')]
+        rng=random.Random(int(hashlib.sha256((royal_session+'|'+str(n)+'|'+str(iteration)).encode()).hexdigest()[:16],16))
+        # This uses qualifying season-record baseline picks only; not validated edges.
+        rng.shuffle(eligible)
+        # Remove earlier ticket's teams when possible, but never sacrifice the minimum.
+        already=set()
+        for size in (2,3,5,10):
+            if size==n: continue
+            ids=st.session_state.get('royal_v55_proposal_'+str(size),[])
+            already.update(ids)
+        first=[r for r in eligible if r['id'] not in already]
+        rest=[r for r in eligible if r['id'] in already]
+        result=[]; events=set()
+        for r in first+rest:
+            if r['event_id'] in events: continue
+            events.add(r['event_id']);result.append(r)
+            if len(result)>=n:break
+        return result if len(result)==n else []
+
+    # Keep user-visible proposals stable across the 120-second market rescans.
+    pkey='royal_v55_proposal_'+str(selected_legs)
+    iteration_key='royal_v55_iteration_'+str(selected_legs)
+    st.session_state.setdefault(iteration_key,0)
+    available_by_id={r['id']:r for r in royal_candidates}
+    proposal_ids=st.session_state.get(pkey,[])
+    if not proposal_ids or any(i not in available_by_id for i in proposal_ids):
+        st.session_state[pkey]=[r['id'] for r in royal_v55_propose(selected_legs,st.session_state[iteration_key])]
+    if st.button('🔄 Generate Another',key='royal_v55_another',use_container_width=True):
+        if len(royal_candidates)>=selected_legs:
+            old=tuple(st.session_state.get(pkey,[]))
+            for _ in range(24):
+                st.session_state[iteration_key]+=1
+                attempt=[r['id'] for r in royal_v55_propose(selected_legs,st.session_state[iteration_key])]
+                if tuple(attempt)!=old:
+                    st.session_state[pkey]=attempt
+                    break
+            else:
+                st.info('No distinct qualified combination is available right now.')
         else:
-            st.info(f"Only {len(royal_candidates)} independently assessed games in this scan; {selected_legs} different games are required. Queen won't invent extra legs.")
-        with st.expander("ℹ️ Parlay limitations",expanded=False):
-            st.caption("Locked prediction combinations are not purchasable Polymarket US parlays. No verified combined odds, payout or paper P&L. Season-record estimates are uncalibrated and market-favorite baselines are not independent edges.")
+            st.info('Not enough eligible games for this parlay size.')
+    proposal=[available_by_id[i] for i in st.session_state.get(pkey,[]) if i in available_by_id]
+    if len(proposal)==selected_legs:
+        st.markdown(f'**👑 Suggested {selected_legs}-leg combination · NOT LOCKED**')
+        with st.container(border=True):
+            for r in proposal:
+                st.markdown(f"👑 **{html.escape(str(r['selection']))}** · {html.escape(str(r['sport']))} · {html.escape(str(r.get('title') or ''))}")
+            st.caption('Based on saved season-record baseline picks; prices and combined payout unverified. Research only.')
+        if st.button('🔒 Lock this parlay for PAPER tracking',key='royal_v55_lock',use_container_width=True):
+            ids=tuple(r['id'] for r in proposal)
+            with db() as conn:
+                # Prevent locking the exact same combination again, regardless of order.
+                prior=conn.execute("""SELECT l.parlay_id, GROUP_CONCAT(l.prediction_id) AS ids
+                    FROM royal_parlay_legs_v37 l JOIN royal_parlays_v37 p ON p.id=l.parlay_id
+                    WHERE p.leg_count=? GROUP BY l.parlay_id""",(selected_legs,)).fetchall()
+                duplicates=False
+                for prev in prior:
+                    prior_ids=[x['prediction_id'] for x in conn.execute('SELECT prediction_id FROM royal_parlay_legs_v37 WHERE parlay_id=?',(prev['parlay_id'],))]
+                    if set(prior_ids)==set(ids): duplicates=True;break
+                if duplicates:
+                    st.warning('This exact combination was already locked. Generate Another to get a different ticket.')
+                else:
+                    fingerprint=hashlib.sha256(('|'.join(sorted(ids))+'|'+utc().isoformat()).encode()).hexdigest()[:32]
+                    session_key='V55-MANUAL-'+fingerprint
+                    conn.execute("""INSERT INTO royal_parlays_v37
+                        (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)""",
+                        (fingerprint,session_key,selected_legs,utc().isoformat(),
+                        'V5.5 user-confirmed paper ticket; hypothetical only, no combined executable price.'))
+                    for pos,r in enumerate(proposal,1):
+                        conn.execute("""INSERT INTO royal_parlay_legs_v37
+                            (parlay_id,leg_number,prediction_id,event_id,sport,title,selection,model)
+                            VALUES (?,?,?,?,?,?,?,?)""",
+                            (fingerprint,pos,r['id'],r['event_id'],r['sport'],r['title'],r['selection'],r.get('model','')))
+                    conn.commit()
+                    st.success('Paper parlay locked for tracking. Original game predictions remain unchanged.')
+                    st.session_state[iteration_key]+=1
+                    st.session_state.pop(pkey,None)
+    else:
+        st.info(f'Only {len(royal_candidates)} qualifying distinct games available; {selected_legs} are required. Queen will not invent extra legs.')
+
+    st.markdown('**📋 Previously Locked Paper Parlays**')
+    if not royal_tickets:
+        st.caption('No paper tickets locked yet. Proposed tickets are not tracked as bets.')
+    else:
+        recent=sorted(royal_tickets,key=lambda t:t.get('created_at') or '',reverse=True)
+        for t in recent[:8]:
+            legs=royal_legs.get(t['id'],[])
+            label=f"{'✅ WON' if t['status']=='WIN' else '❌ LOST' if t['status']=='LOSS' else '⏳ PENDING'} · {t['leg_count']}-leg · {local(t['created_at'])}"
+            with st.expander(label,expanded=False):
+                st.caption(f"{t['wins']} won · {t['losses']} lost · {max(0,len(legs)-t['wins']-t['losses'])} pending · paper only")
+                if not legs: st.caption('Older backup contained the ticket header but not its leg details.')
+                for leg in legs:
+                    result=leg.get('leg_result','PENDING')
+                    mark='✅' if result=='WIN' else '❌' if result=='LOSS' else '⏳'
+                    st.markdown(mark+' '+html.escape(str(leg.get('selection') or ''))+' · '+html.escape(str(leg.get('sport') or '')))
+        if len(recent)>8: st.caption(f'Showing 8 of {len(recent)} locked paper tickets; older tickets remain in backup exports.')
+    with st.expander('ℹ️ Parlay limitations',expanded=False):
+        st.caption('Research suggestions are not verified value bets or purchasable Polymarket parlay contracts. No validated combined odds, executable payout, or trade is assumed.')
     with st.expander("ℹ️ Paper testing & data storage",expanded=False):
         st.caption("No real orders. Paper results do not establish profitability. Local SQLite on Streamlit Community Cloud may be lost on restart/redeploy; export backups or use persistent storage.")
 
