@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -784,7 +784,7 @@ def royal_results_dashboard():
                     with col:
                         with st.container(border=True):
                             game=_match_saved_game(r,score_lookup)
-                            if not royal_scoreboard(game,r['sport'],r['selection'],r['result'],r.get('created_at'),compact=True):
+                            if not royal_scoreboard(game,r['sport'],r['selection'],r['result'],r.get('created_at'),compact=True,pick_record=r):
                                 _royal_compact_unmatched(r)
                             st.caption('Saved '+local(r['created_at']) + (' · Graded '+local(r['graded_at']) if r.get('graded_at') else ''))
             if len(displayed)>show_count:
@@ -919,12 +919,25 @@ def royal_parlay_units(legs):
     amount={2:0.25,3:0.15,5:0.10,10:0.05}.get(n,0.0)
     return amount,"SHADOW PAPER TEST ONLY · no validated edge or executable combined price"
 
+def royal_pick_units_line(p):
+    """Show illustrative model sizing, not an executed or recorded bet."""
+    units, _ = royal_paper_test_units(p or {})
+    dollars = units * BASE_UNIT
+    return f"🧪 QUEEN PAPER GUIDE: {units:g} U · ${dollars:,.2f}" + (" · NO PAPER ALLOCATION" if not units else " · RESEARCH ONLY")
+
+
+def royal_parlay_units_line(leg_count, historical=False):
+    """Existing parlay headers have no stored stake; never invent an entry."""
+    units, _ = royal_parlay_units([None] * int(leg_count or 0))
+    text = f"🧪 PARLAY PAPER GUIDE: {units:g} U · ${units * BASE_UNIT:,.2f}"
+    return text + (" · NOT A RECORDED STAKE" if historical else " · ILLUSTRATIVE, NO VERIFIED FILL")
+
 def royal_unit_manager():
     with db() as c:
         picks=[dict(r) for r in c.execute("SELECT * FROM royal_primary_predictions_v54 ORDER BY created_at DESC")]
         papers=[dict(r) for r in c.execute("SELECT * FROM royal_paper_v34")]
     st.markdown("**👑 Queen's Automatic Unit Manager**")
-    st.caption("Base unit $20. Queen decides units per play; no manual adjustment needed.")
+    st.caption("Base unit $20. Unit amounts shown on pick and parlay cards are experimental research guides, not recorded wagers or verified fills.")
     a,b,c=st.columns(3)
     a.metric("Picks evaluated",len(picks))
     b.metric("Paper-test units",f"{sum(royal_paper_test_units(p)[0] for p in picks):.2f} U")
@@ -971,7 +984,7 @@ def _pick_card(r, paper=None, score_index_data=None):
     game=_match_saved_game(r,score_index_data or {})
     with st.container(border=True):
         if not royal_scoreboard(game,r.get('sport') or 'Sports',r.get('selection'),
-                                r.get('result') or 'PENDING',r.get('created_at'),compact=True):
+                                r.get('result') or 'PENDING',r.get('created_at'),compact=True,pick_record=r):
             _royal_compact_unmatched(r)
         if paper:
             pstatus=str(paper.get('status') or 'OPEN')
@@ -997,6 +1010,7 @@ def _royal_compact_unmatched(r):
     result=str(r.get('result') or 'PENDING').upper()
     color={'WIN':'#86efac','LOSS':'#fca5a5'}.get(result,'#fbbf24')
     stage='FINAL' if result in ('WIN','LOSS') else 'SCORE UNVERIFIED'
+    st.caption(royal_pick_units_line(r))
     st.markdown(f"""<div class='qe53-score'><div class='qe53-header'><span>{sport}</span><span>{stage}</span></div>
     <div class='qe53-team'><span>{selected} 👑</span><strong>—</strong></div>
     <div class='qe53-team'><span>{opponent}</span><strong>—</strong></div>
@@ -1115,6 +1129,7 @@ def royal_tennis_live_panel():
                             <div class='qe53-footer'><span>{score}</span><span>{status}</span></div>
                             </div>""",unsafe_allow_html=True)
                         if r:
+                            st.markdown('**'+royal_pick_units_line(r)+'**')
                             st.caption('👑 Original lock · '+local(r.get('created_at')))
     if len(other)>16: st.caption("Showing 16 additional live matches; all other live matches remain available from your provider.")
     st.caption("Provider coverage and score freshness vary. No result is graded from a live score alone; final validation remains separate.")
@@ -1243,7 +1258,7 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
         for col,(r,game) in zip(cols,displayed[i:i+2]):
             with col:
                 if not royal_scoreboard(game,r['sport'],r['selection'],r['result'],
-                                        r.get('created_at'),compact=True):
+                                        r.get('created_at'),compact=True,pick_record=r):
                     _royal_compact_unmatched(r)
     if len(displayed)<len(visible):
         st.caption(f'Showing {len(displayed)} of {len(visible)}. Use Show All to view every saved pick.')
@@ -1358,7 +1373,7 @@ def royal_status_label(game, result="PENDING"):
     return game_status,prediction_status
 
 
-def royal_scoreboard(game, sport, selected=None, result="PENDING", start=None, compact=False):
+def royal_scoreboard(game, sport, selected=None, result="PENDING", start=None, compact=False, pick_record=None):
     """Clearly distinguish one saved Queen selection from a score-only game.
 
     Score and clock are always provider-derived. Never infer a final result.
@@ -1413,6 +1428,11 @@ def royal_scoreboard(game, sport, selected=None, result="PENDING", start=None, c
             delta=vals[chosen_idx]-vals[1-chosen_idx]
             footer+=f'<span style="font-size:11px;color:#c4b5d1">'
             footer+=('LEADING BY '+str(int(delta)) if delta>0 else 'TRAILING BY '+str(int(-delta)) if delta<0 else 'TIED')+'</span>'
+    if selected and pick_record is not None:
+        # These values are hypothetical unit-manager sizing, not actual orders.
+        size_line = html.escape(royal_pick_units_line(pick_record))
+        footer += ('<div style="width:100%;font-size:12px;font-weight:800;'
+                   'color:#e9d5ff;padding-top:5px">' + size_line + '</div>')
     sport_icon={'NBA':'🏀','NFL':'🏈','NHL':'🏒','NCAAF':'🏈','Tennis':'🎾'}.get(sport,'🏆')
     label=f'{sport_icon} '+('NCAAF · COLLEGE FOOTBALL' if sport=='NCAAF' else str(sport).upper())
     top_line=f'<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:5px"><strong style="font-size:12px;color:#d8b4fe">{html.escape(label)}</strong><strong style="font-size:12px;color:{game_color}">{html.escape(game_label)}</strong></div>'
@@ -1468,7 +1488,7 @@ def display_row(x, number=None):
     with st.container(border=True):
         game=x.get("score_game")
         result=locked.get("result","PENDING") if locked else "PENDING"
-        shown=royal_scoreboard(game,sport,locked.get("selection") if locked else None,result,x.get("start"),compact=True)
+        shown=royal_scoreboard(game,sport,locked.get("selection") if locked else None,result,x.get("start"),compact=True,pick_record=locked if locked else None)
         if not shown:
             label=local(x.get('start'))
             st.markdown(f"**{icon} {title}** · 📅 {label}")
@@ -1645,7 +1665,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.6.4 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.6.5 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
@@ -2033,6 +2053,7 @@ def royal_auto_scan():
             status={'WIN':'✅ WIN','LOSS':'❌ LOSS','PENDING':'⏳ PENDING'}.get(t.get('status'),'⏳ PENDING')
             teams=' · '.join(str(leg.get('selection') or '?') for leg in legs)
             st.markdown(f"**🔒 {t['leg_count']}-leg · {status}**")
+            st.markdown(f"**{royal_parlay_units_line(t['leg_count'],historical=True)}**")
             st.caption(teams if teams else 'Original ticket awaiting recovered leg details')
     st.caption('🎾 Tennis-only automatic tickets require independent pre-match evidence; scores alone do not qualify.')
     st.divider()
@@ -2098,6 +2119,7 @@ def royal_auto_scan():
     proposal=[available_by_id[i] for i in st.session_state.get(pkey,[]) if i in available_by_id]
     if len(proposal)==selected_legs and royal_ticket_is_valid(proposal,chosen_day):
         st.markdown(f'**🎯 {chosen_day} CT · Suggested {selected_legs}-leg · NOT LOCKED**')
+        st.markdown(f'**{royal_parlay_units_line(selected_legs)}**')
         with st.container(border=True):
             for r in proposal:
                 time_label=parse_date(r.get('royal_verified_start')).astimezone(CT).strftime('%I:%M %p CT')
@@ -2169,6 +2191,7 @@ def royal_auto_scan():
             status={'WIN':'✅ WIN','LOSS':'❌ LOSS','PENDING':'⏳ PENDING'}.get(ticket.get('status'),'⏳ PENDING')
             with st.container(border=True):
                 st.markdown(f"**{status} · {ticket['leg_count']}-leg paper parlay**")
+                st.markdown(f"**{royal_parlay_units_line(ticket['leg_count'],historical=True)}**")
                 st.caption(f"{ticket.get('wins') or 0} won · {ticket.get('losses') or 0} lost · {max(0,len(legs)-(ticket.get('wins') or 0)-(ticket.get('losses') or 0))} pending")
                 if not legs:
                     st.caption('This older backup preserved the ticket header but not the leg details.')
