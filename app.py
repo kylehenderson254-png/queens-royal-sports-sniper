@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -858,49 +858,95 @@ def _render_saved_score(game, row):
             st.caption("Tennis has no game clock. Current game points appear only if the score provider supplies them.")
 
 def _pick_card(r, paper=None, score_index_data=None):
-    sport=r["sport"] or "Sports"
-    status=r["result"] or "PENDING"
-    icon=SPORT_ICON.get(sport,"🏆")
-    paper_status=paper["status"] if paper else None
+    """V5.3 compact saved-history card. Detailed audit remains accessible below."""
     game=_match_saved_game(r,score_index_data or {})
     with st.container(border=True):
-        banner,color=_saved_game_banner(game,status)
-        st.markdown(f'<div style="background:{color}20;border:1px solid {color};border-radius:10px;padding:7px 10px;font-weight:800">{banner}</div>',unsafe_allow_html=True)
-        _render_saved_score(game,r)
-        left,right=st.columns([3,1],gap="small")
-        with left:
-            st.markdown(f"**{icon} {r['title'] or (r['selection']+' vs. '+str(r['opponent'] or 'Opponent'))}**")
-            st.caption(f"{sport} · {r['phase'] or 'PREGAME'} · Moneyline prediction")
-        with right:
-            if status=="WIN": st.success("WON")
-            elif status=="LOSS": st.error("LOST")
-            else: st.warning("PENDING")
-        st.markdown(f"**👑 QUEEN'S PICK: {r['selection']} TO WIN**")
-        units,why=royal_paper_test_units(r)
-        st.caption(f"Experimental paper test: {units:g} U · ${units*BASE_UNIT:.2f} · {why}")
-        st.caption(f"🔒 Locked {local(r['created_at'])} · {r['model'] or 'Prediction method not saved'}")
+        if not royal_scoreboard(game,r.get('sport') or 'Sports',r.get('selection'),
+                                r.get('result') or 'PENDING',r.get('created_at'),compact=True):
+            _royal_compact_unmatched(r)
         if paper:
-            price=paper["entry_ask"]
-            price_text=f" · Entry {price*100:.1f}¢" if price is not None else ""
-            st.markdown(f"💰 **$100 PAPER TRADE: {paper_status}**{price_text}")
-            if paper_status in ("WIN","LOSS") and paper["pnl"] is not None:
-                st.markdown(f"**Simulated P&L: ${paper['pnl']:+,.2f}**")
-            elif paper_status=="OPEN":
-                st.caption("Paper result pending · indicative entry, not a real order")
-        else:
-            st.caption("📝 Prediction tracked · No qualifying $100 paper trade for this pick")
-        with st.expander("Why Queen picked this · More details"):
-            st.write("Prediction method:",r["model"] or "Not recorded")
-            st.write("Reason saved at lock:",r["evidence"] or "No explanation saved")
-            if r["model_probability"] is not None:
-                st.write("Uncalibrated model estimate:",f"{r['model_probability']:.1%}")
-            st.write("Market:",r["slug"])
-            st.write("Locked prediction result:",status)
+            pstatus=str(paper.get('status') or 'OPEN')
+            pnl=paper.get('pnl')
+            extra=f' · P&L ${pnl:+,.2f}' if pnl is not None and pstatus in ('WIN','LOSS') else ''
+            st.caption(f"💵 Paper trade: {pstatus}{extra} · original stake ${paper.get('stake') or 0:,.2f}")
+        with st.expander('Details / original record',expanded=False):
+            st.write('Locked:', local(r.get('created_at')))
+            st.write('Model:', r.get('model') or 'Not recorded')
+            st.write('Original evidence:',r.get('evidence') or 'Not recorded')
+            st.write('Contract:',r.get('slug') or 'Not recorded')
+            if r.get('grade_note'): st.write('Grade note:',r['grade_note'])
             if paper:
-                st.write("Paper contract:",paper["slug"])
-                st.write("Paper entry:",f"${paper['stake']:.2f} at {paper['entry_ask']:.4f}" if paper["entry_ask"] is not None else "Unavailable")
-                st.write("Paper note:",paper["note"] or "No note")
-            if r["grade_note"]: st.caption(r["grade_note"])
+                st.write('Paper entry:',paper.get('entry_ask'))
+                st.write('Paper note:',paper.get('note'))
+
+
+def _royal_compact_unmatched(r):
+    """Safe fallback: no score or final inferred from an unmatched fixture."""
+    selected=html.escape(str(r.get('selection') or 'Unknown selection'))
+    opponent=html.escape(str(r.get('opponent') or 'Opponent unknown'))
+    sport=html.escape('NCAAF · NCAA Football' if r.get('sport')=='NCAAF' else str(r.get('sport') or 'Sport'))
+    result=str(r.get('result') or 'PENDING').upper()
+    color={'WIN':'#86efac','LOSS':'#fca5a5'}.get(result,'#fbbf24')
+    stage='FINAL' if result in ('WIN','LOSS') else 'SCORE UNVERIFIED'
+    st.markdown(f"""<div class='qe53-score'><div class='qe53-header'><span>{sport}</span><span>{stage}</span></div>
+    <div class='qe53-team'><span>{selected} 👑</span><strong>—</strong></div>
+    <div class='qe53-team'><span>{opponent}</span><strong>—</strong></div>
+    <div class='qe53-footer' style='color:{color}'>PICK {html.escape(result)} · original locked selection saved</div></div>""",unsafe_allow_html=True)
+
+
+def royal_current_picks_panel(sport_filter='FOCUS'):
+    """Read-only active picks; no locks or model calls on this page."""
+    if sport_filter=='TENNIS':
+        st.subheader('🎾 Tennis Watch · Saved Picks Only')
+        st.caption('Historical selections only. No new tennis locks, paper entries or parlays.')
+        with db() as c:
+            rows=[dict(r) for r in c.execute("""SELECT * FROM royal_predictions_v34 WHERE sport='Tennis'
+                AND result='PENDING' ORDER BY created_at DESC,id DESC LIMIT 16""")]
+            stats=dict(c.execute("""SELECT COUNT(*) n, SUM(result='WIN') w, SUM(result='LOSS') l,
+                SUM(result='PENDING') pending FROM royal_predictions_v34 WHERE sport='Tennis'""").fetchone())
+        a,b,c=st.columns(3)
+        a.metric('Saved tennis',stats['n'] or 0)
+        b.metric('Graded W / L',f"{stats['w'] or 0} / {stats['l'] or 0}")
+        c.metric('Not graded',stats['pending'] or 0)
+    else:
+        st.subheader('👑 Current Royal Focus Picks')
+        st.caption('Locked picks · NBA · NFL · NHL · NCAAF (NCAA Football) · paper research only')
+        with db() as c:
+            rows=[dict(r) for r in c.execute("""SELECT * FROM royal_predictions_v34
+                WHERE sport IN (?,?,?,?) AND created_at>=? AND result='PENDING'
+                ORDER BY created_at DESC,id DESC LIMIT 30""",(*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC))]
+            stats=dict(c.execute("""SELECT COUNT(*) n,
+                COALESCE(SUM(result='WIN'),0) w,COALESCE(SUM(result='LOSS'),0) l,
+                COALESCE(SUM(result='PENDING'),0) pending
+                FROM royal_predictions_v34 WHERE sport IN (?,?,?,?) AND created_at >= ?""",
+                (*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC)).fetchone())
+        a,b,c=st.columns(3)
+        a.metric('Focus picks',stats['n'])
+        b.metric('Graded W / L',f"{stats['w']} / {stats['l']}")
+        c.metric('Awaiting grade',stats['pending'])
+    if not rows:
+        st.info('No saved picks awaiting results in this group. See Results for completed games.')
+        return
+    # A single scoreboard lookup for all visible predictions; no new market locks.
+    idx=score_index(sorted({r['sport'] for r in rows if r['sport'] in ESPN}),
+                    [r.get('created_at') for r in rows])
+    enriched=[(r,_match_saved_game(r,idx)) for r in rows]
+    # Live first, then upcoming, then unmatched/older. Already-graded items are in Results.
+    rank={'in':0,'pre':1,'post':2}
+    enriched.sort(key=lambda pair:(rank.get((pair[1] or {}).get('state'),3),
+                                   (pair[1] or {}).get('date') or '9999',
+                                   pair[0].get('created_at') or ''))
+    if sport_filter=='TENNIS':
+        st.caption('Showing saved tennis predictions still awaiting a reliable final grade. Live tennis coverage may be unavailable.')
+    else:
+        st.caption('Live matches first · grade remains PENDING until verified final score')
+    for i in range(0,min(len(enriched),16),2):
+        cols=st.columns(2,gap='small')
+        for col,(r,game) in zip(cols,enriched[i:i+2]):
+            with col:
+                if not royal_scoreboard(game,r['sport'],r['selection'],r['result'],r.get('created_at'),compact=True):
+                    _royal_compact_unmatched(r)
+    if len(enriched)>16: st.caption('Additional saved picks remain in History; results tracking continues for all of them.')
 
 
 def prediction_panel():
@@ -1098,35 +1144,17 @@ def display_row(x, number=None):
             label=local(x.get('start'))
             st.markdown(f"**{icon} {title}** · 📅 {label}")
             if locked: st.caption(f"👑 {locked.get('selection','')} · ⏳ PICK {result}")
-        if number is not None:
-            st.caption(f"Top {number} · {html.escape(str(x.get('market_type','Market')))}")
-        # Never confuse a YES-contract quote with the price of Queen's selected team.
-        if locked:
-            st.caption(f"Model: {html.escape(str(locked.get('model') or 'Unspecified'))} · {html.escape(str(locked.get('confidence') or 'Uncalibrated'))}")
+        # One concise quote line, never an invented price for Queen's selection.
+        bits=[]
+        if number is not None: bits.append(f"TOP {number}")
+        if locked and locked.get('result'):
+            bits.append(f"PICK {html.escape(str(locked['result']))}")
         if valid:
-            quoted_side=(str(x.get('selection')) if verified else 'unverified YES outcome')
-            st.caption(f"Contract YES ({html.escape(quoted_side)}): ask {q['ask']*100:.0f}¢ · bid {q['bid']*100:.0f}¢")
-        else:
-            st.caption('Contract quote unavailable · WATCH ONLY')
-        if locked and locked.get('result')=='PENDING':
-            st.caption('Forecast tracked · not an instruction to buy · paper test only')
-        with st.expander("Why this status? · Contract details"):
-            st.write("Game:", x.get("score_detail") or local(x.get("start")))
-            st.write("Verified YES outcome:", x["selection"] if verified else "Not established by contract metadata")
-            st.write("Mapping check:", x.get("side_reason", "Unknown"))
-            st.write("Mapping source:", x.get("mapping_source", "Not available"))
-            st.write("Market slug:", x.get("slug"))
-            if valid:
-                st.write(f"Observed YES ask {q['ask']:.0%}, bid {q['bid']:.0%}")
-                if verified:
-                    st.write(f"If YES wins, hypothetical $100 settlement profit: ${money_profit(q['ask'],100):,.2f} before fees")
-            if locked:
-                st.write("Locked pick:",locked["selection"])
-                st.write("Prediction method:",locked["model"])
-                st.write("Why:",locked["evidence"])
-                st.write("Prediction status:",locked["result"])
-            st.write("Legacy paper-test rule:", paper_reason(x))
-            st.caption("WATCH means monitor, not buy. These prices are not independent win probabilities.")
+            bits.append(f"YES ask {q['ask']*100:.0f}¢ · bid {q['bid']*100:.0f}¢")
+        elif not shown:
+            bits.append('QUOTE UNAVAILABLE')
+        if bits: st.caption('  ·  '.join(bits))
+
 
 def paper_reason(x):
     q = x.get('quote')
@@ -1266,6 +1294,14 @@ h2{font-size:clamp(1.15rem,3vw,1.5rem)!important}
 }
 </style>""",unsafe_allow_html=True)
 
+st.markdown("""<style>
+.qe53-score{background:#1b1326;border:1px solid #624076;border-radius:12px;padding:10px 12px;margin:4px 0 8px;color:#efdcff}
+.qe53-header,.qe53-footer{font-size:11px;display:flex;justify-content:space-between;gap:6px;color:#c4b5d1}
+.qe53-header{font-weight:800}.qe53-team{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:700;padding:6px 0}
+.qe53-team strong{font-size:24px}.qe53-footer{border-top:1px solid #483052;padding-top:6px;margin-top:4px}
+@media(max-width:700px){[data-testid="stTabs"] button{font-size:.78rem!important;padding:.45rem .5rem!important}}
+</style>""",unsafe_allow_html=True)
+
 # Accept common banner filenames, including images kept in an assets/ folder.
 banner = None
 for folder in (Path('.'), Path('assets'), Path('images')):
@@ -1280,11 +1316,16 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.2 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V5.3 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 restore_bundled_royal_backup()
 # Simple primary navigation: every major page is one tap away, no nested archive menus.
-tab_results, tab_live, tab_history = st.tabs(["🏁 RESULTS", "🔴 LIVE & TOP 10", "📚 HISTORY & SETTINGS"])
+tab_current, tab_tennis, tab_live, tab_results, tab_history = st.tabs(
+    ["👑 CURRENT PICKS", "🎾 TENNIS WATCH", "📡 LIVE / TOP 10", "🏁 RESULTS", "⚙️ HISTORY"])
+with tab_current:
+    royal_current_picks_panel('FOCUS')
+with tab_tennis:
+    royal_current_picks_panel('TENNIS')
 with tab_results:
     if st.button("🔄 Check results now", key="refresh_results_now", use_container_width=True):
         scores.clear()
@@ -1432,28 +1473,9 @@ def royal_auto_scan():
 
 
 
-    st.subheader("📡 Live Scoreboard")
-    live_rows=[x for x in checked if x.get('score_game') and x['score_game'].get('state')=='in']
-    unique_live={}
-    for candidate in live_rows:
-        unique_live.setdefault(candidate['event_id'],candidate)
-    if unique_live:
-        st.caption("Live scores from ESPN · scores are not final grades")
-        # Compact board with score alongside each team; top picks below contain the detailed quotes.
-        live_list=list(unique_live.values())[:12]
-        for offset in range(0,len(live_list),2):
-            cols=st.columns(2,gap="small")
-            for col,candidate in zip(cols,live_list[offset:offset+2]):
-                with col:
-                    game=candidate['score_game']
-                    saved=next((p for p in st.session_state.get('royal_locked',{}).values()
-                                if p.get('event_id')==candidate['event_id'] and p.get('sport')==candidate['sport']),None)
-                    royal_scoreboard(game,candidate['sport'],saved.get('selection') if saved else None,
-                                     saved.get('result','PENDING') if saved else 'PENDING',candidate.get('start'),compact=True)
-    else:
-        st.info("No confidently matched live games right now. Results monitoring continues separately.")
-
-    st.subheader("👑 Queen’s Top 10 Picks")
+    # V5.3: Top 10 cards already show the matched game score and clock.
+    # A second live-board on this page duplicated those same fixtures.
+    st.subheader("👑 Queen’s Top 10 Picks · Live Scores Included")
     st.caption("NBA · NFL · NHL · NCAAF (NCAA Football) | Up to ten independent record-based candidates, with cross-sport representation when available.")
     watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
 
@@ -1490,7 +1512,7 @@ def royal_auto_scan():
                              st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{}).get("model")=="Season-record baseline"}),
                            "quoted":sum(1 for x in checked if x["sport"]==league and x.get("quote") and x["quote"].get("valid"))}
                    for league in ACTIVE_SPORTS}
-    with st.expander("🔎 Feed health & league coverage",expanded=False):
+    with st.expander("🔎 Advanced feed coverage",expanded=False):
         for league,counts in league_counts.items():
             st.caption(f"{league}: {counts['events']} events in window · {counts['record']} independent record-baseline games · {counts['quoted']} valid market quotes")
         if errors: st.caption("Feed errors: "+" | ".join(errors))
