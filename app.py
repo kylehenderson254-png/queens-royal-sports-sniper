@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -646,7 +646,7 @@ def refresh_saved_results():
     if not pending:
         return 0, 0, "No pending saved predictions"
     sports = sorted({r["sport"] for r in pending if r.get("sport") in ESPN})
-    # Only inspect dates relevant to saved picks in the last two weeks.
+    # Only request currently accessible score dates. Older unmatched records remain unverified.
     index = score_index(sports, [p.get("created_at") for p in pending])
     changed = 0
     with db() as c:
@@ -728,7 +728,7 @@ def royal_results_dashboard():
             COALESCE(SUM(status='WIN'),0) w,COALESCE(SUM(status='LOSS'),0) l,
             COALESCE(SUM(CASE WHEN status IN ('WIN','LOSS') THEN pnl ELSE 0 END),0) pnl
             FROM royal_paper_v34 t JOIN royal_primary_predictions_v54 p ON p.id=t.prediction_id""").fetchone())
-        recent = [dict(r) for r in c.execute("""SELECT sport,title,selection,phase,result,created_at,graded_at,grade_note
+        recent = [dict(r) for r in c.execute("""SELECT id,event_id,sport,title,selection,opponent,phase,result,created_at,graded_at,grade_note
                    FROM royal_primary_predictions_v54 ORDER BY
                    CASE WHEN result IN ('WIN','LOSS') THEN 0 ELSE 1 END,
                    COALESCE(graded_at,created_at) DESC LIMIT 40""")]
@@ -764,16 +764,34 @@ def royal_results_dashboard():
     st.markdown("**🏁 Latest Results & Saved Picks**")
     if recent:
         view=st.segmented_control("Show",["Results","Pending","All"],default="Results",key="royal_results_quick_filter")
-        displayed=[r for r in recent if (view=="All" or (r['result'] in ('WIN','LOSS') if view=="Results" else r['result']=='PENDING'))]
+        sport_choice=st.selectbox("Sport",["All Sports","NBA","NFL","NHL","NCAAF","Tennis"],key="royal_results_sport")
+        displayed=[r for r in recent if (view=="All" or (r['result'] in ('WIN','LOSS') if view=="Results" else r['result']=='PENDING'))
+                   and (sport_choice=="All Sports" or r['sport']==sport_choice)]
         if not displayed:
-            st.info("No picks have been graded in this group yet. Saved pending predictions remain in History.")
+            st.info("No records match these filters. Other saved predictions remain in History.")
         else:
-            for r in displayed[:15]:
-                status = "✅ WIN" if r['result']=='WIN' else "❌ LOSS" if r['result']=='LOSS' else "⏳ PENDING"
-                st.markdown(f"{status} · **{r['sport']} — {r['selection']}** · {r['title'] or ''}")
-                st.caption(f"Locked {local(r['created_at'])}"+(f" · Graded {local(r['graded_at'])}" if r['graded_at'] else ""))
+            show_count=st.session_state.get('royal_v562_results_count',6)
+            if show_count>6 and st.button('Show fewer',key='royal_v562_less_results'):
+                show_count=6
+                st.session_state['royal_v562_results_count']=6
+            # Never invent missing final scores. A saved WIN/LOSS is shown as a
+            # provisional pick result even when the original event is unavailable.
+            score_lookup=score_index(sorted({r['sport'] for r in displayed[:show_count]}),
+                                     [r.get('created_at') for r in displayed[:show_count]])
+            for i in range(0,min(len(displayed),show_count),2):
+                columns=st.columns(2,gap='small')
+                for col,r in zip(columns,displayed[i:i+2]):
+                    with col:
+                        with st.container(border=True):
+                            game=_match_saved_game(r,score_lookup)
+                            if not royal_scoreboard(game,r['sport'],r['selection'],r['result'],r.get('created_at'),compact=True):
+                                _royal_compact_unmatched(r)
+                            st.caption('Saved '+local(r['created_at']) + (' · Graded '+local(r['graded_at']) if r.get('graded_at') else ''))
+            if len(displayed)>show_count:
+                if st.button(f'Show more results ({len(displayed)-show_count} remaining)',key='royal_v562_more_results',use_container_width=True):
+                    st.session_state['royal_v562_results_count']=min(len(displayed),show_count+6)
     else:
-        st.info("No saved picks found in this database. Check the storage connection and restore a backup if needed.")
+        st.info("No saved picks found in this database. Check storage and backups before making changes.")
 
 
 def royal_enable_one_game_lock_v54():
@@ -1032,6 +1050,16 @@ def royal_tennis_match_saved(m, saved):
             return r
     return None
 
+def royal_tennis_player_score(m, position):
+    """Per-player completed-set games; never infer a score not supplied by provider."""
+    info=m.get('score') or {}
+    games=info.get('games') or [] if isinstance(info,dict) else []
+    if isinstance(games,list) and len(games)==2 and all(isinstance(x,list) for x in games):
+        values=games[position]
+        return ' '.join(html.escape(str(v)) for v in values if v is not None) or '—'
+    return '—'
+
+
 def royal_tennis_score_text(m):
     sc=m.get("score") or {}
     if not isinstance(sc,dict): return "Score unavailable"
@@ -1079,16 +1107,54 @@ def royal_tennis_live_panel():
                         result=(r or {}).get('result','PENDING')
                         status='✅ PICK WIN' if result=='WIN' else '❌ PICK LOSS' if result=='LOSS' else '⏳ PICK PENDING' if r else '👀 SCORE WATCH ONLY'
                         score=html.escape(royal_tennis_score_text(m))
+                        score_a=royal_tennis_player_score(m,0); score_b=royal_tennis_player_score(m,1)
                         st.markdown(f"""<div class='qe53-score'>
                             <div class='qe53-header'><span>🎾 {tournament}</span><span>🔴 LIVE</span></div>
-                            <div class='qe53-team'><span>{aa}{crown_a}</span><strong>🎾</strong></div>
-                            <div class='qe53-team'><span>{bb}{crown_b}</span><strong>🎾</strong></div>
+                            <div class='qe53-team'><span>{aa}{crown_a}</span><strong>{score_a}</strong></div>
+                            <div class='qe53-team'><span>{bb}{crown_b}</span><strong>{score_b}</strong></div>
                             <div class='qe53-footer'><span>{score}</span><span>{status}</span></div>
                             </div>""",unsafe_allow_html=True)
                         if r:
                             st.caption('👑 Original lock · '+local(r.get('created_at')))
-    if len(other)>16: st.caption("Showing 16 additional live games to keep the mobile screen compact.")
+    if len(other)>16: st.caption("Showing 16 additional live matches; all other live matches remain available from your provider.")
     st.caption("Provider coverage and score freshness vary. No result is graded from a live score alone; final validation remains separate.")
+
+def royal_tennis_archive_summary():
+    """Keep old unverified tennis picks visible without implying they are live."""
+    with db() as c:
+        pending=[dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
+            WHERE sport='Tennis' AND result='PENDING' ORDER BY created_at DESC,id DESC""")]
+        graded=c.execute("""SELECT COALESCE(SUM(result='WIN'),0),COALESCE(SUM(result='LOSS'),0)
+            FROM royal_primary_predictions_v54 WHERE sport='Tennis'""").fetchone()
+    a,b,c=st.columns(3)
+    a.metric('Tennis W / L',f'{graded[0]} / {graded[1]}')
+    b.metric('Still unverified',len(pending))
+    c.metric('Original picks',len(pending)+graded[0]+graded[1])
+    st.caption('Unverified is not necessarily upcoming. Some matches may have finished without a reliable final-score match. Never assume a WIN or LOSS from missing scores.')
+    # All unmatched history is still retained in History. Avoid an enormous list
+    # of dated/unknown selections on the main scoreboard.
+    if pending:
+        with st.expander(f'📚 Review {len(pending)} saved tennis selections awaiting verification',expanded=False):
+            for r in pending[:12]:
+                st.markdown(f"🎾 **{html.escape(str(r.get('selection') or 'Unknown'))} 👑** vs {html.escape(str(r.get('opponent') or 'Unknown'))}")
+                st.caption('Saved '+local(r.get('created_at'))+' · FINAL UNVERIFIED')
+            if len(pending)>12: st.caption(f'First 12 shown. All {len(pending)} saved selections are available in History.')
+
+
+def royal_tennis_parlay_status():
+    st.subheader('🎾 Tennis Parlays')
+    with db() as c:
+        ticket_rows=c.execute("""SELECT p.id,p.leg_count,p.status,p.created_at,COUNT(l.parlay_id) tennis_legs
+            FROM royal_parlays_v37 p JOIN royal_parlay_legs_v37 l ON l.parlay_id=p.id
+            GROUP BY p.id HAVING SUM(CASE WHEN l.sport='Tennis' THEN 1 ELSE 0 END)=COUNT(l.parlay_id) AND COUNT(l.parlay_id)>0
+            ORDER BY p.created_at DESC LIMIT 8""").fetchall()
+    if ticket_rows:
+        for r in ticket_rows:
+            st.markdown(f"**🎾 {r['leg_count']}-leg · {r['status']}** · {local(r['created_at'])}")
+    else:
+        st.info('No qualified tennis-only paper parlay yet. Live scores do not establish pre-match value; Queen needs independently verified form, start times and market pricing.')
+    st.caption('Tennis-only parlays are not generated from completed matches or live scores alone. When qualified original picks exist, automatic tickets and manual suggestions use the same-day Central Time rule.')
+
 
 def royal_current_picks_panel(sport_filter='FOCUS'):
     """Read-only deduplicated picks; show active saved games regardless of original lock era.
@@ -1119,7 +1185,7 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
         enriched = [(r,_match_saved_game(r,idx)) for r in rows]
         st.caption('Historical saved selections only; an unverified match is not graded.')
     else:
-        st.subheader('👑 Current Royal Focus Picks')
+        st.subheader('👑 Current Royal Picks')
         st.caption('NBA · NFL · NHL · NCAAF · One original selection per game · Paper research only')
         # Do not filter original locks by created_at: this would hide older
         # canonical locks when newer duplicates have been suppressed.
@@ -1131,7 +1197,9 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
                 COALESCE(SUM(result='WIN'),0) w, COALESCE(SUM(result='LOSS'),0) l
                 FROM royal_primary_predictions_v54 WHERE sport IN (?,?,?,?)
                 AND created_at>=?""",(*ROYAL_FOCUS_SPORTS,ROYAL_FOCUS_SINCE_UTC)).fetchone())
-        idx = score_index(list(ROYAL_FOCUS_SPORTS),[r.get('created_at') for r in candidates[:60]])
+        if sport_filter in ROYAL_FOCUS_SPORTS:
+            candidates=[r for r in candidates if r.get('sport')==sport_filter]
+        idx = score_index([sport_filter] if sport_filter in ROYAL_FOCUS_SPORTS else list(ROYAL_FOCUS_SPORTS),[r.get('created_at') for r in candidates[:60]])
         enriched = []
         for r in candidates:
             game = _match_saved_game(r,idx)
@@ -1540,32 +1608,29 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.6.1 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.6.2 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
-# Simple primary navigation: every major page is one tap away, no nested archive menus.
-tab_current, tab_tennis, tab_live, tab_results, tab_history = st.tabs(
-    ["👑 CURRENT PICKS", "🎾 TENNIS", "📡 PICKS / PARLAYS", "🏁 RESULTS", "⚙️ HISTORY"])
+# V5.6.2: one All Sports page; Tennis is a sport filter, not another top tab.
+tab_current, tab_live, tab_results, tab_history = st.tabs(
+    ["🏆 ALL SPORTS", "📡 PICKS / PARLAYS", "🏁 RESULTS", "⚙️ HISTORY"])
 with tab_current:
-    royal_current_picks_panel('FOCUS')
-with tab_tennis:
-    royal_tennis_live_panel()
-    st.subheader('🎾 Tennis Parlays')
-    st.caption('Separate tennis-only paper research. No forced selections or automatic locks from live scores alone.')
-    with db() as tennis_db:
-        tennis_rows=tennis_db.execute("""SELECT * FROM royal_primary_predictions_v54
-            WHERE sport='Tennis'""").fetchall()
-        tennis_saved=[dict(r) for r in tennis_rows]
-        tennis_auto=tennis_db.execute("""SELECT COUNT(*) FROM royal_parlay_legs_v37 l
-            JOIN royal_parlays_v37 p ON p.id=l.parlay_id
-            WHERE l.sport='Tennis' AND p.session_key LIKE 'V56-QUEEN-AUTO-%'""").fetchone()[0]
-    t1,t2=st.columns(2)
-    t1.metric('Saved tennis picks',len(tennis_saved))
-    t2.metric('Tennis legs in auto tickets',tennis_auto)
-    st.info('👀 NO QUALIFIED TENNIS PARLAY YET. Live scores alone do not establish a pre-match edge. Queen needs independently verified player research, event start times, and pre-match market pricing before an automatic tennis ticket can be locked.')
-    st.caption('When qualified tennis paper picks are available, tennis-only tickets will appear here, and historical tickets remain in the compact parlay history under Picks / Parlays.')
-    royal_current_picks_panel('TENNIS')
+    selected_sport=st.segmented_control('Sport',["All","NBA","NFL","NHL","NCAAF","Tennis"],default='All',key='royal_v562_sport_filter')
+    if selected_sport=='All':
+        royal_current_picks_panel('FOCUS')
+        st.divider()
+        royal_tennis_live_panel()
+        royal_tennis_parlay_status()
+        royal_tennis_archive_summary()
+    elif selected_sport=='Tennis':
+        royal_tennis_live_panel()
+        royal_tennis_parlay_status()
+        royal_tennis_archive_summary()
+    else:
+        # Retain original Focus lock stats, then apply the user-facing filter by
+        # filtering the presentation; the database and source grading are unchanged.
+        royal_current_picks_panel(selected_sport)
 with tab_results:
     if st.button("🔄 Check results now", key="refresh_results_now", use_container_width=True):
         scores.clear()
