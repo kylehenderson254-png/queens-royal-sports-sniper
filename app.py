@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -687,7 +687,20 @@ def royal_results_dashboard():
     x.metric("Focus picks",focus['n'])
     y.metric("Focus W / L",f"{focus['w']} / {focus['l']}")
     z.metric("Focus pending",focus['pending'])
-    st.caption(f"NBA · NFL · NHL · NCAAF, starting Nov 20 at 9:07 AM CT. {focus_parlays} research parlays, {papers['n']} focus paper entries. This is a subset of all-time history, not a reset.")
+    st.caption(f"NBA · NFL · NHL · NCAAF (NCAA Football), starting Nov 20 at 9:07 AM CT. {focus_parlays} research parlays, {papers['n']} focus paper entries. This is a subset of all-time history, not a reset.")
+    # Tennis is a historical comparison only. Never include it in ACTIVE_SPORTS,
+    # market scanning, new prediction locks, paper trades, or parlay generation.
+    with db() as c:
+        tennis=dict(c.execute("""SELECT COUNT(*) n,
+            COALESCE(SUM(result='WIN'),0) w, COALESCE(SUM(result='LOSS'),0) l,
+            COALESCE(SUM(result='PENDING'),0) pending
+            FROM royal_predictions_v34 WHERE sport='Tennis'""").fetchone())
+    st.markdown("**🎾 Tennis Watch — Historical Only**")
+    ta,tb,tc=st.columns(3)
+    ta.metric("Tennis W / L",f"{tennis['w']} / {tennis['l']}")
+    tb.metric("Not graded",tennis['pending'])
+    tc.metric("Graded sample",tennis['w']+tennis['l'])
+    st.caption("View-only comparison. No new tennis predictions, locks, paper entries, or parlays. Grades provisional; small samples do not prove an edge.")
     st.markdown("**🏁 Latest Results & Saved Picks**")
     if recent:
         view=st.segmented_control("Show",["Results","Pending","All"],default="Results",key="royal_results_quick_filter")
@@ -982,6 +995,65 @@ def royal_score_line(game, selection=None):
         except (ValueError,TypeError): pass
     return line
 
+def royal_status_label(game, result="PENDING"):
+    """Game state is distinct from prediction outcome."""
+    state=(game or {}).get("state")
+    outcome=str(result or "PENDING").upper()
+    game_status=("LIVE" if state=="in" else "FINAL" if state=="post" else
+                 "UPCOMING" if state=="pre" else "UNVERIFIED")
+    prediction_status=outcome if outcome in ("WIN","LOSS") else "PENDING"
+    return game_status,prediction_status
+
+
+def royal_scoreboard(game, sport, selected=None, result="PENDING", start=None, compact=False):
+    """ESPN-inspired compact board; one score immediately beside its own team."""
+    if not game or len(game.get("teams") or [])!=2:
+        return False
+    names=game["teams"]
+    raw=game.get("scores") or {}
+    game_status,pick_status=royal_status_label(game,result)
+    details=str(game.get("detail") or "").strip()
+    if game_status=="LIVE":
+        game_label="LIVE"+(" · "+details if details else "")
+    elif game_status=="FINAL":
+        game_label="FINAL"+(" · "+details if details.lower() not in ("", "final") else "")
+    elif game_status=="UPCOMING":
+        game_label=local(game.get("date") or start)
+    else:
+        game_label="TIME UNVERIFIED"
+    game_color={"LIVE":"#fb7185","FINAL":"#c4b5fd","UPCOMING":"#94a3b8","UNVERIFIED":"#fbbf24"}[game_status]
+    pick_color={"WIN":"#86efac","LOSS":"#fca5a5","PENDING":"#fbbf24"}.get(pick_status,"#fbbf24")
+    line_rows=[]
+    for team in names:
+        chosen=bool(selected and _team_name_match(selected,team)>=.90)
+        crown='<span style="margin-left:6px;color:#d8b4fe" aria-label="Queen pick" title="Queen pick">👑</span>' if chosen else ''
+        val=raw.get(team)
+        score=html.escape(str(val)) if val is not None and str(val).strip()!='' and game_status in ('LIVE','FINAL') else '—'
+        team_safe=html.escape(str(team))
+        name_color='#efdcff' if chosen else '#e5e7eb'
+        line_rows.append(f'<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:5px 0"><span style="font-size:clamp(13px,2.6vw,17px);font-weight:{"800" if chosen else "600"};color:{name_color};min-width:0">{team_safe}{crown}</span><span style="font-size:clamp(21px,4vw,29px);font-weight:850;font-variant-numeric:tabular-nums;color:{name_color};text-align:right;min-width:36px">{score}</span></div>')
+    note=''
+    if selected:
+        if game_status=='LIVE':
+            scores=[numeric(raw.get(n)) for n in names]
+            if scores[0] is not None and scores[1] is not None:
+                picked=next((i for i,n in enumerate(names) if _team_name_match(selected,n)>=.90),None)
+                if picked is not None:
+                    delta=scores[picked]-scores[1-picked]
+                    note=('LEADING BY '+str(int(delta)) if delta>0 else 'TRAILING BY '+str(int(-delta)) if delta<0 else 'TIED')
+        if not note:
+            note='QUEEN PICK MARKED 👑'
+    footer=(f'<span style="color:{pick_color};font-size:11px;font-weight:750">PICK {html.escape(pick_status)}</span>' if selected else '<span style="color:#9ca3af;font-size:11px">WATCHING</span>')
+    if note:
+        footer+=f'<span style="color:#c4b5d1;font-size:11px">{html.escape(note)}</span>'
+    padding='9px 12px' if compact else '13px 16px'
+    st.markdown(f'<div style="background:#1b1326;border:1px solid #624076;border-radius:12px;padding:{padding};margin:4px 0 8px">'
+      f'<div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:5px"><span style="font-size:11px;font-weight:700;color:#c4b5d1">{html.escape("NCAAF · NCAA Football" if sport=="NCAAF" else str(sport))}</span><span style="font-size:11px;font-weight:800;color:{game_color}">{html.escape(game_label)}</span></div>'
+      +''.join(line_rows)
+      +f'<div style="border-top:1px solid #463653;padding-top:7px;margin-top:5px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:5px">{footer}</div></div>',unsafe_allow_html=True)
+    return True
+
+
 def display_row(x, number=None):
     q = x.get("quote")
     sport = x.get("sport", "Sports")
@@ -1020,48 +1092,24 @@ def display_row(x, number=None):
             secondary+=" · payout unverified"
     with st.container(border=True):
         game=x.get("score_game")
-        # Prominent, mutually exclusive status: grading is authoritative only for
-        # a locked prediction, while live score is an observation, not a win.
-        outcome = str(locked.get("result") or "PENDING").upper() if locked else "UNTRACKED"
-        if outcome == "WIN":
-            status_text, status_color = "✅ WON · QUEEN CALLED IT", "#16a34a"
-        elif outcome == "LOSS":
-            status_text, status_color = "❌ LOST · QUEEN MISSED", "#dc2626"
-        elif game and game.get("state") == "in":
-            status_text, status_color = "🔴 LIVE · IN PROGRESS", "#e11d48"
-        elif game and game.get("state") == "post":
-            status_text, status_color = "⏳ FINAL · AWAITING VERIFIED GRADING", "#d97706"
-        elif locked:
-            status_text, status_color = "⏳ PENDING · GAME NOT FINAL", "#a16207"
+        result=locked.get("result","PENDING") if locked else "PENDING"
+        shown=royal_scoreboard(game,sport,locked.get("selection") if locked else None,result,x.get("start"),compact=True)
+        if not shown:
+            label=local(x.get('start'))
+            st.markdown(f"**{icon} {title}** · 📅 {label}")
+            if locked: st.caption(f"👑 {locked.get('selection','')} · ⏳ PICK {result}")
+        if number is not None:
+            st.caption(f"Top {number} · {html.escape(str(x.get('market_type','Market')))}")
+        # Never confuse a YES-contract quote with the price of Queen's selected team.
+        if locked:
+            st.caption(f"Model: {html.escape(str(locked.get('model') or 'Unspecified'))} · {html.escape(str(locked.get('confidence') or 'Uncalibrated'))}")
+        if valid:
+            quoted_side=(str(x.get('selection')) if verified else 'unverified YES outcome')
+            st.caption(f"Contract YES ({html.escape(quoted_side)}): ask {q['ask']*100:.0f}¢ · bid {q['bid']*100:.0f}¢")
         else:
-            status_text, status_color = "👀 WATCH · NO LOCKED FORECAST", "#64748b"
-        st.caption(status_text+" · "+royal_game_clock(game, x.get("start")))
-        if game and game.get("state") in ("in", "post"):
-            teams = game.get("teams") or []
-            raw_scores = game.get("scores") or {}
-            if len(teams)==2 and all(str(raw_scores.get(t) or "").strip() for t in teams):
-                sc1, sc2 = str(raw_scores[teams[0]]), str(raw_scores[teams[1]])
-                time_label = royal_game_clock(game, x.get("start"))
-                st.markdown(f"""<div style="padding:12px;border:1px solid #70429b;border-radius:12px;text-align:center;background:#1b1028">
-                <div style="color:#cda9ee;font-size:14px;margin-bottom:6px">{html.escape(time_label)}</div>
-                <div style="font-size:23px;font-weight:800;color:#f2e8fa">{html.escape(teams[0])} &nbsp; {html.escape(sc1)} — {html.escape(sc2)} &nbsp; {html.escape(teams[1])}</div>
-                </div>""", unsafe_allow_html=True)
-        score_line=royal_score_line(game,locked.get("selection") if locked else None)
-        if score_line: st.caption(score_line)
-        elif game and game.get("state")=="in": st.caption("Live scoreboard connected · score currently unavailable")
-        if sport=="Tennis" and game and game.get("state") in ("in","post"):
-            sets=game.get("sets") or {}
-            names=game.get("teams") or []
-            if len(names)==2 and (sets.get(names[0]) or sets.get(names[1])):
-                st.caption("🎾 Sets: "+" | ".join(f"{n}: {'–'.join(sets.get(n) or ['—'])}" for n in names))
-        st.markdown(f'''<div class="royal-game">
-          <div class="royal-game-head"><span class="sport-icon">{icon}</span>
-          <span class="royal-match">{f'{number}. ' if number else ''}{title}</span>
-          <span class="logos">{logo_html}</span></div>
-          <div class="royal-game-bottom"><div class="royal-game-text">
-          <div class="royal-meta">{html.escape(sport)} · {state} · {html.escape(str(x.get('market_type','Market')))}</div>
-          <div class="royal-selection">{main}</div><div class="royal-price">{secondary}</div></div>
-          </div></div>''', unsafe_allow_html=True)
+            st.caption('Contract quote unavailable · WATCH ONLY')
+        if locked and locked.get('result')=='PENDING':
+            st.caption('Forecast tracked · not an instruction to buy · paper test only')
         with st.expander("Why this status? · Contract details"):
             st.write("Game:", x.get("score_detail") or local(x.get("start")))
             st.write("Verified YES outcome:", x["selection"] if verified else "Not established by contract metadata")
@@ -1232,7 +1280,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.1 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V5.2 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
 restore_bundled_royal_backup()
 # Simple primary navigation: every major page is one tap away, no nested archive menus.
@@ -1384,32 +1432,29 @@ def royal_auto_scan():
 
 
 
-    st.subheader("🔴 Live Game Tracker")
-    live_rows = [x for x in checked if x.get("score_game") and x["score_game"].get("state")=="in"]
-    unique_live = {}
+    st.subheader("📡 Live Scoreboard")
+    live_rows=[x for x in checked if x.get('score_game') and x['score_game'].get('state')=='in']
+    unique_live={}
     for candidate in live_rows:
-        unique_live.setdefault(candidate["event_id"],candidate)
+        unique_live.setdefault(candidate['event_id'],candidate)
     if unique_live:
-        st.caption("Current matched scores and game clocks. A LIVE score is not a final result or settled wager.")
-        for candidate in list(unique_live.values())[:15]:
-            game = candidate["score_game"]
-            teams=game.get("teams") or []
-            if len(teams)!=2: continue
-            a,b=teams
-            sa,sb=game.get("scores",{}).get(a),game.get("scores",{}).get(b)
-            with st.container(border=True):
-                st.markdown(f"**{SPORT_ICON.get(candidate['sport'],'🏆')} {html.escape(a)} vs. {html.escape(b)}** · 🔴 {html.escape(royal_game_clock(game))}")
-                st.markdown(f"### {html.escape(str(sa if sa not in (None,'') else '—'))} — {html.escape(str(sb if sb not in (None,'') else '—'))}")
-                saved=next((p for p in st.session_state.get('royal_locked',{}).values() if p.get('event_id')==candidate['event_id'] and p.get('sport')==candidate['sport']),None)
-                if saved:
-                    st.caption(f"👑 Queen picked {saved['selection']} · {saved['result']} · {saved['model']}")
-                else:
-                    st.caption("No linked locked pick for this game")
+        st.caption("Live scores from ESPN · scores are not final grades")
+        # Compact board with score alongside each team; top picks below contain the detailed quotes.
+        live_list=list(unique_live.values())[:12]
+        for offset in range(0,len(live_list),2):
+            cols=st.columns(2,gap="small")
+            for col,candidate in zip(cols,live_list[offset:offset+2]):
+                with col:
+                    game=candidate['score_game']
+                    saved=next((p for p in st.session_state.get('royal_locked',{}).values()
+                                if p.get('event_id')==candidate['event_id'] and p.get('sport')==candidate['sport']),None)
+                    royal_scoreboard(game,candidate['sport'],saved.get('selection') if saved else None,
+                                     saved.get('result','PENDING') if saved else 'PENDING',candidate.get('start'),compact=True)
     else:
-        st.info("No confidently matched LIVE scores in the current quote scan. Saved history and final-result checks continue separately.")
+        st.info("No confidently matched live games right now. Results monitoring continues separately.")
 
     st.subheader("👑 Queen’s Top 10 Picks")
-    st.caption("NBA · NFL · NHL · NCAAF | Up to ten independent record-based candidates, with cross-sport representation when available.")
+    st.caption("NBA · NFL · NHL · NCAAF (NCAA Football) | Up to ten independent record-based candidates, with cross-sport representation when available.")
     watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
 
     def evidence_rank(x):
@@ -1445,7 +1490,7 @@ def royal_auto_scan():
                              st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{}).get("model")=="Season-record baseline"}),
                            "quoted":sum(1 for x in checked if x["sport"]==league and x.get("quote") and x["quote"].get("valid"))}
                    for league in ACTIVE_SPORTS}
-    with st.expander("🔎 Feed health & league coverage",expanded=True):
+    with st.expander("🔎 Feed health & league coverage",expanded=False):
         for league,counts in league_counts.items():
             st.caption(f"{league}: {counts['events']} events in window · {counts['record']} independent record-baseline games · {counts['quoted']} valid market quotes")
         if errors: st.caption("Feed errors: "+" | ".join(errors))
@@ -1628,7 +1673,7 @@ def royal_auto_scan():
                     saved_leg=_saved_leg_rows.get(leg['prediction_id'])
                     game=(matched.get('score_game') if matched else None) or (_match_saved_game(saved_leg,_leg_scores) if saved_leg else None)
                     result=leg["leg_result"]
-                    mark="✅" if result=="WIN" else "❌" if result=="LOSS" else "🔴" if game and game.get("state")=="in" else "⏳"
+                    mark="✅" if result=="WIN" else "❌" if result=="LOSS" else "📡" if game and game.get("state")=="in" else "⏳"
                     timing=royal_game_clock(game, matched.get('start') if matched else (saved_leg.get('created_at') if saved_leg else None)) if game else '🕒 Scoreboard not matched · time unverified' 
                     st.markdown(f"{mark} **{icon} {leg['selection']}** · {timing}")
                     score_line=royal_score_line(game,leg["selection"])
