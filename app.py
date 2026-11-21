@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -129,6 +129,25 @@ def scores(sport, date):
         return r.json().get("events", [])
     except (requests.RequestException, ValueError): return []
 
+# Separate FBS schedule discovery from saved predictions. ESPN's standard
+# NCAAF scoreboard can prioritize ranked games; group 80 requests FBS.
+@st.cache_data(ttl=120, show_spinner=False)
+def royal_ncaaf_schedule_day(day_yyyymmdd):
+    path=ESPN['NCAAF']
+    try:
+        r=requests.get(
+            f"https://site.api.espn.com/apis/site/v2/sports/{path}/scoreboard",
+            params={"dates":day_yyyymmdd,"groups":80,"limit":500},timeout=15)
+        r.raise_for_status()
+        data=r.json()
+        if not isinstance(data,dict) or not isinstance(data.get('events'),list):
+            return [],"Unexpected scoreboard response"
+        return data['events'],None
+    except requests.RequestException:
+        return [],"ESPN college football schedule temporarily unavailable"
+    except ValueError:
+        return [],"ESPN returned invalid schedule data"
+
 def _score_competitor_name(comp):
     """ESPN team sports use team; tennis generally uses athlete."""
     team=comp.get("team") or {}
@@ -146,6 +165,20 @@ def _tennis_sets(comp):
             number=numeric(value)
             parts.append(str(int(number)) if number is not None and number.is_integer() else str(value))
     return parts
+
+def _royal_tennis_seed(competitor):
+    """Only provider-reported tournament seeds/ranks, not inferred strength."""
+    if not isinstance(competitor,dict): return None
+    athlete=competitor.get('athlete') or {}
+    if not isinstance(athlete,dict): athlete={}
+    values=[competitor.get('seed'), competitor.get('tournamentSeed'),
+            competitor.get('curatedRank'), athlete.get('seed'),athlete.get('rank')]
+    for raw in values:
+        if isinstance(raw,dict):raw=raw.get('current') or raw.get('rank') or raw.get('value')
+        number=numeric(raw)
+        if number is not None and number.is_integer() and 1<=number<=128:
+            return int(number)
+    return None
 
 def _score_record(event, sport, competition=None):
     """Normalize either a team game or a tennis match nested in a tournament."""
@@ -166,6 +199,7 @@ def _score_record(event, sport, competition=None):
             "winner":next((n for n,p in zip(names,participants) if p.get("winner") is True),None),
             "logos":{n:(p.get("team") or {}).get("logo","") for n,p in zip(names,participants)},
             "records":{n:p.get("records") or [] for n,p in zip(names,participants)},
+            "tennis_seed":{n:_royal_tennis_seed(p) for n,p in zip(names,participants)} if sport == "Tennis" else {},
             "home":next((n for n,p in zip(names,participants) if p.get("homeAway")=="home"),""),
             "event_id":str(comp.get("id") or event.get("id") or ""),
             "source":"ESPN", "completed":bool(typ.get("completed"))}
@@ -529,11 +563,31 @@ def royal_ticket_is_valid(legs, slate_day=None):
             return False
     return True
 
+def royal_tennis_pregame_prediction(x):
+    """Conservative tournament-seed comparison, without invented probabilities."""
+    game=x.get('score_game') or {}
+    names=competitors(x)
+    if len(names)!=2 or game.get('state')!='pre':return None
+    seed_map=game.get('tennis_seed') or {}
+    seeds=[]
+    for name in names:
+        mapped=_unique_score_team(name,game.get('teams') or [],'Tennis')
+        if not mapped:return None
+        seeds.append(seed_map.get(mapped))
+    if not all(isinstance(v,int) and v>0 for v in seeds):return None
+    if abs(seeds[0]-seeds[1])<4:return None
+    choice=0 if seeds[0]<seeds[1] else 1
+    return dict(selection=names[choice],opponent=names[1-choice],prob=None,
+        model='Tennis verified-seed baseline',confidence='RESEARCH · SEED ADVANTAGE',
+        evidence=f'Provider reported seed/rank: {names[0]} #{seeds[0]}, {names[1]} #{seeds[1]}. Lower seed favored. Uncalibrated; not proof of value.')
+
 def choose_prediction(x):
     """Simple transparent records baseline, otherwise labeled market baseline.
     Never call either a validated edge; avoid unsupported invented statistics."""
     names=competitors(x)
     if len(names)!=2: return None
+    if x.get('sport')=='Tennis':
+        return royal_tennis_pregame_prediction(x)
     game=x.get("score_game")
     if game:
         mapped=[]
@@ -587,8 +641,8 @@ def lock_predictions(items):
             # high ranking in a media article is not a calibrated probability.
             # Tennis currently has no pre-match form/ranking model wired in;
             # discover it and report WATCH until independent evidence exists.
-            if pred['model'] != 'Season-record baseline': continue
-            if (numeric(pred.get('prob')) or 0) < .58: continue
+            if pred['model'] not in ('Season-record baseline','Tennis verified-seed baseline'): continue
+            if pred['model']=='Season-record baseline' and (numeric(pred.get('prob')) or 0) < .58: continue
             phase="LIVE" if x.get("live") else "PREGAME"
             pid=hashlib.sha256((x["event_id"]+"|"+x["slug"]+"|"+phase).encode()).hexdigest()[:32]
             q=x.get("quote")
@@ -1085,6 +1139,86 @@ def royal_tennis_score_text(m):
     pt = " · points %s-%s" % (points[0],points[1]) if isinstance(points,list) and len(points)>=2 else ""
     return ("Sets " + setstr + pt) if setstr else ("Live score unavailable" + pt)
 
+def royal_tennis_live_candidate(match):
+    """Direction-only score lead after one completed set; never an implied market edge.
+
+    Cached scoreboard snapshots may lag. Original input and timestamp are saved
+    before a later match result; no retroactive prediction is permitted.
+    """
+    a,b=royal_tennis_names(match)
+    if not a or not b or clean(a)==clean(b):return None
+    score=match.get('score') or {}
+    games=score.get('games') if isinstance(score,dict) else None
+    if not isinstance(games,list) or len(games)!=2 or not all(isinstance(v,list) for v in games):return None
+    finished=[0,0]
+    for first,second in zip(*games):
+        x,y=numeric(first),numeric(second)
+        if x is None or y is None or x<0 or y<0:continue
+        # Standard completed set: at least six games and two-game margin,
+        # or 7-6 tiebreak. Do not infer best-of-three/five match completion.
+        if (x>=6 and x-y>=2) or (x==7 and y==6):finished[0]+=1
+        elif (y>=6 and y-x>=2) or (y==7 and x==6):finished[1]+=1
+    if max(finished)!=1 or min(finished)!=0:return None
+    winner=0 if finished[0]>finished[1] else 1
+    names=[a,b]
+    return dict(selection=names[winner],opponent=names[1-winner],prob=None,
+        model='Tennis live set-leader baseline',confidence='LIVE RESEARCH · SET LEADER',
+        evidence=f'Live provider had {names[winner]} leading completed sets {finished[winner]}-{finished[1-winner]} at observation. Score feed can be delayed up to 30 minutes. No independent edge or trade quote established.')
+
+
+def royal_tennis_live_identity(match):
+    a,b=royal_tennis_names(match)
+    tournament=str(match.get('tournament') or '').strip()
+    moment=str(match.get('scheduled_time') or match.get('live_at') or '')
+    # Never use the changing score or call time as part of the identity.
+    day=(parse_date(moment) or utc()).astimezone(CT).date().isoformat()
+    provider_id=str(match.get('id') or match.get('match_id') or match.get('matchId') or '').strip()
+    identity='|'.join((provider_id or clean(a)+'-'+clean(b),clean(tournament),day))
+    return 'livetennis-'+hashlib.sha256(identity.encode()).hexdigest()[:20]
+
+
+def royal_tennis_observe_live(matches):
+    """Save qualifying live directional research picks in the ORIGINAL picks journal.
+
+    No executable quote -> no paper trade entry or claimed profit. Existing picks
+    for a corresponding matchup are preserved; do not generate opposites.
+    """
+    now=utc().isoformat()
+    with db() as c:
+        for match in matches:
+            pred=royal_tennis_live_candidate(match)
+            if pred is None:continue
+            event_id=royal_tennis_live_identity(match)
+            if c.execute('SELECT 1 FROM royal_predictions_v34 WHERE sport=? AND event_id=? LIMIT 1',
+                ('Tennis',event_id)).fetchone():continue
+            # If this player pair has a recent pregame lock, preserve it as the one pick.
+            recent=c.execute("""SELECT selection,opponent FROM royal_primary_predictions_v54
+                WHERE sport='Tennis' AND created_at>=?""",
+                ((utc()-timedelta(days=2)).isoformat(),)).fetchall()
+            pair={clean(pred['selection']),clean(pred['opponent'])}
+            if any({clean(r['selection']),clean(r['opponent'])}==pair for r in recent):continue
+            slug='live-score-research-'+event_id
+            ident=hashlib.sha256((event_id+'|'+slug+'|LIVE').encode()).hexdigest()[:32]
+            tournament=str(match.get('tournament') or 'Tennis match')
+            title=f"{pred['selection']} vs {pred['opponent']} · {tournament}"[:250]
+            c.execute("""INSERT OR IGNORE INTO royal_predictions_v34
+              (id,event_id,slug,sport,title,selection,opponent,phase,model,model_probability,
+               confidence,evidence,quote_ask,created_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+              (ident,event_id,slug,'Tennis',title,pred['selection'],pred['opponent'],
+               'LIVE',pred['model'],None,pred['confidence'],pred['evidence'],None,now))
+        c.commit()
+
+
+def royal_tennis_live_score_game(match):
+    a,b=royal_tennis_names(match)
+    sc=match.get('score') or {}
+    gs=sc.get('games') if isinstance(sc,dict) else []
+    sets={a:[str(v) for v in gs[0]],b:[str(v) for v in gs[1]]} if isinstance(gs,list) and len(gs)==2 and all(isinstance(v,list) for v in gs) else {}
+    return {'state':'in','detail':royal_tennis_score_text(match),'date':match.get('scheduled_time') or match.get('live_at') or utc().isoformat(),
+            'teams':[a,b],'scores':{},'sets':sets,'winner':None,'logos':{},'records':{},'home':'',
+            'event_id':royal_tennis_live_identity(match),'source':'Live Tennis API','completed':False}
+
 def royal_tennis_live_panel():
     st.subheader("🎾 Live Tennis · Queen’s Picks")
     st.caption("Score feed refreshes at most every 30 minutes per server cache; score updates are not new betting predictions.")
@@ -1101,7 +1235,11 @@ def royal_tennis_live_panel():
     if not matches:
         st.info("No live tennis matches returned by this provider. Saved predictions remain below.")
         return
-    st.caption("%s live matches returned · %s original saved selections · source: Live Tennis API" % (len(matches), len(saved)))
+    # One new immutable pick at most per verified live match identity; no betting quote.
+    royal_tennis_observe_live(matches)
+    with db() as conn:
+        saved=[dict(r) for r in conn.execute("SELECT * FROM royal_primary_predictions_v54 WHERE sport='Tennis'")]
+    st.caption("%s live matches returned · %s saved selections · source: Live Tennis API" % (len(matches), len(saved)))
     matched=[]; other=[]
     for m in matches:
         r=royal_tennis_match_saved(m,saved)
@@ -1171,6 +1309,91 @@ def royal_tennis_parlay_status():
     st.caption('Tennis-only parlays are not generated from completed matches or live scores alone. When qualified original picks exist, automatic tickets and manual suggestions use the same-day Central Time rule.')
 
 
+def royal_ncaaf_games_panel():
+    """Full available college-football schedule. Never creates paper locks."""
+    st.subheader('🏈 College Football · Games & Live Scores')
+    st.caption('👀 All available FBS games, whether or not Queen selected one. Only saved, independently verified picks receive a 👑.')
+    today=utc().astimezone(CT).date()
+    scope=st.segmented_control('📅 College football schedule',
+        ['Today','Next 3 Days','Next 7 Days'],default='Today',
+        key='royal_v566_ncaaf_schedule_scope')
+    horizon={'Today':0,'Next 3 Days':2,'Next 7 Days':6}.get(scope,0)
+    last_day=today+timedelta(days=horizon)
+    # Request adjacent eastern/UTC calendar days, then filter by actual
+    # America/Chicago kickoff date to avoid missing late-night games.
+    date_keys=sorted({(today+timedelta(days=n)).strftime('%Y%m%d')
+                      for n in range(-1,horizon+2)})
+    found={}; errors=[]
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures={executor.submit(royal_ncaaf_schedule_day,d):d for d in date_keys}
+        for future in as_completed(futures):
+            try: events,error=future.result()
+            except Exception:
+                events,error=[],"Schedule retrieval failed"
+            if error: errors.append(error)
+            for event in events:
+                for game in _score_records(event,'NCAAF'):
+                    start=parse_date(game.get('date'))
+                    if not start:continue
+                    day=start.astimezone(CT).date()
+                    if not today<=day<=last_day:continue
+                    game_id=game.get('event_id') or clean('|'.join(game.get('teams') or []))
+                    key=str(game_id)+'|'+str(day)
+                    existing=found.get(key)
+                    priority={'post':3,'in':2,'pre':1}
+                    if existing is None or priority.get(game.get('state'),0)>priority.get(existing.get('state'),0):
+                        found[key]=game
+    games=sorted(found.values(),key=lambda game:(
+        0 if game.get('state')=='in' else 1 if game.get('state')=='pre' else 2,
+        game.get('date') or ''))
+    if not games:
+        st.warning('No college football schedule could be verified for this range.' if errors
+                   else 'No FBS college football games found in this date range.')
+        if errors: st.caption('ESPN schedule may be unavailable. Saved Queen picks remain unchanged.')
+        return
+    live=sum(g.get('state')=='in' for g in games)
+    upcoming=sum(g.get('state')=='pre' for g in games)
+    a,b,c=st.columns(3)
+    a.metric('Games found',len(games))
+    b.metric('Live',live)
+    c.metric('Upcoming',upcoming)
+    with db() as c:
+        picks=[dict(r) for r in c.execute("""SELECT * FROM royal_primary_predictions_v54
+            WHERE sport='NCAAF' ORDER BY created_at DESC LIMIT 800""")]
+    show_all=bool(st.session_state.get('royal_v566_ncaaf_show_all',False))
+    if len(games)>16:
+        if st.button('📋 Show Fewer Games' if show_all else f'📋 Show All {len(games)} Games',
+                     key='royal_v566_ncaaf_expand',use_container_width=True):
+            show_all=not show_all
+            st.session_state['royal_v566_ncaaf_show_all']=show_all
+    visible=games if show_all else games[:16]
+    for i in range(0,len(visible),2):
+        cols=st.columns(2,gap='small')
+        for col,game in zip(cols,visible[i:i+2]):
+            with col:
+                # Strictly associate a saved selection with this specific game;
+                # displaying a schedule alone never causes a new pick or paper bet.
+                matched=[]
+                for r in picks:
+                    similarity=_game_similarity(r,game)
+                    if similarity<.90:continue
+                    created=parse_date(r.get('created_at'))
+                    start=parse_date(game.get('date'))
+                    if created and start and not (created-timedelta(hours=6)<=start<=created+timedelta(days=8)):
+                        continue
+                    matched.append((similarity,r))
+                matched.sort(key=lambda x:x[0],reverse=True)
+                picked=matched[0][1] if matched and (len(matched)==1 or matched[0][0]-matched[1][0]>.06) else None
+                royal_scoreboard(game,'NCAAF',picked.get('selection') if picked else None,
+                                picked.get('result','PENDING') if picked else 'PENDING',
+                                game.get('date'),compact=True,pick_record=picked)
+    if len(visible)<len(games):
+        st.caption(f'Showing {len(visible)} of {len(games)} games. Tap Show All to see the complete available schedule.')
+    if errors:
+        st.caption('Some schedule requests failed; displayed games are verified from available ESPN responses.')
+    st.caption('Schedule and scores are ESPN data, not verified Kalshi/Polymarket trading opportunities. No automatic locks are created from this list.')
+
+
 def royal_current_picks_panel(sport_filter='FOCUS'):
     """Verified active saved picks; full list optional, original picks immutable."""
     is_tennis = sport_filter == 'TENNIS'
@@ -1184,9 +1407,13 @@ def royal_current_picks_panel(sport_filter='FOCUS'):
                 COALESCE(SUM(result='LOSS'),0) l FROM royal_primary_predictions_v54
                 WHERE sport='Tennis'""").fetchone())
         idx=score_index(['Tennis'], [r.get('created_at') for r in candidates[:70]], future_days=6)
+        live_matches,_live_error=royal_tennis_live_feed(royal_tennis_key()) if royal_tennis_key() else ([],None)
         enriched=[]
         for r in candidates:
             game=_match_saved_game(r,idx)
+            if not game and r.get('phase')=='LIVE':
+                options=[m for m in live_matches if royal_tennis_match_saved(m,[r])]
+                if len(options)==1: game=royal_tennis_live_score_game(options[0])
             if game and game.get('state') in ('in','pre'):
                 enriched.append((r,game))
         a,b,c=st.columns(3)
@@ -1665,7 +1892,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.6.5 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.6.7 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
@@ -1686,8 +1913,11 @@ with tab_current:
         royal_tennis_parlay_status()
         royal_tennis_archive_summary()
     else:
-        # Retain original Focus lock stats, then apply the user-facing filter by
-        # filtering the presentation; the database and source grading are unchanged.
+        # NCAAF schedule is distinct from saved picks; display the slate FIRST.
+        # Filtering to NCAAF never creates a new locked selection.
+        if selected_sport=='NCAAF':
+            royal_ncaaf_games_panel()
+            st.divider()
         royal_current_picks_panel(selected_sport)
 with tab_results:
     if st.button("🔄 Check results now", key="refresh_results_now", use_container_width=True):
@@ -1848,13 +2078,13 @@ def royal_auto_scan():
     # V5.3: Top 10 cards already show the matched game score and clock.
     # A second live-board on this page duplicated those same fixtures.
     st.subheader("👑 Queen’s Top 10 Picks · Live Scores Included")
-    st.caption("NBA · NFL · NHL · NCAAF (NCAA Football) | Up to ten independent record-based candidates, with cross-sport representation when available.")
+    st.caption("NBA · NFL · NHL · NCAAF · Tennis | Up to ten qualified pregame candidates. Live tennis picks appear on Tennis cards; no forced selections.")
     watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
 
     def evidence_rank(x):
         locked = st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"), {})
         model = locked.get("model", "")
-        tier = 3 if model == "Season-record baseline" else 2 if model == "Market-favorite baseline" else 1
+        tier = 3 if model in ('Season-record baseline','Tennis verified-seed baseline') else 2 if model == "Market-favorite baseline" else 1
         verified = bool(x.get("verified_side"))
         valid = bool(x.get("quote") and x["quote"].get("valid"))
         return (-tier, -int(bool(x.get("score_game"))), -int(verified and valid), parse_date(x.get("start")) or datetime.max.replace(tzinfo=timezone.utc))
@@ -1865,7 +2095,7 @@ def royal_auto_scan():
     for x in watch:
         if x["event_id"] in used: continue
         locked=st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{})
-        if locked.get("model")!="Season-record baseline": continue
+        if locked.get("model") not in ('Season-record baseline','Tennis verified-seed baseline'): continue
         eligible.append(x);used.add(x["event_id"])
     featured=[]; selected_events=set()
     # Reserve up to two positions per sport only where evidence exists.
