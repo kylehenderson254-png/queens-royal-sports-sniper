@@ -1,4 +1,4 @@
-import os, re, sqlite3, hashlib, html, math, csv, io
+import os, re, sqlite3, hashlib, html, math, csv, io, zlib, base64
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V4.9 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -69,6 +69,44 @@ def db():
       PRIMARY KEY(parlay_id,leg_number))""")
     c.commit()
     return c
+
+
+# Snapshot recovered from the user's own Nov 20 Royal Sports Sniper exports.
+# Embedded so a new Streamlit container can restore without uploading another file.
+# INSERT OR IGNORE never changes a newer result already in the database.
+_ROYAL_SEED_DATA = {
+    "royal_predictions_v34": "c-q{($&%bilO}j?k$wkAAF8Tl;3>8*S*Ku-OfoaLG?(Q3rxLX-0t|N`3ho}k;G4{G9$?OW=);Ii%RJA#!l(go2YexuRXyyHA65C2;il%{@Q-Gui>ZG4|NOWAvkGOrkM-tX@Q3wsdtI*Yns!res?9Q%>$r@5Q#Ezj+}$-bPAl(jU>(a<6XLS}^Iz`T#(}Gr)#kDEO`WO`Yaj8q4nO?sw%Npgf%R?a+X$N&{slH=8`s<Aro3(;^aI^b|5D@B|M(xc<0dGnv{Onj;*A9(1&IU<1+9F^1TjpP5dFd@w`kh9Sgkh;MwnVqihq}{FE1{hmv7p5-PFbX`j_HW<!^o|-f!>$hT$>~Ro74tqgOBgd{(}K_BL)73GSP=+Qh=)w_R3sEXyYs@1I@0eEqEWzy53S`c3ij_0wl>pWz>`KNQcN{<eE(ao1Kp7Ta|U#il9zP1CGnvAKyw_bYL9jj;T4fnT)1Pp;|^?;`$DZ;B51HU5Gast)v`X^S0-MU#qqSZ?DlCHcj&a{pE72SR@(>Q^FukxUz_{ue@iC8W&H_VV>_W%(cfg8?07;!0|+wNQe_M6_2SS{ivIwq#ss$vZe}2Mc_tg<r-4IG<dU_>GIV;A6Y)0KL3=R$Kx;Q-vet<q}uX66!D+ds&AHY8c+s<NH3sx~Ug!^i3N^bjdGLNuwko%vdQ5)#a-<PoG_7u&-Xedimkm)AB#P>)y2fwK)96g<Mcl7H6KIFbng~MP8-rO>xt#VgcdvcD-34+`kmB@t?rsMAzm;`OAMQ4?rcq3jV9qzZk=bl&7F-9ssxw3X+vcP#b|0;;adQc;a*qs@#LRY1&1In`2Nvym?o=gFBS=s6Ku6p?F)ZH%+}RpT<qwRGa<l4^7+DxTuEte*vhXxPh$H)H2Ta_W?cn%>$xGpI=b25I+k}+|H1UA%Y1V!3oEmGM4aYrF3Zrr`W^Uw9AFNt&ib+^X{s61=p4Dz<lz@>*96XtZ~EVh0*k)@=4n?x68-6m;J@EWJ+?}92P%bQEo>RFR$Lbe>TDJ;4=!fFlBM@K?TR>{2zdi{wnM*Oc=(`z$b;2T5HdVXVE%soMa%m)Q$%2E$QK7d-(hfEMT)dhVSylMe(9(>-@MGz>5!8#S3`2U6&Ud{B|1{UR~ZmyKFXiJ`S`03Po$JFkCY$xU%-UYw_fF7ouB@2TxGgh5GknN$Ibg{GzSphMrl95}0#IN>8kzf-_HWF9~Y2^NcE2;t?f8uYF*1w^+madK(wZt*@b-BKjfLb+s<v!y4f(e%r>!6(BC3;4#*2+g^7NUu``UuW`IOp19agEGLuxUbNH*Ir%`vuTuWX?Ju~Iw6dp=6Ydq5Agr^IS!t{hBq+<1)WDQd2sxe&c7z=F)kCugRgGWd9OO+?KQvA8$HSogpH_8KyltzmE8PECy7)AR%LCEhCA#cap?;P87fLmr^QY*h<Q*PfOd81@Ne+Js1Q;O(NEFhbImMJ_dvhwl;{u;x?M7tjU{F1U$ISrg+dSiO6I)cp!+3cx_V(Sg-!5J~D?ip%otkzP!?%%q|KZ}p`|@>zpn+S);vRoRsxp2NR>d0aGt@zqUuQTvd-9j!dDY_HuOa_l->mK;nye`8P+vF8xO^;NT|lvE!QW0k`v^SxE3Qt;eql1(lxM(;L|aNhanM|Ff@**S4#LUcjMN=?g4;cK_%B%_dic+Eir!n44cJvUp+gLZ%E`-lVCD_OwPw*c5&;NWM>=|MoY$OKPVfX(ROsF|^3E+DJRY16aC-vTlkyWD@UgAYrfVB~66oOjgj0*>xRchKlL_TiI2Sl25y3|dG$aR>Dg~4PRY9YUCjn1Kjh0@o+;5f(G>sSQ2qT!heEs68ym)<4Jl*=+UbVk}c2WG%B38J0^I$o=m<eP~OO30KFd_qE+EY~N;L!$hRtK4~2PqlfufTO$F0NPW`g8%lZ?>D8;`tI)LFiZCZ?S2wBiear>l}*91JO*71WgT42ZpD_UC=HXN=S(4TnMXVMpD?`8hXf3-fi2(=F2Afn<<!|vU&M-+lFl{{^`?y?tuIdzu*&oz?peyA}x<4^FY!nO%f!C#!<vfdM1h2R1xjC^`S#j*u9O8rof_pJXnz#Lv$EFv`{UJCrkLcbH-o)t@xv^@-}`QABw*<?d|UMTQn#-ulV3idq}@+vJ)e$rH0~J%_%eAc6`o%LiQGASsXpizuRvA5qymYX_Q5XNhIj^1hn5h=eYZ$+O1S$$Cc`#UN7#d&E{mGUIJQ?)posKs&8@DI-BDCf}G0BBiT$At5nW8g33BZ7rcg`m~fE`pU^u`6v0GSbnwUV@Lb+6&_*4BWaaDUSLM~8#XCUbbsyY#oqgikH#xXb<G0<vyuye6GhXAL!yA5Jg<2ymGpG$ES`|io&#655_2^Wp9O0NgM4=b#r!7w5xT4erhT7aXz*9A%X-OEvQvo%4r;zZkadB4lVp}7uCu<XJ#j37xY3x_$$JYpSw=NH4<$io7Yf?y^k|SF4#L$gVT0>$aCa_w^lrhAUYV>2`re1FrtJwNeQ~Vj=6K8KRuGca45#T;fjMHO#R$dOWxuD4`I@(4BJTRjQpwU2&2A3z7%(B>7l|=2WO7A`|>d(hU<>iy#@x({9{d<0xA#C*e_oukE?yKdxoXW~!Y$o_|2aIaT4VvH)b-7i_2lT)xDtWYx@(C%?xt>NWA7FiOM4m(}KV7^pK2=`<53Qr1<tJF*RP}ZCzIPLTK!@jN7lIk|y6|!SO~K3456od<`qK_b7AY6N45uyyFv)0}cu+PZiE5qo+MDbx_WA}^clhW18Jj&D9WPLfU!d)Gbw6^C{>_1`9LHy}C~1-*5F&U?P6lJOka$Fbv%zX_dlVHN)r@N&q24TNTtcU2(34KMS2M5C(7VYKv%j6y$|x^SWHZ5&B*m;yXl4XSMF<=?FmAw0ROKP&=#SB6uX0xC{~?gIKcjM9p=@{AIN~`*HZE}&wXi&xSAJv8T+l_wk^t%<ku+sds)P&HKr)PjprQ{<j`zHqm=*dpo<$F5Vw2~z`ENM4j_u-8bnbXUc_5q%qRJ=Yt!0V}bltcWIqDJ6h{po~oy%-ylF9zBS6}jaU41#({I6dPIPSMUo|UiSm&!N&j-SZOBiTH_j0s)JDA2Yf78fb8!bp$iIw<eGi7wll+>V<cmET>nTx@-~KV6-dutZN8pR6<3FN>#eU#<6}<$h!?&;>)HVKxfuJ+%;$vMvcLh$V@J&NxzLqKCF=fnPVQruI><gtjTcve_@g=Qs;>f3JW>Sveh_3y4g{WTj-ncXyD^Cq;Fll-uY$?~g}0JsvmyX0ck|9qRJq<FSjY^*J%?b^h<}t{RTS!%5}ogqa{4gU5YsnMj7J#3hYPIc_B5+@THCn@Mb3p6iWk7h(IaC#U3lw2vSAi~juzeY*YEZCuy=$#^uOJP^(WP3v(VMzl2r;phknv^}{_GJ1~gCFx>C)b3+N4$zyNUX}O3q9+$u#k*{a5BWtG?~1o*Ufy)+MLPp%Kk@{Yn+naXIK1Zvydf?$<r;OP#Q#(J+uqRe@9u*|C(nSx@@Kh2(Mf@BWR7xJ$s~|O2s-IPP{MQ+q+6kq?7hn+_(g!_akTjAqPSe*_T5L|F0!|omrjliUp4FEqP~vHxZY1IpTcs9t74orlSOJ%k_q>=3Qk2DBXE`o*Cr<$>F7)JJmqkYk;5GkRndByA;Y?O$FrxeiZ|7Ahv)kbS6%o6z4dOe>|e|TGKE$nm&r1!B0(iYnQ$f>KOhMMRN@LXe6N4D3D;lsSZ~_}uK8utPFLc`=a=Qv>Ji%F^|rlkzTQA@23;(x+u{oMS^f1`UQT5*fl~r^nj?Z}JBGl}F-PTYWdLOYkG2nAj+q3_GN3Kl)b*(@f3pn5(`HrG)sT$w@e=19443`TT%fa_#i+niYPb?s62y{&b|6($IjmvC5IxVQVa^Oh7!HD!*_0ge0ej=;<?G@@wQ{k2XqNZ5X<t>@_Gvb7IDD8b_?KEn<qRh+sZpHalbY|{N}T2gmc{v}DDX@CJY6HABWRu*ZF$5;mXKt~Vc?)u43d^iTV=`qXuP|r7OUoPS>n<7_QlKM`SNjhG`_;4@e*nXRo2eEpd1HgvM|xT=H5tSf#;hsT!o%<PXcF%opyb8klOF*v~5>VFYaMgEl;=g^G@2K_vfpZ!^<-NI1{uGs-U>iUOFKq<qF+rE~JkU?Hk@3HB+x}1MPBASN>+XKC!$%pe*N19Y-l}cC%deSF@*c$^-d4U=2Zf)GLB>MXcw*l{dJbBW~e9mCy()LOq7gJ$}Y+C7#62(GILLVwVU~yzZlD!$Ld~?bhc^K=hmjL8MEJQV)hhKo#SKG0rkCMDN7Ny%Pg%wYc@iKFr0tm)TDU=q4=tWAKm5;_{}7X<hyS^%|e_vf4cEhA!IbYm>veySMy+exW8mi8czK6Hk`!sF#!9jw(i%#p!eW%!_ZdwhcubiH{J1z;zm#b&fh=fCW^{OcKe+{)Eh#SZR5Xo4z|9PgAjWKli!eU25+%9qU9qlcnmIOT<x#44oO8A|;R)1KJ!``OX@`B_hU4iMyNiqK5m&Gj|dZh1GCti!*iuW%ptxa6uqwVgs>3I;u%F7=<UyQOR*{cc~XbPcqm-T&_2ZcDuQb?TOlX8kg_@Z9Gyt@4DH&RymzgPQ^1p)fy`(^TeVN&KwbFn1>iB4-!>;F4)1tlutrvKG$_@76I<7aGKPzFZ$RA(egYz0{gs{skl54%>_-CsEC?+bZs0<$y>nJ!8k4;TAEKuJ-G?<O}?*PHrpknGj|PH3d_T!>8oa2t#jGjiMSj^GeJ{}gj-%l$$gLs{V^*Hx{5N#F%*sc+SH>#)ZFEe`E{4Qd&VR}aW%cT?bCcW%|m@4D<|VK0aD>+Mn%IwOU4wSo?*;0G&hsAoOjna#*WK!yJ@fQ7dOq;!QJVy{P>}GS2e|NEz}_ve*#*OeH`dTvt4(F<xQKvDcY3hrk1DEW`eSi$|W>8c_I?E6dHG+gm>C;hi)bG`h2`+ylEcVu&A3hoxA6G(LCfTvmwDCHOt#!b@qbtaBwaN67C!-bLKpa#2XPKDtt&z610_}SMj3<wD#M(MeVOo_xi{8m&M1s^?s{=e0_<lFvfcAnzosW%OlZDkVGd^1#glTXfClF5^^!{XdG%IMxhH*^3hyJQ+>5?zG-gHgfn*L_dmSq%W>o8W?RR_CC<){<3wH_%VvTmx|D$=qNNCE6Dg8(1Zt)8mg*=%pFuF*;MUc0xv0bKxqaPdShaQWa*0pU?2Ps<Kj<mk=7`}WWoSCFJTqw~_!284o|)+PL<=T>jZPb4Ef4}a^#LWLMn&(}pBL3#dN`xxVYyw!%|7nYBt+_$;`e49@A}*Fp+4m~f|+Z05vcFJr#ziM572$GF?o;HfHzj96oVz!C@HL?)VtoFvTV%M%!}GJ56kQJOseMDRs95KSM_y&yq;Omhw_=g>RC*IdQYO!LRinO5_sYgFvb(ouVp<cU+I+Ckn?fuPfgX>SZ;NY0MZo*98N3GOqmI|4x*DfNoHN}6zwSm2)E(ZcpM`A1(F_<wQqe#gK~6%^yZJt;sffb5ZeyYkrJhRbGw9_W(9p*ZJ2aSf%4Zm3OPT@a7hhg+)(wMjO}xum&>clbMz=bE4t?$^<1Q2UGzkvg@AU0WF7?f0uN--Umel?)zN*tUOe1gA735)`P(1GZ_P5qI@gI^-waoDpWgmf{GM;!4rS%<)0?=z^Mz@nARdV3jA$A>ptmZuPXb>cex%RwqNC$qZJ@80K27ktiFq+Vh|3<m<I3pCgwwL=nZRji^il=%_Jed*aWuUMm$;)6iy`)*Q8_xS%Xm{QmXP2~Z1f6c*S+e$$}{37lSFlc<v1`C+=LfNMuf~cVFCjh(cyR8a)Z0N%T4HbIQGl%X5DNTF>ChI=u-~X#m-aj!tr^TWe}eY)d71ger95MGHEXO3UAP@LhIC6t_d^FP#2>|Y^?^-*Q1kBxmQgM3%B*RC#wBrzS7z0^d~r@j>~1Is&|s|V0113QkHn4LMGHJj60%4wn1e~I#CXtq8SP?cGYT|!z`q4maAnBu2*n}-}fp)I;vTl3T6T&XG!EVI0GJcx{zR#$JZ2Xq^Pa$ou)~Rz_NKn6Z7F{vv-T}s(EadkgpLvT#q^0JMFSJ>hnT8om-xrHxraIM<Er-Ye+m=H0VGR2rkghx|4k+h8Vr1)fa>q&(+QOdbXjuqC+?H7LM-zURWLqW`ZM)38>7sOU9v5oIEoGT#(jTqHQ0`9}3aC)q3rrUaVK!leO9flXFVaV}EtjCvd*{*e$waVYw5`1w})+vcY-pMYj~Cj%Xw)K@%~F_vyqVKin#=4io75bmCXfUZKxjef_$u;=e76Zg<hVfA^16uUg8vw3Z3WG-coRg-(8XLD@q5|B_4RiKi-|6>0+RZpig6%o98UyhF_&d>22ZW0EH<0TAl-{qkJQ?_voKR$~NpT8}Z@pY(fuGO_&Tq?s&bVgkBH(QBTPU^)SMPC%GLQ{Qs}eN1&i$dwt@HjDTG>zgx_Ts!iT@pf-#f{q2yN3+UvGiHIUOPohxolx8)Z_uMh?}=yL8uY1>7*ZwVc-VdhzlislN9Dva$h3BugfHyR+Gly<J(>}Hu<39{c_f_)purGosLYApxw0MCsT7E1BtQa_vCnv%0J;X>#&F0KyDK&7M8%5;?O2n&<7my)6py{)I+|9VPMHa|E+x--U{QE$(P0f#f(PLVXWVMu*Je*ISDFXZY}@wxw<|cQKWn#b3y&vvDkv@wL~{W%$Y?;ITyVj_f{4rjPuwNuGq*}k(;EW-*RWpTvN{ts>5?ESIQ0EL;M5aI*^SNxKN`Hvb?e}CN|G^}z(*UTrxsoPKEOP(f#m$}1OK!SFu!_v)%o<JW4a@IJ|=&DRV^Q2dmCdv|3~POxWetAh~S#$;`;AojvoE;f-a~m&$2}SEIZ0sX=DhBGLsSr5XRu1Mia_NpO~?ILX@4Z$IW5|?KvI4Uw0$PPo9XT(V?i^56@&xn#chajdoEas)MzWQ70o2+1=MY8Hk-^MdTva^#&j3OcK<zj<s`~psF{;Tb$ee<9aGB4<&Pfl2gHf%NUeTQd^clal#!sQ-+4VVAxFbc+a2v(4=(Af;b_`9U~?<GjG^VJs(Xd4}|l;6Ww=4!87X>0U15I_(pT#Lsr>rNO>CL^ttrf$J#e%isAMZ)m_zaPmogN;<wzo!f!Xj=H5*!zddCp*k)Qzo6FdvbIO51eWXbc06_3a4V@|{V>;PGwe}rr=Lxc(P}0=vs-EOOjDtgh!(32fS}SKM(Uj9n(I+y^91T=CCjwy|9hw~LgO_kv1J~1`U0wW9{DCgvxe~Z;e0CLZ4ox0Kx#p1zBGECI0QesTk~nxh@WW10a5Aa?az~VOCfBy@ZZ10brbI}C;E)|@CJ<6#t+5I%9W)V>jna`sP<P`AXko}+-0{pHg!kL!;`0i^DSCfaXwB3WEUq4Ff3xo~@H>8kT+tt@%u9SasXUx87gRa3A+u2M5Umn|=!npAVw6PV2fBiP!N;oBYIDe-&=>r_efa@xnfiKL)gy%huD+bjF$|Z(%UQq%36%$UX?2Qd?W7b*)C82^#2S#UCn~l3#kg$h>xVFKZJsR1t1QhCo?T$=gi~`j<2>W$Trg#5a|@3+a<s&~GPu<P5#UU6x!|>nzSF&PST~C`9LL`A8@|O4&!ok@0e(@uN3EUvi`2zMF3hZ&VI*G(y=j**Pu;!e2PzANMz@d=rSWN{_->PybDz-BLzczK;}n!H_|NhaAvzI3aMamKMCrN99m8U9LPjNZU%Sr7UEc9bE#dfH_{qoT_~5P`ZZ)1?U5rdK{dl>5J(D#V9Yx!Qa}ts<j)~xm%X2AF))3hREZ9geb9d9^b$Jx8c>4ms<91k)lNDONy=h`yed&b%&h;o6lZI%+Ir>}Td-p%n4=Z%8asB4{{AueDlw#U284QmSoka8ul|`#t1fe47i2#NkYh5t%#xGW_KNCOOQ<CoKh#zlq%yPn2IvJeFVuainh#LH#^x7*I36In#Z#Ynui6A9We6)bjlZ*9Yx!#^?od1$V>jLq>ueZ**kzE4U`;VuRGLOy$K;k{x;f4y4j3b6;b~7Ah335xd-k-J;p3-`?@R>pP3{7dh>Z+(acN(X--t6v2%l*hqfU{l3HA@sAS`9=ekzBN1P;Ua|C9~8Hgt?jHXnoT>HrvJL=4MrGjyaCr-!xFU;%^Op&D2}o%}rgrsy6;6Lv|o94`nlfGl#|~fe12FWpW59>ZF21l}u%>ywqGw!nQ-B5C@OTbBu-iE+Ad58%}E4$!Ix@%mg~&qj1!QKqTbeXMv&~W+pH%JrS<I&YD2CYB!5@T%Ehk`uHJ-xHm)KroV5==5<aDXtwQ+%yB=h{N|LoU~8H3KA`u9$TF=+B!L2I7?a7QTyKC+!nZ?sVg>EvN&NPJ$9WgOMI0Zy41pY@J)Th>Naq5nHWJTG4PGhjbmS7fnZ$T5xny09wUCM)G?krpvtj3Y%6_|z&A+*j!V;3TAR3Xzn16FK+5d@cYk*tsy&~M>nJKA>iMnK>i6Wsh(^-xPq?)E<Zga`cHJni8qSvyk+ZpTBD;TmbhZ_H}v}Y=w$)e=Kg?wGjgN`v@V^a-DQekt|Wmid^TO#c3$W>0ajLYT>4-)R-h$rGfV$d=-jXoGJyRn&oN0W+DS!Wg6-JAfRLrsBk!a|HN*pOoiKzF&dLUnQG;$XP2%Ba1;FPW9fZm`@B%mp^1G)Hxfi-KA7_Hd1H!5nwNCq{cB6s9NTkR6>FDp|ztOs?;apKR3JZQbLw6P1U<^MKKM1=fO+jwm!BQ_QV=TugX6f?~AKP*r+b{<yeno74VCJq6UB`efh13+E1PRJ$yxlUe1_jJd#yh7bCK$)aw~RP2sZX+$KJMNbmz^Li$636CdYI-898`f_p>?rQgk^r%5p9uCh0LTe0B$>~fy%A}Wg8d8hadI+4Q82U)rm^;1QWIE>Maj5L$hl}EO`1-YvM_d$FaGNceDF^c~^l<|>-P9k5*=lL1X38jQ@F(^?LudbMGt($9i_=g3sgYW%B3Pz{N(!h8CVE8~Zg%caH{&YoQz-bPB>*h*I;@sUe^Z_Ira|eE4gT@vWncbuAS!pmGg*y@p5;n{H_j!mEm}LoWExy8ILZBp4c}#=bcIlmyGXXj*IJof{l&Izb7VB`jPIOnR%f2Fauk)jp_#xZh0boEvv?>vv=AZSh<2!cywQyH^|pN4&?he3c5}9!&#{5{WV>0$_Si%mM(2Vb2V-NB5^U5#Mbs*UGVXCZOU->>)-+!Chul?ov0At1ZU>)c;l8k85_RYV<t#%HRx+<e?xzbnIG2k;twR7URaP-JaNthrnR+^y?dI@Cuy4_G!s{}gg&*EujE%WY=9GK+Tu?<TTqf!A&AwquqV-6FjJV0Y&jEmrz18g5TQ{*jx$J*_RepGutC==1x$3`c9$fRdZ;P;dIbq7^=KnxMA{VGCD->6j8S>ry+vDF}(A<&l@DXxTil3&dxfNVP5L9a~v<XVlAPjDP>9}IL&qx`I7yAnO^<xWXQUG?P^1Vlcb3Fd*Pb%p5Lo->5=&Y#7Mb4lAJRT`}g*cTaw0;6l89Oe>$e>l#Sw(NY!0JrTxR+U2=S}-*=T8rL5;+K-tGy0qlt<E;KuQT?np<g5ZF7W@v*^$kk03P*f%dlwQ-Zwh;^Dq(&ynNx6oR`V<zkl%wUd;Gqcg#eP#@5n7Q`w=ltYIa&r2DZO2o^|)oQpT>>x>E<Bm<nqa2A3Pp*oq%*TSzT<?-3#({Ythkmo?K{}=gbCL!x5^8LoJsD|qr&pLUV~tU~#nX2I&fm1>dk*KQ%^x^t>u-l1D6U$@I!;I}kEfNVQ|1D$5)>Q}B3cnVFyn=zF(qmx+K{x5oXNeG+4`!zU#!pMJ$}3_UbgqukOQ7Gke*iYx*5mIacnNwF&#DM%mp57PVjc#LgFL<x_?~<Ga=O&lyJ>@aedN!_{p31#bsP}U!l7&cwc-1^!##x(UYbpTkXX=3Z~wI+)w&}rdv!C&V(dH3jF8%PSdS}&&x&HqAbpSYGD@UXIVZb3d$sLF()38;IzrUp*P7f8<GlrJ{dd68m(b{(hKD{YxMQ|7scB)2Iz{n_L-xTp?NGz2V|gKMrTmFnDEFHF(#$0i#qmcP^0m)thR2^Hg0w165;CQ$DUffak1UxY;ZjO@@RQDG85#C0_mluTB6y_lTqB}Vi=}^rZ(F+f>9&(i720|_O5L*tv^2SaU#m^6?)BY+s5C(*IU@J`@`o3cT&}6>O`FKfB$d){r~7E{rCSJXO+h@W`e6m6FhTU7={)&cOt8Aw1p@{o@iH?$>>l7mvM#MFy?NthI+ZJk8!<N##@wx79F$ZZrfI{Q#h!Wubbj(Tf>=2<>7?601J#n;~6p5T4sF?3o#?2_6#`fX@vBIMreiSb)R^4l2I|FM=W-x&-<I)d~u&!vCBxCrc#{FEf40+1!OIRVbn_!0!ca$ox3Zrlt3A7hB~=1T=}qCw3WX(SIV_qR`_N9q03b1&sCg={~X~+R_@1V0-@4QkwgTC93G;SfZ>``9z5gD`ThWy9ISA=g3V$BH{im_!I}e>uVAyei4TJt1UFTSR(#klm+%<x52utT;+cRdrO-l4bSRnfB2ea|mNJEihMqC3_lw3BG~0)?#6PajEX-`gO?&!u14C-cfwVl3%mhbaIpYcaA0-0rbdT<4L`xu-yc5rLPi8aL!9shNlP1qtOBe6{SiH?1(39mhrGfA_hk^EN3m5He*ZFBOtvs4C6HuAJtsbR~xCVJH(*_VCDas{xq$6A8l#Posd|7W657C{?q|BG5`xMkq5e?5>^5jlZPDf{gAbR047<A2<2nMYupy*R7FhV9Y?M;uMoOA)G>doRd*6|#MyWRb=&I%j9RZ~M>;rT}w=Z1%)?16)c<<X?MAj|;r{jG{t`w)XR0?>>1;Ju>Yy1Wd^CyCOqS~R!c%#z+Qgzadd$KgFQ^-Pe{ksCvROI(qL;gXD02DCUc|Cf+zpz^l+$cJCX#X$l=pN?^P^{lu=k7rr!l20#Ryeyt<bAHw3GTz5!PY5{7D0j4#{fr+dUQ&{4$t_nJ4<7sNxW}0f%K?tEIQYau{6w-99awTXEn0>oNamsUf!YkT<O+cIX_Isxh-)FF+|TRGmF_zf?QSYAamEJfrn!dQcsU)L$$CV)JO{Wmo{N$rY+WfLP&_viSJw7Bd1UbJZpmD;_RYB#hr?ai&;?;VZMV6<Cp#LS35;G5CNz^a<$E&R&_JaZ4)?W1@5lF%qfu$!<l?1{vF7xW2SvL}o+&ZSFn&N*GZXMKTZQx7q170C5=OJ!1u29~0%C;kQ`E*}{3ZDAlI-YAyt=^CsJgq`oro{qd@SBIJrD9UTWmLJf1S3QG#4~!=H?DG3SpCScr@Zxc8(Dvk~6%we#Yy@HLTJCwyr%xPV*jRyYuj3>$YfQ4@2efaweF82|@)+6>8#K{|X6h8H0<F8?B7)wX!@Qm_-e8!hd!`FnjspqIi+HKQ`w`WXHykyE%WYnT;iiYhtYxIdt`19<*-|%btAf&sEPRl0c*e1(Hw~aBZSHqajh9Ec!Nm^%6h0>sf<8CJ;Ej?0J82*>lw#U-e`LNyrc04Dugnde0R8KPO5NOD+Fy)BAJxJjWlI8RvdlCaP9}5bc@e$t9c6OH{<koF>gA+B~UWt70sDZ`!Ws{c-L4n|H;B7OExs((rY6X1+x$5{>$NqjOU&bFU42E9{1LJhBJx`++s9m=;3d0i>n0oPH1A^Pf>rvXEtQ`b<AH=T{4j`Y2f930g)mrGU0@Kyz4xL?Y{o#LSR=p3}1G$IqQ^I!eoW{kN_S%r0{}@4oBf-0A(`zI5yNA3F{xF-B!h#B8q9?_5wG{NjRT6aCx+<Xo+vh9{yJP{k)F4NxK_XOTw+DrLSzXL?q|sb*TjH!4kb?X-8y(Wm7m2l83goM;BQeJP_5Egl9sCv8b>n2X$kAgu2bJ96Eu06$}~UBUWH;m#}A<sW=}g%kSMW&iVB;L2BMAO%ZaSk&y=StroMOw<J3MTMBsWWsTgZS)?rZ_r$<?$$R|yCdbya2$*eAkG9n8i`b(ybWF{;{}sc0MCj&Fr9j)G&L!J_yYHf=B8>+?#upHxUXWnzaM*pbGkdPalG7*%>_FP(U=qf4Gh7J^0-SSptBf+4xIM)U}He?0j|+Gtj}G9!F4@!Z_9pQM1{B<2Fr0^E~qgpfpZBaaV|sz=26i>1Rl|lB>gQ7n{;)8P3}l=wx`oBY}30kgI1V^b9Q4h!H$5TiA9^^-9CAlY22NUG)Wt!M3-7KF2`!vt<Q{*XYXD=UZT;`S2_5b>N>Z##*uRWY94^8L`iO2s2DSlKpLLg*{6v1s*@~<E+b7(T3lUs)E{?k?c+%$`>r(opq%|}TjAWz(4ggbN_i-r38*nzCT$=hC_L*tP1G3*Mmcn~qaNA=js_o^_Up}J?cprR{nNOF2WaD@Wa+35b|}9&m{*>iGZ%c7r&5COp5hvH+~6SzxODTSq0zo~Q1sqG$vtt_>DWKXO>q9KZuh*e@1GaK#(|pec?-4AoVml;*py~?%a3#gRZ>eziQs}yD@RTm;T-?&LN8cP$#?V^g<1SGE;Ixcohb(~_rIZ_83|PCpo9h|T%R03hpx;y<03$P(=-d0lRHm1m7e0Wzi67<L1#bdNU`6vn}`}`l$8hLb6K0HzH`qIbey@f(dDc_>zJjQSm1qcRXS1|#;{r(HwJxiRX%(As(4c^_qSXJg`Z_Fnbv#G1iZjg;KHKem@A|yrv{B4ZdqWII65@69Iq4F3fJEw)Mrl3cQ?38ikIsysM4>&Jn>+>9LDAXUM339nq236Nw0nG<qI4nf+`2PBr|sS&P5NXZ~XH9T$N|8W0+{1@xHTHB%`=I7R>}rmuxVE=j2nK658N`X-%Rs!W!>rPr)E3IX<_G&6hJ7K12S_nA@`->TmmJgBJvlP6rVP<i0*6T9YE@p3tPaUUigDdnN^ltA#^#cj72NMM)f+EIh$EH?Z27h@-STlFS518yTA9F3Dg46jO*Fu{x0?h)TMT*Qn8W^v&}6r04A5|DkBCa__s#?gsbmW@iJNwt1bQyN6yfl{D$xU`}&}t1fjdxrG__Yqkk<3CO|qKyMW05|H<s7?;zVfoE{N%sRH(Y}T21{boPq@Va0(@2@WgsAQRc$l6?G^If8|Gap*01wXnJ=s&q&3;ol~Lla!ITnD351SM&1(w&_~k7_4U)%T2N(@qP`W^-)T9CliG^8vw*bze%;Us~;7&SX{UkPPQ00RDmh;4Cuq38L0i68u^8v7Cbr-HY{h12^Y_IelW$kr$YQ`#GucP+lI&<^pD>hs#-H9+HfXTbUqJI1}e^_sia`9<4*yK4iXt_KbD-q-`GhRFkJD?>Tb2v2uJp6VP&ZcyvaD;DO{8oL1&myxLlYwl(c*y9Ax6lNL?Fl{=?R#wH)AM7Aqe!M?%Aeqbi3@!VrKSX8~i%b05oOweGwjvVbk($fLZ2?1BLT-4Bh{Z5ZUgs5pD^xdHMqZe)UwW;BBT6r>MF3`$Av`SH$z`+UB*~uF8_BcW+xa;$D#^m`&SjNQ-wD+gb{tcG>N%#WA(1vcH+`X6!T$J0uxuCfp3i=_y66g3EI9lAP>tTj=^_b=PdFz{gIi9$5zi;z*h{r7Jrz`Jt;+f?+6L@L%^DLl!9TN-2NE#esjT=Abbo<V%F?Mg(Jixlk)H$+iKD~cYTmssZFmOQTw4EnyS1r67FNfE20gidj0+ZmZ(u{TeM>ruWcY4Q{J=x6UUi7BfI=DMbU>qF2T|(lXDq-*Y?IhW~J3FhK&X@<XGBM_YaOmujOv;S9NJ~)8dvpM)>=VcINaK^c4zJD<bse-2-d$z=vcE2vNcY!Tvx?!!nAv=|V>aa$uN^-Ui$W%;nAg<wA#J@6Y2Q9JH)#IAdJD_daY*}*$L4dDGY6~dEn?MQsIIrg#c~C%D-t}KQ65TX0%-u6a^g(_JUSh5l2Ds`%JndulD;*zHj~9!FXFii*1SCH`{90IR~5X!T<vA$$@pAARE~Hfgazj*<y=O>v*w{vQ)hfn17asd*sxwN7pvH|)ybu6m#b7<H4oV~-xpu!sVjWQo;L1iN_i-r38>(0?t9IhN7c=9AH$%D$pxC!;Mv(H>P#5fhr+j$9%vn^hvjQ~T+g*T>o7c>Uw(7$Oz^he8BVkl(ov?kx153X)_{mA4a~69MZAPHEEo7#t*=k;zJlUCESDqF7dS89ZS^$x6KQ!MnG2R8QX;ve#u0Rmv<Xo~s?je>xuZa5<jXOo@opXaxbMlK`WDw)ztk4b+A8jx^)BLjB-=-VXM&+ox$q6Gcn~R=geFupsC#8{;L?z9ugB}Jbrowk8#sSbzR$A5uz5E$x1hN+R4A@#ru^Vh2STKzERv{%_bH{`7pIe^!^`F3Gx+m_09jMNT;gLi)sXdF)u{iwK9R@raw3}vmfATy1u17tD#wHMOyIuGsiHihuhf^q$w`*CZ(}%C>SF~`mKHA}w3|bXejpk(`CL%s5CIJ#u3XN0%v{eV2<yDjN~IY4My71kDw$ScyNP!v8s(5AVM4L{>}{txPUYoZHWMsqNO%PLM9_&uKRq}!-H8vl7&-5QnCSkP35QCHYIRZFwy-=Ur-HobE}^cQx*E*(mpF5UE>5++jcs#(Jf}RC&jVJGqz6J(CP%|LEcc2e%6o_UTlfAs?(?yfJu?>P?gB?Fewn8D738m#TNU+7v+p&qV=dlG|1G@*(6wcfG0q7g3{Um%-7Ow}PGNEv&cluaKkGhGB*7&&0@V#8(MmLWfH^eTWA5V)w7=$_9G3xZb60_L8Ipaf<G_~PEzF%3nx;bb^72SFlQroTcx}OOn}pWUgEKJ`8hb|2H-|2aDa1aESwB`?+~_Eb`TB1!ht#Ou_4m_fABuPQT%Wqz*}beB$L0bcw=Pl}JP1M=(L5+n0;CiGIt(uPBz<MOy7k8l`GZIPN1yO>nFH*5hx~vQzjqlAr<G@>%miBy8Xdy`nnus4aMoGts3wpSaMl+zOzv%0okzZ2-85(VH&h|ummA&cp2=^uixi(sD5t`i;Aw*hkR(&g2oZV8DW^gtPc-C;xDwISYP_?+XXrNkv=SCK`-eC0@aVt8uXYt7?YfCf4uEnZooxM?fQUzBOa^4;@L}Ab!AWv`W)vK?HxWHM`M4<S&6mYyix|XjT=5RXU0s@AH*Y#z4ns4+F4LST$$(icGiJ^?uLIRdagpe7SWdcO+~ICKE-4%i%PuG}_T$XenBB=Y440FknP5k=t;oFRQpCUscw?>Co;frsf%Np*lQ3o2-gd#B!<39ZQ4&Ra>~<L#eUjuLDGx?xf*|KP`Ai^Soa&I!tHGH*p+ZrLbrqS64w-0u^Jln*uZs;VH?cZx{tT;XS^NfHt9U<9L!yC*wl!|t>PxIzIGj_S%4Y&A)4(Ow3bitkU=zL;U0~9wph5O!)suzkZ>p@O<7tPR!&J510!5c)vl(KzCo{^abS8ijFJnhTV~C0&qWf(qVa6x)5_#l(2Kg9VYqy*0*mh^-IVa~`Cmxbg_mSM)@Fci98~7ZqMQxIxF`JJFp~O=YGA%5Zs^{7xqk~vK<T|gj&~=LVVTeHX*7#6ybs!pxyk-I+PtKz^6Y+=y9~n<dXvYF5N);7CmrNOE>HegwtJ_txS%hY_I;=>_C*|wvw&|h;&1UejpEj$^JzPA8`cPU<C9{Fjcnic(C8bl!M&ca)%zen$jRWQDn8>?<HYWt0V}3+QSMNF|^7e+}t`hrjLU|~h3!1`!%C)eO6Y43|R-)HUwdOKLV14q?goS*WX<pZ#&s@}AHT8AzB!a&=RyR-=zc=gY#p}7b<(YXi0XaGk7Tp;isjz606P1Y~r3LA7-9evwJ`#Vd^W{#R!))gRY$w+{(<XJNQx1CA%>~lHw9PH8f{P+4Nn$is3L1jKv%$0ej%TE1h`F*8+STLvwnAfdc6Z~A^A3m0ZfGXZc_Glp4p9*12tm(LQD&$C-1LD9=z~CN(!#Ue<UiJDn|Rh67*N~&+#i<1tM2b#W@Qd>PknGUdZ&#+mxl!fMhiSdeISrq+{m$oC*pUXyDg+M`sdFsjN_{1X4(>ZGQ1;no(pge@ex8AmFr<C)69ZZnQc6UAdKj56sN5_bMmx%+@5dTd63D!FH!v4$FXha@r-gOoe7>GGIbOOg}YZLVL9q?{L2uFCcBb-A=uc;IFm2nVm!WT$m|QBs%2lB{pZE&d~LYRcU^g~+`X6yWavx_9*HH1TIEd&353?Thm(}bxIX4%Cb`n^09CcPuD_mE$G*t2f2{Uv@3*G@3fFyrXCf=7<1>K~559yRU~nNwk_Zo|Mz}VNpkw18^($|rR;WKO)|=(Y9oO$qi>L9v8WQ#2f4ItB72>+=2h0A&Ob|oW3TUTDE{IJ5Ep6|VMSBGT@jmqw;bd~FRc-IK`DXAAw#$>1_wr-$vJT^&*3<YFr*#W#A}S}tb3qXz$y}387^8FLoKQ{+5sfp5sqQt%Wcy|^uKI}7qeE~<+qgrpH<9;NV3*xEPASib=Yl9g=FkyAYlaJF9LIG^7~_;k9i{DKjT6?Xb<7nGxSP*ZkMy2Lwwq6HPzO)2syD?|vqit9^Z35=hVppwOaNC=C}VS*KViM|Bzxd^CJ^ES*wh2QYj2!aaJy`~GWpZS&{Y?v&D`OWCA>2kC(`mzG7}uR<_=e^0}_J>=vGs2f@eA!r3jv+`Ra9`OUo+AUq2p}!S`3Mm%sfDfx(A8QwQIV&#e%i)8wtt!X)rutd~|x^k<S|_!_;!{tVUo1?V%M%4hg;x&SX@jnA?y4v1BL$A?=tH7f9BEI(delm`QIfzUEf9kEdpML-gC1P!Iag%m9JzCSd_#=EtDSkz6M&XtCJe0}+8w|!Hyyxnz2!r}68XfD_pO^Koj_iqZy<XbMCi7W#C4Z6Q|<r5Wtu4{2$ZnJM%JPkB<O^W**(y6>Wl+6Q6<}_0fBf2qYU&dTu6OAR>2C2NKp|41uV40Qn7T`?i7L{zbL&vI*C9H3uxTyUN`p?(9u<dkSd3MfRpvB1$C^aN1)X>BWNYSgLLS~Uvy`wl5d&APzk9bzrXPB)&UMwBdecdOz)784#u6KjweqbiJfpkI#-_vzTrbv=O6Hbh_QIf%)oZwcqX|dg`;S{!usx6*3tsh9iKfJ#fhsy5dOdzv>HlSj{3$2;4l3J&6OXq?)uPE)EX|=ax@;(3h^RYAi{@F$GM+>)c=-c!A`{Ml#s_u2!kCwx$xnRagqCN!0bj~z!Ov)VnCnUO*bgzNQSp2%(wAc3w*skx+Y|jtHyQ(REYjfPS_%m0xJr4b5@Y~hJ+X#<mCzaC)Gr`pe4i>Fy;jD7PN<8@zdMUywpZh>}R`uXu=e3x#=^yT{kFDyQKmQ6=t7bFweSG^{-%er}EPtO*w<D&#wK{3xz)~huRKz6dxkT4m>U<NWxt)-NKj3a0xSP+AtKY_az~wCeE}}T$Xr2lW$eU+_qw_S95M;n}5UfYjnt1~hfa43(`z51eyxy$p#lvBX;h|=5^Gop|cWhi2|McqhF6(>w0NdM~g?uP2N6B1p1W49qS~DvN!M$vfw&>n*5s4Iofz3zfB*$OQlKnp!Zc$)N*BKf9r=r;r|1%W>s$8P+)U!5HYefvsb7ds}&9nfyC*hPV4%+1=XC<%Clm8Fhu7;H4HH>3r|9URC3C?6h-%eX6@#oxRE2yNYj~s;SONmBCsfWybyU2x0o5ycgvSx<ct-pO7Dp_5`*(btsCzuJ6QYFelO3dn*m=MgF5JUnQjFNO{pD^a!RdvXWNN04)%Q{rMEBa43qpGiS0md*~PKIWJoCu0!@6Ayc@We};>x5ewVn7eX^-YP$Sbbi@{o|soLTt~Re<<sKdza<i%d-D*E?9YrMhlHy?W8t=M+po<v;?f7-K~@mX6!mxEf1+$`_6c;US4(O`9ILXZLe+nH~e)KrA9SoC>l_PFnm`1-FAbAzdSd=`=8&ljdACL^mzIa2<Z0;3qf*bogvXeOg;TA-P7OZ&}#j7eN2D*`^9DPJ6vy}-PHpXzu|^Ovw0d&-Ax(0whfd1x;m98F42op)S#_k>9?CAocp}KFT&A>7V>AJs;EjtMlMqHnz7t_Qacw|paf`7awZSLhG~(OXVMfuUOwLkxpocH$4jR{TAoT~vf~L!$p)dMvdOSObdbs67#EpHvnL^yV=8<f*Q!07N&cF~wT>=GFaF`fKEicIG!HCk@*#k;T7g0oEoWZj)|iCS%*Mt0z|C0di|Y2U{Jf9cT)e(0o^Ge5=Q}UC8{PZNa{-MK>4ep|++40J@IZJb#U;YvnKZQfo)i=0+xz>f{Z_5tLE`406?(;W1xK=SKRy!-W9Dl0z$8;t`+zDNlx9vyuQZja=RHs(??K!wV48n3@E$z-P`s^jIc~r7E<RipFW}*Jy=NpGq~%5Kh`ND6`UAR!8p?!aB)7BuPQRU_&&f?zMOhqtT45LJXDJmLKv+R2Frf@881(ZTLaT)3fSX(NnVfb?@W1d?eU{#TBow}^YMfN#^4O1;ld+jB!9ar+E|W6n0%%P_?mI71CdEY;W$2ACLKl~~QZ~)QnLet|mP4=k4=6@AB)=|)pJxJ=M>{12>M{d_k07ncZ5V;#%8NEP_s;caV}<i_y<Kc_q3#J*SMNU#?Mrq=^*B<FuV#Z6pqFcdVhMMoNg6D%gas9tK_vUCW->Y7>RbbPdcM6bUT?3jcdd^v(J^_lT`t!<!plLpuYv4^e|@~6Ige&DM|Z>uF(r06J>RCEQ<&UB`ryNUYTt9}4K+C`?eP$%R!ZYsL?_QM>p5|>XC0FJqBB^2UT@;!Hs0SKmP_TLvy0_t$aUkn_eG09Tz8QE5$|!RyAJu>tWPJEM-%3<K1CFnUo4X3a|w^a<;t}HnIyFddd7k=JeX71Z{f^#&iUvajC~g(d^vED%mpY1nLf-*t5go00xE?>wN5&upj7OxlO|W2U3<XK$G1rb3F?!J%`QKER@a);Nk=qjFJ*KzptI{K2%)%-mbvZ@gz_PN+E;$(=6#EQ-NtxI<ayaO{oA>^|0T~^PZ{TXQi5Sld0svjSh=^-IwG~Ff#4FfmKZ|O-C)WS=&zReB<FJVc+wDSNJ>D_Q7^2%Hf-{GCZK`L)O67W&bih;2?AC|qKxaR$NCJIkqPyosy8=_hbE;{)IMcd+uZd*Xq<xTaX(n@24;erwMGQ)bxI;pCeh?0hN8=6rPeC-IqGD>##?nR?&b@uPV@Y;sLm0nPuT|9?d6`|=Hee-^%?&slgh&hbHSDA%$=w_SDXvu1V>~U$t6xY%D#m;AMcj(l3Fcpn&p|BrRONa%{nwTzz4i+oAr7(Tuz2&f}JtSrrfgJ2toonXfh#ooJmkTI@?96hODeESsIP$oG^V9sp<^qB|gbb=b3jl^*(>P93{KV>6w71gNxic$&CRj12CJYQpPK9t@C|1PerDLbj~ka?qPKre17%ha;#PCT3_|F@cnQ(4$TEStAx}>F&#h)kz%q`b1j{t*6@57X3np@C%4Z3`2zzm*Ogop@9(z5MacV$%VOwI2X%2#qsFb8UfvP%LUx^+Vai|na!O`j(nzV%6qQ1K?|SLv^SXPa+#dSyQ}eykPrC@AN-Oj&v<^B!?v!ISaOyl7+0JW-JyG<?CGa`l-fYmf^XKZfhr68#1IEP?zwM6k;y_#;h-R`rWuz(Lrd5e$YG}%>F+zLKz#Es7w+vT|9~_JaCA92Y2jjGmc5*V#tDH8Uh6F&ll$_3mdCBJT5<(M~nQW=IbtbKc>d)0?v4ZwrPfNOgfB9j;KG&j8vl(vQcB1ldcrFlXmW=W;p>jbqr3XrM6g){1IhQ?Iz8cGMI{rD=tT)>;6*)VOxlX+_T|1^p>#%)mz*Esoz!cP=|I9PBA0%xfs_1-aY;$D<i+#jvs7vl5UaJb0`H~Zl`1MJ|YgM&HzQg=Fv=~~(^&0BXHpM042h$1ViEt)>^2ltk+)A`}sEUE&R!@;pNX{|RCy1DXfJE*>Ib0i`MkM;am3s#G;R3mjMC@hdbbKy2dZ(>68tokkl-eYMby_>elZdK!rul^WB4!Gp)wVs8z_4q@v}XX?pPJjYg~y}5H^(!}lUZ{?n1b?nlm_9G55_YC+6ir}585TuCx}c|>gN@N#r0}^YNY?(m4m*5(2+~-*&TAqb;RLe@N`;vGG!*vGOH+w2A!V7(BU>r;7brZpz%p$>Y<(X7mBOLdQn$!-JYp6Lx7scN!8wKoCj@RR6iA#Q^8!2)DZ&bD&V<FIM+%^h>9}lwdS7o7x#Ma4mFwCygF%E@aB)p;=|20(**S!|K&w)Lb54eRjASWAK%<AA!oVwtmeb)AGq6M!fH#6&O7HjH}_|MeZH$Ni}4|T>fJqwk`PZ+z6taW6c}Q`2<422AXJ}b$M$J<8Ai8F$7yyMx~EOf4IGjno_u^>JjvY+$|u{DVA%|>`fs(H`U8%ovX)CjR9D<@&G+*br@tHBM^hFDpI(>+{aHYgq*da;wO~<4T!>O~{4;4DsSh0;80FJ$ZR?d^<u;e6;mTZEfj0W%Kdv+F(lX*%*raYGGnS8fs@c|?Vlug_&;85ymS^8LkAs0E$(&>~q>yU?O-`twKHpeCATTuBVUuP%eb1~_>rbt$zGc>=|Db=o$%aG^^G;YE31)(0bSCGBc9-)c)7h!0mDfS%>K7e*ro}Nx+_#PR3}4QY+Z}R}9J3qji0%$%m1kzm1zIH?SZ1x(Ij5QV6cbG{#AsQHy3hFGduXpW5A`C$a0+a1Cv9@5v(MUF;vR4AVInBU!MVUESt21{qM_o_=%E553L^UUhJy%ws6-z$#oXYk^vnD6O))n|+&Y)bcptm7@}L*yWLkM{%1qD=E|Y=sm;@SC)CJ(i5RXS_v|3u-Sp!4CR<;J}<|JVVje-0XGwIMIT`1<{`hChy+@;#TX_paDRrk|>z#5>0P_*}mLO(?r`aNsl^!FD$+f@fokrVKLnnmC}XzzU{fr`=vT$#Arg;!D}W%W?~X2#m1<^dLGH~LGI9JGPzM)r-L=Cb%))L@NvHj{uFW?Ym~Divui>L;=%R2`L0SGjr*%eyo5zGq5T|HPT-2BDXEQoA}4%>~L_hv0C<*<ARhy%sVG<20e3fb3fb+li~0plTOQ8?VnClFu`_L=~5#<@p9D?r%G~GLPw$@<conP_2oaIFL$eBTc}0!Nr`x7Aci1_J^b1AC4P$*paM196vnCRaGA9IPFMwRptEfT^@J;>I1Cqpm+k0lQ;Z-dqkf5g#M5`c#@xbNLrCBjp)lKk?@qX9(TGS$#uoAUFUF48J`wt<}&MWd(P6_)o6}}=0PL9-i$n$RGyhIlhtaX7s5FbgLTFrzId+MoVgG=x~jgv5SiX7b!_Pm-zEt@36vgmp*Ua*K8Tc_Oq&V7+HxHk2ryh&22nA~qK_sxj&`Z-&)5kS>3V~Y5*N#Ad)oM@Cuw|(^7bD`fUjPDoKQGUq~%UB6DU>WR8uLFa^BjM`<Pj7xj>6vf$qB}n30C2&q=z&b#;1oH_b_Ui!-vFzRyV756lHO^v@M1$)lZalQ)h95@Y7EwlwV$GDiZvu4`G}wf=mc^={D(t?9dwa(p!t#8~eCl$<BHb%RximUo<?f5TYteNS~G_K0<np@%a@`IBkjr%T5??gu`~PkV*W1Wc(+G&%$&L<Fa_^GQU3)(5xF$36@{O|uSd{1TUoW%IZSCw=ptcEa)OYaW{=97Zn3DdjowOi)GREqE<CHH0N2L+%d8KryuEqU&18Fg5Kfkwb3*?#~3?psj}0`4sM}kSoFZv2y=<E|^h`npY4fXabhKNXaDSHc@I#61^2UVs>{At4wNr&WL=Aj$m8G;?F8Rbh*C+jble*Jy?iGQ_3UpJTPUzSxig^jh>G%lBLKJu^L?qk-EfnvkO#acPCeLKEV1Q=@9*$%a^Z<C$YYUfu8=;#rxti_v7k&uZ|U+yIB(|mFdJEC?{it2$qxWB{SctCOiGeo`&J<=b}3#f12+@11LdojT)87E>tpt+wA->MrdwOn8|6zddB9aYH-EY(VZ#desfbb(+*rXDYJ@B#>@TKOcp3*(nu0?1a!+S+K*^KMy9FrEU><xo}L_(OIYE;fxEl2E!R6v*6bKAUNv>w3|X9acX&$p8yw#e3SZ%FKN+0~poBZ(qKc@zGnsHs0*P81$8qDw*!$v>fMq~kUa!vH`8<tFcz||Ti?0TlcBAEfWFEk!C<!R40}GOYLx&r1ZEDm&PCznvRB~m+B>8Z?T~q<4?ZC+{^$?cBE`9>Hc>eTJwJ!FX-*8@D_OiblF!`@iBAA4o1rs9ThxShh5pahKjYcL=59sF5Y))n{>BO&g@VH!T*M16SXHh;uK{J-_eSAL@2keK--OyZ+3m}~ll2YL<Q9dZkaT9~_N`pjw!nM?+bK{mxvs$cBwVkfRCs{TwzMY-D*yX~#ziDtEkF&~e%$NzXnmgeoSTw{1XDY;$a>I`xNknVN<~6C!WKFI%xz8JHU0a_l%U4wh`0e&=10z@X)@_Fn*{cul`vA{mY$i}5RJqr>iq;F^1y?MgiRpteQrJK{DD8xSs%{odJB?TjFi!9H#)}C&9^W;Y!ElH@9!@GxCd>s?mb*__8X^O)b6+V$nHeWilF8uu%%nj5&WFw2qOSbyXUL(T@HtMA&5JU3x~x2U*JvMa!)<e4{P7uv6uB!{FPq}&=a`lFnMvhz!aT5zDR_^*Mef)voZx~6O=C{&3(*2Vw_x=&cl&1DY!_+UuHba@cZ8*}D;wB17~RvTb#EEkiJzTTPNvKR-C(0gPJz$dgp3p5kkFYHQE9<-hpypcdGs|LlRob>){e{hgz$NIQT_(M{GAa!e;+xgBnKxXKu(cNEGj~&3SI^XCiMsDv};A}(ZP)izdT6R9@gc@*O$cwiVwS2TrT5kmxO&Xqnt`-f++y;2{`5G2C?J~NQzERay%fqve)x+B=WpN6aIjTj&zB|Z(rb-+}0x#-S6=AYx(x3iFNg*lawDfa5D`5bznoFK}We2Ib)1}C!2Ws358zhve<u2!T-mKDZdY!amsoVCDX|yLKOfDi7KOsQ#=!?S<1B8tDkjr*G;=vR@36Ez4Cb<@yl<rbNyS>eyw+W#l?s1iKy&{XR`Q=#-mU>m86v+86I)hav4mpiI^b!qi{6eH(y{;KTN%EGPYv4=y-!R10~qO73>hmn9M29$Y+D8)*&R&Ht*n&tJh3Uf{D~qZC#J)=$U7_)2`9*DW;dthcu#nTVWiUb{U=rVj)KK5rKlHxDt~UBq{C~W5#<hsYi^Bh_w|e<DP*01haQ2TQzk!xFFjzjqjwV9ON@W(gP@(YkMUgi6If(#*TX~5@AA<ghsg~ax}_g0Jq(sZN7G}K65TU3;0w|wi{HyLzB4I73$;lP4NWQa1U(^;qh=*d2Yr`&~-^LL1SdWCx&Jtb2@=BiZgF`3jI1APs@i@UZ{ul7Q1!2TY#@{N_7qO+472$Sto@Qvq9E`=x8K~<2ucKh^=5YWnS};Eba9WofJ`2;Rdx(zSV6XPYla0G<lR`J-NJHbr^R1JBJg?vy*0muu_~-9=V8t0IGIkB=gFlH>s7%*OfV(L`Q^sUi}BSK7qHR(cc6639jpbh-@z?Cxdf=kFjV)-su4#1V~W?ODP2p*2F$S%*PfteZIi~`SEV&AEyx<upb`@{|@PozYn93QHB^4&D2lAMDVz+smo=mA!gQz>_ATT`E|Q;xs)PzGCf|0zqPP(9iQb<ImK~v)2_hxbaHui;#`2H4($LQP3|YDMZ(P;WI)}ofpgjcZOD{#AHBBw?$1*{Jv($mbG7}&Mjq>2^h05}7t91lv_Xy3DbWZrP>L%TxI{CRu!xQ^dgqGrfv-CoRJc%K=@)4Uz8O<4QGpEx)n)D-w9ZsLIPvSy$pG%F%st_n<+3`OQ65SEj#2&e^7X+a@vD%(a`KBo2b1a@^lfurt*fTSZTal|+t=MwEaL`0>l&ZxpNsg#-#~pGi*?LhvU4Z_zw3wnm+Sw@xD$dq%fQ$uIS<JhZ6Oe4dB`@f910QgKUsj~`o7H_rjL&6;h*ejj!_^8@9$f`W2=9&*);jk-asAe;~C|lbS@i#InR`jTuE+YQm`x7B$+!`_hG7$xISN@-1_4v6@JCH`02UXYLDYs4*!j^_vvlQ?yWx%ze0V&h0Hwm__SL7XwlaG;UqqE`R!8qpB2^e$r38S0F%~1V9|h-!8;l_I&h@F)h8p}=?dzbLz;n|mGKHCu-WV!i>^%lpPpa+=TT5j2IsLxy+w~#>)aiMhRl!cGPP9<jF89ydZj1Ez<$i^oxS2a!7pDaA9kpiXu3n`R0qxlNdqLCw*tKP=;%`1;VRRQ`#>d09dV*zV_HtV`m%U<Y)<^#=iUB&6~9!z@38O*CuMT+ak$(K%>+4ZyyHGPq64#p0f8h`po!*=qO3nB)#Tc~uVAkOoEo^N1?h)%FuNL}p3>&r-121JOi)%}1bVN*k>C=i+%N)B5Tc?;jI%xxqsO$9xLm>_o(~y5$-;J(+s$WacgZCC(BLR9Ph>NJ6IZGu&Iu2KqthTfF;PgXouQe0p+7iBI6I1~g9?S|v3XF9bx=b5?B&P5!wTZRfR1NNgLxN$=Dz7t2PcJ4c!D}R=$r{bdA<2^k`GFzJzEEg=<}(dlNo={DWTs-l;T2+EO6_!v%!GynF=HtE{O>u^_Hd>nU>n+!rj)#rskV>SH&y1u6)l8^v7#7^fv1fEj_41(~B}`Z*#kRtb5rHP%NSGtI?v&XE;Ug@7p9x(~l`sM+-Fltb8|0f0h;LQm$@wR@o4^LN7=pM=8@>Q$YpGsX4}w(F0oJgFQ5hP}O&Bb?$bwY3hfjDgJmE?)IMI4ldrd)z=kbn5BzPgSb2p?ErlR?QPsF65Ka!g_`M`tMcXRr_b^idG`84@$BhuyLbM--CbLc+eWhfD|$MM15iQVFZ*Us5<5Be#)uu{?0M@;^@tft98l6s#=rhlvni31Xm1wSJcK~tSY4&DRMYIL>Z<y_6@IP&Wv5|k6*g_Vht**NtNusk{Z~g!4tHoad>U#D(;or<z}#@3NA~vk10dGnfQe<^(C~!nyU^nlJ-O!i?`}~aOa}g>n#QPI(poYq42cHK8*OCeGIesha>zcuaa-5jIQjCpUtLyb%?TX*<c9hzS;oWeJ%G-AO)e#pWFVq+gLCUyNXnGfya_^gbT8SPZ*T1Qt$R64F#phLZ`<Jpe-u^I<)v6KL_(c2RBIZP;wI{#LyW{rPIxLe)1w3GAwPb1Gbzs*^5cKqQ;n&25BM?seId5OBN5#S&oy}q)<~^0#1!V(nB3@$HDf6gYH~Hyd5jyI+QrVzUJZ56^)BN_@4{y28NsjkZRdV(E``-ZuoPPg4FMgsO&BoZu9LV26~heCrp%jLt|}%^?#6XbUCb!Rm$6U(^u9%*oA6|uY5B&ZZ=zDoh!<j2u3{b#7Swo?`|4z1z$l|iqN5oKBm;SP4u0@6Tq1sy;OEm%Kd*jvk0>4SK2D5~*9?)L+OEw2_=El*f%}knCQD5%W?KB~yv|oYJm0I4YL-0mPYZ@Pr_M&|Y2X-$JDa@bD%q4AqhaWyzW}AkjJZ9v_)Yuw4IS>7k7v5^G2y<}sm}6+Y*Xf_l*Br2h(q5^If+piDU-`AiK*NVjbntR0W=;T;P!^-)Y94SQ`9&uRQ-#k*h>R3!o+9-A<kyrn`lYIhn;Y1OTcI+Akx8k_qaZW_;lOOjgJCaVpnGvoyYu@#;V+1KXqLSne%$ph0Zdp>+%3A?l;U5bqXGH9+gaD%2IEQl91i{iC-wYb@b=HYuCTImo%I2^u8L?H5Xq7=*XAV_g#${#Z*+~<!^JD{v=$8H8pUpEHM%kr6M`*(7=pfwqu2~u^gC_<Yu4mE-yjRhOK&mbadLJBl1}Rnz_=cuH;KGs#Jnef-aNbvki(1Z5c^EVk9bqDbbR?1OdsFsF}*nB?!o!!!27MFTg*}YYQ<R!{A&|&Lk#?R)Yht0c7M1l;n&SZ!@CwwH@THyIWT?pv0AmSlE0s+?$o<>fDNVd7JhZxV#|W7%TrRlV-|ijETJTkq}Bqu#9o3nIkr8V5OB&jQvc(Z67lc>fE*E9m?_rd*MS}7werC2UgTY-B4OkI$0ltrcMzr@-fMM?zquTD=v#SAM1<-I<B-V-dOJz4Q?F0{xV?PRJ;(QMv%dQGy)?_Z*r%GvW6?K5<c|Im(0hWGoMX+?AfEQGM~3U{j&PG#Sd~gWj<#n>FRBJ?8n;%`8AjHzrOyZ_|Y^cQW{I?moI;>{+$(NYf;TGO8;3YkBu?WgnN=>V#C2OOeHba1Z^l~X{bROKBa!~`vOpN6Ksxv?yqZ~n<Fw7z%kY^PQc!v*9;l@*WOsozG*2tIhf!xxMapuVIFfM+|Rhk1S6OvmE%EA=vSK?+MVk*@r!!eK(cd-@pTd`#EurUO%9Tb1avS2NS+Fb0RvI!(SWj#8r$s)cgeQi@8`O1PxK_k`4`~#^XeH2ekrC?Oeh|8!t=^-0X#}8lED~?gR-iaj*TdN!`<8^<?6|Fr;E2M%GF`{FG;!jb>m43J{X^TVhKZ}paUl~;?vAUq{(7BNu(J^3*$?J$J#m`cVRPoOWfy(-_~%*gG<9b#}0%0)!oMJuEf<;v=DpdwgO==$aFFYm+1wmwowU3l%pvXjF1V3_Y<t2XGUgT;a7sg0DXvOW=_Tbt8bM*iK?sRrPxmaAz+K;@DJ%ClV0l(j5DlMco;p~uf=ry@i=n^{^TCc69*rTT|B~RsTy7`#9&NOL3qSd&|*wZjL8RKAW8-=ZKl4<1|yRJ|63-J>k<F25{X<W{iS(C{)JtMq=AP#prwWOED275xTGL>>&gs~o|JqJ?eiYp@}|D6dZT1gt$l|&_hoKilvI<|Wf;%^HIPV#7^afQU{#9LC=6{lo{M^jXw0O&x7%;lJ<0q`gD=Y5kab^H9nP|=YQ$2k7%YiYON_9+q>iVMqK#V146w^kml>;u%46T&a)5{S^ExyTHnZ(52T15~|EK-jv`=RYihTcax2YpMY%VpbYw1F)Dy6kSBz&fmB7hHhkURjxV8}5lhSqa69l^|Kayxi((S2bA^IRS4l_n#X1t;mexD*SD%$)3)R`}N>7{|EBF@vs%SnrG5A(J9c%pT{s4}N~+Dg(z%OFJLk?vQIaoj*}4UZ_>GDhn~KFu`dF;JoBffC>1wV2lk)CY{RlIUn<x!?D@B^>+U_=h8oA;W-b?|2;mQIKX;Yb-TV0Gjfl%i%~`c3Nnd6bk-WBWv<~yQ6llt|Lov+<GzPhRXA?l3BA2{)2F4uYcIuOH0EbnXYy%~N<^ZR;8IE|5~HTvO4><xRpAOr?l@Dqnc)gKz~csXtM4-sAAZH%HC4!sd?98fAxUSbuwI8;bWlWNY>rMG19!0Hs1&1F@BKQ>woJe20L_!>WXdRI+o4+;jQ9P=Uq<<2dr@@?N+dK?iV@%D6HUAyLctR<3D*N5$w>oxVWxhrFTqQPm~u)mUDE7*Xm@+ucT-U{E-zy{YOokYYKa-POu2bqV;~uf!dEOa3}8fg2B7I12#)pE{l4CBj@$Y$*FbQrSMS~Ld1|$P$~VW|{`dgsZw~uoJrP&eqJ`KqIu?No>Jn#~6T&HmLMk}}0lX;%2t5It*k%aF=e2KfU){oP{_@`K$8y8#c3<$)OM#(}d`=40jBqI?6_{lkt0Uu)Vq~d^w@hfO(AI?Xmy#!>uDnGzu6u^v`nR@gU=D8ct?Rm%)vx(vY963C@*mqS;*s?Z;96WwL<_NJNCC|lg>=jT1oS=LYP7D$lOT|CsYWOG*=@cgI%GDR+X8r&x#n_Q^o+H8Bd$i#LTu@Ej8w=J(P{fYqR3?$iH0;rx^my9)ui6&nvjioY}^iRp7vKwXuI9jM8v0Fx4;u$$*YNMDfXmbC=HV3_G$x~vq)@`6ys1~bb;B_YI=O;d!pm*1nK#b=w!#!;9^01o=B?;$x`e{h`<mt;ZsgjNS+d+sEZsT;VQ<G?u>=l-~$Hmv$t(0sF+hH<;lVHts40)ySy8J#Z&T2s@0X+LQI@JJZ@I-c!ow|aK8#0b*`XA&%xxoI3dQ?%e~v*9{~fXuyb=@8z0?1Y~1S25ni^r=J>07ft^2g_a)Oj2DkbLuGiO!>$74tQCe)w?--}n1dC1|s1{xl&aI$2+7Oj2S*aN}_5rq!%>WR8dmWO6r@HthO#C3bfsbFx=2h16JjQ^bKNT3Ff(e2U=RsOYRhix8V__}ycz%!d;qc`H;sVd_1FG)xrrg}ftBGtO)|5sC3xENYBqBh}=w2W|D@IAoZ7&w%)B)S;;PM%eyRdQp?+@K<5*2dmde`ng!{Jb$dWZ4*zT^zQa}S%$F@L32&8RF0G|B#*sH`M3l}i2RK$A2L!Bb`MPa81r<v!(KoWYnQ32QLqFj_D+0*5x+Z42u|SNry54mh;gLbrOKU0*@*|CBl4@UeK^zCc%9zB(yG*8Xet-DaTaf9Dw?!7%Ebu$%|ZIg!rF7y>5%#7mZ+5k7P>_s<BtWYp@q1Gv1eIXxrr(!uKI7VXz&eCq9hDfUAL7!kidc6HOVtM4$Y?&{4E8aMZj>dV^8IGGe!NxVs1GaqS)RCASo0l2L2pemz^f{l%2^&?u_HO|d+p}fn&cIz)V`Z6KkNl;A}7h=FbRYnfLlbi}61*i-ULaA0dV8mCZ673`*!E>hFt&gGI-NOEV%(B(nX;$*f9V(V-kPBfo3YKEX3`GSN3>OI>e9T284;d}UL{DhJt>NQN%<!ui-p)0K7KGI)QPQw>rbSwc&74lalyEdr9s|qW;h4ZNVi-_h19B~y&dzPt8~5z$`fIaur@i+!YyPdi9+@i>$D?Q=wloPaQ3xr7h`DbHHp8V+BDkX#1K;u>j}h-Z<PM&r^IvF;f+>S#X-%GyRC#qN2IMS)ay)b63TFeOEDE$5M!rrI+Hk}8c@!z5E#xA9NVn5SJ>J4tYst|5<5G|GzYv>g5r_kxk~JLnR}xZlNXaGVGA}~8Y8|uHeQ>!%73zcg(zwj|rgb#mCk*WF@GTLVS*2>Kun@xvt34)MjC&R_P<J%bnK>X_!l{a??F3EPbxpT!A7=0u-qkrV=qFZ2X0sFe<ph4_QmvX%S%_&d;Bk^0qP!vAaT~cX6sS&t=tv4B1)VsZoX%t};#>G+G)*={oFJy3kIX*gnaHav*)oiYyU}}$c0ei~Rm3Ay;C{`xzt(6XXo<ha?w$R1)2@A6?_uWo$M15QuPW6*R6BJ`jIwIFz7Q+M=qU!<PDE=p(;{LR6a?YU6U=W|DfExA<1W`&N+5pQzH>KiLOI9W=k-Y(z7*@ZgsC-AS~3VOfFY3682ldq8a9+#z*z5lembn(LpNu<Ja%<P>@V$ieJ+@_XM|M|EX0g>=;eGx`y?VsB!-}+Op#htFRYK&un}7BH@7`>?b_9G>*nr>e#8&F@2gU)PhERB3@Od4I#-+DyO(xGqnbz;VpXj?QA}8-cxLKR(ovIyrkE*8YWqi9iShQ$!*1jD>z8)_?B@DUUc(LzU*`vSzaQ?R|Jn9^Ccip#H^+ziTBo{}FT}FaNsN(*wrEEyETP`W#BCDby|qw6q|x;}^+b=m=i8_L_JN-=m|co5$jz2wNkNnI(i1|2GLcwqDC5j40E$VuDBaC;LejO)^UH^syNjPUZG_bi`|~i;yE?PuzFY{Z)8azR$Bk6R2|}p_jVYvYIytT(P?d6TSq6)y<0Ia7wZ~`su&JNxX66z9sjJ&eD;#pW_W}L%&~>t@-F=HL{l&MK0{vPyaYnV8Q(K6g86-+`16pz+krbT*JXTZCj73d-@8_qtMF$`9?APstQiqT8;bk=$WWN~fIz{u>i+|*e)y=|Ej30gEE~(t>hlhm=xb3-7K)H&+mBtk_0%M^2$tCIQjC5#5t#h?GLtfk_qoeRD1zm_CMM@zk5`ZQdF#8Mw)6abA84_6O2J-i52T<+W&HA{nXQ<zMmWQ9-{`Yyyp6Q)W&E|bG(1l+0%f}xUv@wO(0aGO!O#;aY4bf=Jd4j}2DcaZF<b=j2b?y-Ztj8MAPBW+P_nq4X*oSuYAxBSLJCysO>tOx%cz?u@^(}PSf!*p>^Lk6MG*?8C<WNjgB*KBFM2djMSJo9Mc{$GBx+dR`rVi$gfKw%H%vHZf#oY<`=0aRuh!$c@3nW^hosC9D&m;{l21=b^9wJwz5ztQP()#=QP5a!%Te`HH3;S~kq<uaCtIjG_6NQBs)(9&Z2Q8^o$r=bLd#xax(ms$<ha+QJ(DR~2HxtYDBX~WeLk}|Dza9Xmmt!j~g*CYSFb5DCV=2LGpb}WF3iqJNVgj0cf2@By?(-3Pb$c?Loo|kHY*#-#VP5)UzN;IaYdj=d3{rO?U(h%8pw??tx6*}}R)x%U>S^MfQ;$ihunwdQOh<0LD?kNfymZ_?gmv!ox!s2Y%vw)W)pvlP)^xGz7ZzeRsbmx+6GcR+8A+50#}g*?4h(lPkLxfs$)%e5;JWqx5q@hobGcMgXJoEVu6u$4FY@s*clvazAKT3?L(yJnRM*mlSd~dHqtnF8%ycLTIL@Qaz;-EeUuJB@nBX5D^0ed3PCPY|m)__;!aOgY<{KAdGdvv=Q0MT`O?Wm%FkT2tBM%IQdb*iZ;11jFu-;!$=aeC*Pq~rfQ152K^b`13ADB<|s(GEI7?%Py)?1%j%ninoCR$4vKKPQmT;9yJc6F|`9}n=jc6B#XYX9ZacOQm}<!<$T+Xd*Cs`2GQOh&E6SO&ecwSjBGbs`d7OQ0B$Cta!>Q<mpUR$9ohZpUzP_vE{#eTh?2jT2K=nZ&tJsjkFJF{v_M+K_?gqNhQDwq7$Mz$@H`rFoD~x)(5`S?{;UFSRb5l9v7nfB(znYL!=(VK?r1^5AX0`5`KDgS(O?sc;R?NfF9W*pzU*_1pbz&8<+5w>d>#y>Gj&9w$Nj!dhV-zm`{{Y$4`UNfARVSa3OOp%Czq7LqBW9OR6}*i#ctABDT8m-e{!Er#K9C89U(30=rP+vDzjsH1nQSKVRf9;Tvdvb+#G3WFl$DHlRI9T@S%D3Yr}M6uipY=k0{fu*OH`(v{{w0=M72B!8ru=Moe4(+~iPpdaa{5<6rzV$Dwk8XR+y+~II)l|3?o1#+zp^Qd<Oo`?+q0<gLPtT)GZE2PnBS%c()?t6#&CJ<-3yphr9SqRs&2aV8*VDQ>-osg=nw2iZpgbu?D2L#=<;00ZFt;%vL30d%3M-bHAPF6x@7LS?(;Tx--;i(us5_mUQ-GU+ynXE8x_(FXRqdr%JQD4M3Dzd`=Ft#569`BmGoX_%=vQ*w!uvymr|TZW`IosKrFwT*y=#vHUT=Aw+p_<*p9-rB!9om4S=7NeOnZWJT)Ge}&y1Ln2&+?RoZ}OSyRvIt_b^uh`og~JoqzYx-)?+St2%2e#Il%}Lt;Ey5kV$xOpuXqz<54i3>RJwsm}oE&u+iI0=(<bgI6C{zt*2!7t7|nd;7!c^|5L8)!n8Jxhh;<O|F0k^*_RoNplffN~$tcsroWR`t462DAzAO#7e9w`Lj^c8R(b{hWFeNlbpB0qT7<pL>UOpm|}`@sV8J`JNymjd(FdyaGlDL3~pD~&FVeGCy4MgUTeaB^{IBLg=>}SO1zvoMTSZm*T3Oh3oie2bBfF{lA_Vd0Mo{$=%V+5N{6S4k}{SdQ+ocT)%bOBt8OqYo$WvS0VCTQ^M>64_86C}8kZ@{hWO)cZXl0+quJp?v$~Kh<9K0~63+w=G-nyy8K#NITs7RXXyd?>HX$zGZJu`P?zZ5ZsomeYCm1iXF8X~6^y5UOx)CqLpav`pmQkynao*&KeQtOJ%s2AfdFePEYfR5=7uLReadRByzvfG-+)g&}fUkSqYf&{UFU5#X5sV!&aT@wPqg_JhqNwIZ0+=BZo-{%{x{$(p@4`$d{J{nMT4B6kb)j?lkh$QI9F?khg=H94GYlLsh7b-CKKKbNMCzm`(O5PNIIs~m4*wAhcpqQ~UnH@Cf&0CWZTr5G0dWT3<DREnHaD8pmDWORoLkSFCP7JIz!A*=@U>7(Ss{F>GSdm%X6^1fm($}}c6gL#RM)=Pd`goCTKFQWu9lZ#MIAzLF*4=2)<iNPs0o^hgl7ORExcxu3_tt0e(s?<ZhN7cXLo#nv3u`Cp>l@pDEaP0t(sL?h-ro9z%#iDW@%bkFP)df3Zubt2*u|sa!x7mSY0=+xlSoQzPele4@UDPp?LRd_0By&x3Au{`_(H9=Nb%gho#Ah+P~uuu+3V<^XR!m=Sh{7Ut^oS{^=`>&v~`F{TwUG*ZfaQEI6=aqClY!`TpBP4H`rW5mF*$!%BX(YObP&2Cl98!#}=Vp)-Pk!uRgocdI-1gr6$g@vea<=mVy4?bOXz-t-5uHMFUc1iysE^Xcn6zL!6Hpz)pg5G%7bf0kWoN+yBx5hK*-AVU@>>AeCW6$!G~RZohoskslC+~MXNIN`*;IW}q4!}FaFgfo@Hsj!-#_IdqkR(BaE1I7Iyi3ZM+H6GA?1qRAv&P<$Q8Nt&iF;Iy04U@PJny2+P_m^+y8Yb~WJOXCEO??l$diAP#g8hJAfVMmCS09c6KW5X^D@+DnHCsS~&%dqu>RT3Ke}Sin%+SaV!!bumL@(%s2tiPZ+q|41?0kk~<{@{uIhpU?zFNI)yWNQm@71Sw8Svm?U%fgsJyv{qb%zOZlZUHL+JE5muofK!*USoz`OH^OkDDLgU+h$?ix07~YxSoc9o%Bv#RU+d0ujtI%PmhfMok?{LmHtc<Gi7LSObQ;w^_u;db`b}<&*yYDRyFS=kJC9_X1S$U%auJebX|wGl3+9&FyZIYKSCd_9xstfLofo0$69r*yuLfCNnf#p8H>Bdt^rWZEwtCj2WV^9DQK|nRvuw0)oK|E^~FDN&9I*GM>%t*8P^7**Enb9_HHLwys<K==SwPNiIHYYCLsUAK~HH)L|;Fu0#v5XUGV3Rwh9OwctPyi@63EX(P8`fL0!X>+Uo9celp4=YAH$^3Absv(0cD_9$mBtN%MTfX5tqsh`0$gX4R(iyb%&NI&QKfj6!TwYz<9HLJD|!`qO2h6&_GX`7@ZxS5ruI=Mhn#<?|^D4Vn4JMdfF$c;Ph-CU6IGkCx~{NCj$i>I=g-?<~^%pcu0H)>ufR2Raf+`iLKg#MkN68i=>E@l5glt5xc;6lWV4T!&^=%wd0CuJ!EjuZkg!$t@Kba&hJW48-4Ko0Lw*0(+t3fUT!a?ku}xf+)ive|XWvm9J`F45`9$PB?FhJx1uC>ur&CfUp0?LvdcO!s-_Dzgy%+%*Hu&rlJqKexLn7R!}Zb*r%u+sXixa*l2>C*R5%hxs=37?u(SsUQq7GpXMH*1{Uk)!(7{Qu+SJb`Ou6zYQ$Xz3P>u8deu#Ll(8nmE}xz;VnMps1`UOmT0MA0K^~Jb{|9Eb#i0953U|qcBg$LWx2XsT87=IQp8z25EUrxG5$h3X(5^9j3`A*m$E!}Df{-hx$o8o`~<PR?Nok^;(B+#D#SIVnJjBw3aVjoDJJAVgBFTdZ39y&LvvaZG6X(&HeBq8DZ=0OalLE1G;=cEp)7YakK}Wx*ESE6LvN~5-HMlC)c*&kK638",
+    "royal_paper_v34": "c-p1Y%WB*(6b9gZAn#zZtvpCa_vtFVL7^mFWFL;Cqd~-D8`+aKeYGz7NPUGWDVa2oMIjqo!oNYE|Ks03f0e}MN~y%POyhOi(JhVZ{bCsoJGRVIUD-kdJp|aY;tjEusCU=6+&r#UHsG>ehx^x7Tn`JI$ARrCCQA2D$7!Y0lgtHzHdzU<$y*Z1iI&jb1&-b!a~dIptaaqx2_+$NBeW9Eh6ut02F@#G8B*+Vo%;os-GTby5J#*%a4@|P?ar=f9LvJK93plXSW{tw^9^TwqXm1)T?w_-ek=V(C~b^>!}*p!q%6Dq`tgD>cJ_H}9|zZROWlk!)h?G|c-xIrhjBgN&`mW_WnCs(I{F@mLo=V9o_KEqmqM8UUZRZ+pfM(jAt-A#GA^S*my{2lz-#B7;>mcKwM8(-G^}&nKVhfo=G)Y#GS0QUfc;R~nZDNYV_)KtYt=KZ+$z{gx3SuIVUJv=U(H478i!Cs$bc3+a*ZAYDorWG%n*|GMo4&Q*Ah~&L^??zqb0Oj6nF5q+n7T?RqFT4`Y-h2{rUMPc3ElHCh<||ynaR$+osfd1Db<_BhmBM8zly5wBeA9wE)WIC~`CrJvEX7W<`ua7}u^o8qhLivId+MIjc6&tx~H1j+N4|-%r%9wS?*Jg-Wk#X}{Chy_@dZd5$A&{s-Jrul4=`IDs`m",
+    "royal_parlays_v37": "c-qC+&2Aev5C`ykfV{&Z*RF)&42K`;NlogufT0vk8lWeGAG5AdMQcdwHU@I-6Z8T4AUWib+DGUpMN`-I!nTUY&}9Yiz#ln(a`?x)_siODWxHMW>yw}4qFu@9N$JnmLt8eI2B{}$XtzTe&bRF^%k{Qh^;;d^uKPhAKXTPUbc`mNSW6ZT2HBh7#hL2CwFu}Y#!L|2{`vcFzcw%Xnl9eXSF7g5S-%;!EnXV((wLd08R8V!d*;soW&rKCUoM_~v-qk7{XLnV5B=*jEK75i&SW#`*Q<->Y$J791~oLLf1Uejv*;UnBjtQZc_lh@vr4;R%Ob7*yXen{rr$JDPo?=;Hp^})b^7G-qu@b|Go68GDl!ULpG*K_5t$*}?x7J+&}BNj#}+3Ut<I=Ylt?b78lbb*p-UP3?H(TSL?m~3Pwi|f9*XxyiUEh-)<ozzitlnQw|fkXfuf6t2RY#Ew9+U8FeVo7ETvRjjDcK8mq818Gc?pZOBdVm1no34ic=r8e8U5PNY4Q3qUef34w)iKf*SNo3KzZuh(<sR_5mW~DjQu)DVAz7-c-SmB0%cAunqMNARYq|;^9H$vMYcbvvDa&A|mifig?i)takxj3DLhI4I~_1q?rMBxXTY0bRJ6xF?-!PE5a#^iN1UO!~A%1^!(}fFD8pG=99(I@nrG!@s&jJ4EzjfO2K0Ahu3vQt4(*xh(-triEJ!MFQeFz>5%WMqY<5F^8g26ja8Bjj*H9ei)D<gXNV600L7*I>iA}zX6+$#+B-<LHFT)m5b9yiUi6yEMYAWdgZt{P1n&~h!UF_PH_P}Sg_3qjDOn57iDx2LqEJ`v$(t;m&gVyyS2kRWAj8b^lmlybc7yYkorb0^b#B`alWR7zm9!~8{tezKm+Q0>f8MP7kB0w9cfu^guw0*hkWRIIs+dBu&Vj9ZAq%mMK(O1qT9SqReKh9NbRW*=wa*nF3<Dd^G1sj9ho-PZ-)R$K_xJIb&w@XkFXav;L_(+x1!cFBES9_M(QpX+`>qA?Bak^B4rr3zxCxW>-cuxfGzliBmpEe%#>9Pr@p=H=jN{a4#n^DOFMa}_)+L25I^Q|N=(^bHV@6n8$w1ZM|M1b6@8*N_6ZwiO37kPHP^z~S5XmNeLWg3seS!UbJmzCOpf5;Q1bz0#gc^&@(VBwB?H;4vcXof@^#J|@bYu<({0qB%Csq",
+}
+
+def restore_bundled_royal_backup():
+    if st.session_state.get("royal_seed_checked_v51"):
+        return
+    restored = {}
+    try:
+        with db() as c:
+            for table, compressed in _ROYAL_SEED_DATA.items():
+                raw = zlib.decompress(base64.b85decode(compressed)).decode("utf-8-sig")
+                rows = list(csv.DictReader(io.StringIO(raw)))
+                allowed = {r[1] for r in c.execute(f"PRAGMA table_info({table})")}
+                total = 0
+                for row in rows:
+                    values = {k:(v if v != "" else None) for k,v in row.items() if k in allowed}
+                    if not values.get("id"):
+                        continue
+                    keys = list(values)
+                    cols = ",".join('"'+k+'"' for k in keys)
+                    placeholders = ",".join("?" for _ in keys)
+                    before = c.total_changes
+                    c.execute(f"INSERT OR IGNORE INTO {table} ({cols}) VALUES ({placeholders})", [values[k] for k in keys])
+                    total += c.total_changes-before
+                restored[table] = total
+            c.commit()
+        st.session_state["royal_seed_checked_v51"] = True
+        st.session_state["royal_seed_restore_counts"] = restored
+    except Exception as error:
+        st.warning(f"Bundled backup could not be restored: {type(error).__name__}. Original exports remain necessary.")
 
 @st.cache_data(ttl=120, show_spinner=False)
 def api(path, params=None):
@@ -169,8 +207,33 @@ def _team_name_match(a,b):
     if clean(a)==clean(b): return 1.0
     if sorted(aa)==sorted(bb): return .99
     # E.g. 'Atlanta Hawks' and 'ATL Hawks' only if shared nickname is distinctive.
-    if len(aa)>=2 and len(bb)>=2 and aa[-1]==bb[-1] and len(aa[-1])>=5: return .94
+    if len(aa)>=2 and len(bb)>=2 and aa[-1]==bb[-1] and len(aa[-1])>=4: return .94
     return SequenceMatcher(None,clean(a),clean(b)).ratio()
+
+def _unique_score_team(name, teams, sport):
+    """Resolve abbreviations against ONLY the two contestants in this specific game."""
+    scorer = _person_name_match if sport == "Tennis" else _team_name_match
+    ranked = sorted(((scorer(name, t), t) for t in teams), reverse=True)
+    if not ranked or ranked[0][0] < .90:
+        return None
+    if len(ranked) > 1 and ranked[0][0] - ranked[1][0] < .06:
+        return None
+    return ranked[0][1]
+
+
+def _verified_pick_winner(row, game):
+    """Do not grade without unambiguous BOTH-side identity and a completed winner."""
+    if not game or game.get("state") != "post" or not game.get("completed") or not game.get("winner"):
+        return None
+    teams = game.get("teams") or []
+    if len(teams) != 2:
+        return None
+    selected = _unique_score_team(row.get("selection"), teams, row.get("sport"))
+    opponent = _unique_score_team(row.get("opponent"), teams, row.get("sport"))
+    if not selected or not opponent or selected == opponent or game["winner"] not in teams:
+        return None
+    return "WIN" if selected == game["winner"] else "LOSS"
+
 
 def _game_similarity(row, game):
     if row.get('sport')=='Tennis': score=_person_name_match
@@ -496,15 +559,15 @@ def grade_predictions(items):
     with db() as c:
         for x in items:
             game=x.get("score_game")
-            if not game or game.get("state")!="post" or not game.get("winner"): continue
+            if not game or game.get("state")!="post" or not game.get("completed") or not game.get("winner"): continue
             winner=clean(game["winner"])
             teams=[clean(n) for n in game["teams"]]
             if winner not in teams: continue
             rows=c.execute("SELECT * FROM royal_predictions_v34 WHERE event_id=? AND result='PENDING'",(x["event_id"],)).fetchall()
             for r in rows:
                 # Match both competitor names to scoreboard, not merely winner substring.
-                if clean(r["selection"]) not in teams or clean(r["opponent"]) not in teams: continue
-                result="WIN" if clean(r["selection"])==winner else "LOSS"
+                result=_verified_pick_winner(dict(r),game)
+                if result is None: continue
                 c.execute("UPDATE royal_predictions_v34 SET result=?,graded_at=?,grade_note=? WHERE id=?",
                           (result,utc().isoformat(),"Provisional ESPN result; check exchange settlement",r["id"]))
                 paper=c.execute("SELECT * FROM royal_paper_v34 WHERE prediction_id=? AND status='OPEN'",(r["id"],)).fetchone()
@@ -514,71 +577,56 @@ def grade_predictions(items):
         c.commit()
 
 def refresh_saved_results():
-    """Grade pending saved predictions even when their games are absent from today's market scan.
+    """Match past saved picks to ESPN completed games without overwriting history.
 
-    Match the exact two competitors and league; only accept completed ESPN games
-    occurring after the prediction was locked. Never infer exchange settlement.
+    Scoreboard grading is provisional, not an exchange-settlement confirmation.
+    Keep unmatched entries pending instead of making up outcomes.
     """
     with db() as c:
-        pending=[dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 WHERE result='PENDING'")]
+        pending = [dict(r) for r in c.execute("SELECT * FROM royal_predictions_v34 WHERE result='PENDING'")]
     if not pending:
         return 0, 0, "No pending saved predictions"
-    today=utc().astimezone(CT).date()
-    sports=sorted({r['sport'] for r in pending if r['sport'] in ESPN})
-    # Restrict historical lookups to recent dates to bound network traffic.
-    # Older unmatched records stay pending rather than being guessed.
-    dates=[(today-timedelta(days=i)).strftime('%Y%m%d') for i in range(0,15)]
-    jobs=[(sp,day) for sp in sports for day in dates]
-    completed={sp:[] for sp in sports}
-    with ThreadPoolExecutor(max_workers=12) as pool:
-        futures={pool.submit(scores,sp,day):sp for sp,day in jobs}
-        for future in as_completed(futures):
-            sp=futures[future]
-            try: events=future.result()
-            except Exception: continue
-            for e in events:
-                for game in _score_records(e,sp):
-                    if game['state']!='post' or not game.get('completed') or not game.get('winner'): continue
-                    game_date=parse_date(game.get('date'))
-                    if game_date:
-                        completed[sp].append((frozenset(clean(n) for n in game['teams']),
-                                              clean(game['winner']),game_date,game['event_id']))
-    changed=0
+    sports = sorted({r["sport"] for r in pending if r.get("sport") in ESPN})
+    # Only inspect dates relevant to saved picks in the last two weeks.
+    index = score_index(sports, [p.get("created_at") for p in pending])
+    changed = 0
     with db() as c:
-        for r in pending:
-            target=frozenset((clean(r['selection']),clean(r['opponent'])))
-            if len(target)!=2 or not all(target): continue
-            locked_at=parse_date(r['created_at'])
-            if not locked_at: continue
-            matches={g[3]:g for g in completed.get(r['sport'],[]) if g[0]==target and g[2]>=locked_at-timedelta(hours=2)}
-            # More than one plausible finished match: do not grade ambiguously.
-            if len(matches)!=1: continue
-            game=next(iter(matches.values()))
-            result='WIN' if clean(r['selection'])==game[1] else 'LOSS'
-            before=c.total_changes
-            c.execute("UPDATE royal_predictions_v34 SET result=?,graded_at=?,grade_note=? WHERE id=? AND result='PENDING'",
-                      (result,utc().isoformat(),'Provisional ESPN completed game; exchange settlement NOT verified',r['id']))
-            if c.total_changes==before: continue
-            changed+=1
-            paper=c.execute("SELECT * FROM royal_paper_v34 WHERE prediction_id=? AND status='OPEN'",(r['id'],)).fetchone()
-            if paper and paper['entry_ask'] is not None and 0<float(paper['entry_ask'])<1:
-                pnl=float(paper['stake'])*(1/float(paper['entry_ask'])-1) if result=='WIN' else -float(paper['stake'])
-                c.execute("UPDATE royal_paper_v34 SET status=?,pnl=?,graded_at=?,note=? WHERE id=? AND status='OPEN'",
-                          (result,round(pnl,2),utc().isoformat(),'Provisional ESPN result; simulated entry, fees excluded; exchange settlement unverified',paper['id']))
-        # Grade saved parlay tickets from the original locked legs.
-        ids=[r['id'] for r in c.execute("SELECT id FROM royal_parlays_v37")]
-        parlay_changes=0
-        for pid in ids:
-            legs=[r[0] for r in c.execute("SELECT COALESCE(p.result,'PENDING') FROM royal_parlay_legs_v37 l LEFT JOIN royal_predictions_v34 p ON p.id=l.prediction_id WHERE l.parlay_id=? ORDER BY l.leg_number",(pid,))]
-            if not legs: continue
-            wins=legs.count('WIN'); losses=legs.count('LOSS')
-            state='LOSS' if losses else 'WIN' if wins==len(legs) else 'PENDING'
-            old=c.execute('SELECT status,wins,losses FROM royal_parlays_v37 WHERE id=?',(pid,)).fetchone()
-            if old and (old['status'],old['wins'],old['losses'])!=(state,wins,losses):
-                c.execute('UPDATE royal_parlays_v37 SET status=?,wins=?,losses=? WHERE id=?',(state,wins,losses,pid))
-                parlay_changes+=1
+        for row in pending:
+            game = _match_saved_game(row, index)
+            result = _verified_pick_winner(row, game)
+            if result is None:
+                continue
+            before = c.total_changes
+            c.execute("""UPDATE royal_predictions_v34 SET result=?,graded_at=?,grade_note=?
+                         WHERE id=? AND result='PENDING'""",
+                      (result,utc().isoformat(),
+                       "ESPN completed result; provisional only, market settlement not verified",row["id"]))
+            if c.total_changes == before:
+                continue
+            changed += 1
+            paper = c.execute("SELECT * FROM royal_paper_v34 WHERE prediction_id=? AND status='OPEN'",(row["id"],)).fetchone()
+            if paper and paper["entry_ask"] is not None and 0 < float(paper["entry_ask"]) < 1:
+                pnl = float(paper["stake"]) * (1 / float(paper["entry_ask"]) - 1) if result == "WIN" else -float(paper["stake"])
+                c.execute("""UPDATE royal_paper_v34 SET status=?,pnl=?,graded_at=?,note=?
+                             WHERE id=? AND status='OPEN'""",
+                          (result,round(pnl,2),utc().isoformat(),
+                           "Provisional ESPN result, simulated entry, fees omitted; settlement unverified",paper["id"]))
+        parlay_changes = 0
+        for (pid,) in c.execute("SELECT id FROM royal_parlays_v37").fetchall():
+            outcomes = [r[0] for r in c.execute("""SELECT COALESCE(p.result,'PENDING')
+                      FROM royal_parlay_legs_v37 l LEFT JOIN royal_predictions_v34 p
+                      ON p.id=l.prediction_id WHERE l.parlay_id=? ORDER BY l.leg_number""",(pid,))]
+            if not outcomes:
+                continue
+            wins, losses = outcomes.count("WIN"), outcomes.count("LOSS")
+            state = "LOSS" if losses else "WIN" if wins == len(outcomes) else "PENDING"
+            before = c.total_changes
+            c.execute("""UPDATE royal_parlays_v37 SET status=?,wins=?,losses=?
+                         WHERE id=? AND (status!=? OR wins!=? OR losses!=?)""",
+                      (state,wins,losses,pid,state,wins,losses))
+            parlay_changes += c.total_changes-before
         c.commit()
-    return changed,parlay_changes,'ESPN final results are provisional; exchange settlements have not been independently confirmed'
+    return changed,parlay_changes,"Completed ESPN results are provisional; exchange settlement requires separate verification"
 
 
 # Royal Focus started with the V4.7 deployment on Nov 20, 2026 at 9:07 AM CT.
@@ -609,29 +657,50 @@ def royal_focus_stats():
 
 
 def royal_results_dashboard():
+    """Always-visible results for both current Focus and historical picks."""
     focus, papers, focus_parlays, total_saved = royal_focus_stats()
-    w,l=focus['w'],focus['l']
-    st.subheader('📊 Royal Focus Scoreboard')
-    a,b,c,d=st.columns(4)
-    a.metric('Focus picks',focus['n'])
-    b.metric('Focus accuracy',f'{w/(w+l):.1%}' if w+l else '—')
-    c.metric('Focus pending',focus['pending'])
-    d.metric('Focus paper P&L',f"${papers['pnl']:+,.2f}")
-    st.caption(f"NBA · NFL · NHL · NCAAF | Since Nov 20, 2026 at 9:07 AM CT · {w} wins / {l} losses · {papers['n']} paper trades · {focus_parlays} new parlays")
-    if not w+l:
-        st.caption('No graded Royal Focus picks yet. Accuracy will appear after verified final results.')
-    st.caption('Paper results are provisional until exchange settlement; no actual orders placed.')
-    with st.expander('📚 Historical archive — previous experiments',expanded=False):
-        with db() as c:
-            picks=c.execute("SELECT COUNT(*) n, COALESCE(SUM(result='WIN'),0) w, COALESCE(SUM(result='LOSS'),0) l FROM royal_predictions_v34").fetchone()
-            old_parlays=c.execute('SELECT COUNT(*) FROM royal_parlays_v37').fetchone()[0]
-            sport_rows=[dict(r) for r in c.execute("SELECT sport,COUNT(*) total,COALESCE(SUM(result='WIN'),0) wins,COALESCE(SUM(result='LOSS'),0) losses FROM royal_predictions_v34 GROUP BY sport ORDER BY total DESC")]
-        old_count=total_saved-focus['n']
-        st.write(f"Older picks outside Royal Focus: **{old_count}** · All-time saved picks: **{picks['n']}** · All-time parlays: **{old_parlays}**")
-        st.caption('These records remain saved and can be graded, but do not affect Royal Focus accuracy or P&L.')
-        for r in sport_rows:
-            won,lost=r['wins'],r['losses']
-            st.write(f"{SPORT_ICON.get(r['sport'],'🏆')} {r['sport']}: {r['total']} saved · {won} W / {lost} L")
+    with db() as c:
+        total = dict(c.execute("""SELECT COUNT(*) n,
+            COALESCE(SUM(result='WIN'),0) w,
+            COALESCE(SUM(result='LOSS'),0) l,
+            COALESCE(SUM(result='PENDING'),0) pending
+            FROM royal_predictions_v34""").fetchone())
+        paper = dict(c.execute("""SELECT COUNT(*) n,
+            COALESCE(SUM(status='WIN'),0) w,COALESCE(SUM(status='LOSS'),0) l,
+            COALESCE(SUM(CASE WHEN status IN ('WIN','LOSS') THEN pnl ELSE 0 END),0) pnl
+            FROM royal_paper_v34""").fetchone())
+        recent = [dict(r) for r in c.execute("""SELECT sport,title,selection,phase,result,created_at,graded_at,grade_note
+                   FROM royal_predictions_v34 ORDER BY
+                   CASE WHEN result IN ('WIN','LOSS') THEN 0 ELSE 1 END,
+                   COALESCE(graded_at,created_at) DESC LIMIT 40""")]
+    st.subheader("📊 Queen's Results — All Time")
+    a,b,c,d = st.columns(4)
+    a.metric("Saved picks",total['n'])
+    b.metric("Graded W / L",f"{total['w']} / {total['l']}")
+    c.metric("Not graded",total['pending'])
+    d.metric("Paper P&L*",f"${paper['pnl']:+,.2f}")
+    accuracy = f"{total['w']/(total['w']+total['l']):.1%}" if total['w']+total['l'] else "—"
+    st.caption(f"Graded accuracy: {accuracy} (based on {total['w']+total['l']} predictions ONLY) · Paper: {paper['n']} entries, {paper['w']} wins, {paper['l']} losses")
+    st.caption("*Simulation only. Grading based on ESPN is provisional; exchange settlement and executable fills are NOT verified.")
+    st.markdown("**👑 Royal Focus — Newer Test**")
+    x,y,z=st.columns(3)
+    x.metric("Focus picks",focus['n'])
+    y.metric("Focus W / L",f"{focus['w']} / {focus['l']}")
+    z.metric("Focus pending",focus['pending'])
+    st.caption(f"NBA · NFL · NHL · NCAAF, starting Nov 20 at 9:07 AM CT. {focus_parlays} research parlays, {papers['n']} focus paper entries. This is a subset of all-time history, not a reset.")
+    st.markdown("**🏁 Latest Results & Saved Picks**")
+    if recent:
+        view=st.segmented_control("Show",["Results","Pending","All"],default="Results",key="royal_results_quick_filter")
+        displayed=[r for r in recent if (view=="All" or (r['result'] in ('WIN','LOSS') if view=="Results" else r['result']=='PENDING'))]
+        if not displayed:
+            st.info("No picks have been graded in this group yet. Saved pending predictions remain in History.")
+        else:
+            for r in displayed[:15]:
+                status = "✅ WIN" if r['result']=='WIN' else "❌ LOSS" if r['result']=='LOSS' else "⏳ PENDING"
+                st.markdown(f"{status} · **{r['sport']} — {r['selection']}** · {r['title'] or ''}")
+                st.caption(f"Locked {local(r['created_at'])}"+(f" · Graded {local(r['graded_at'])}" if r['graded_at'] else ""))
+    else:
+        st.info("No saved picks found in this database. Check the storage connection and restore a backup if needed.")
 
 
 def prediction_lookup():
@@ -833,7 +902,7 @@ def prediction_panel():
     pw,pl=ptotals[1] or 0,ptotals[2] or 0
     a,b,c,d=st.columns(4)
     a.metric("Locked picks",totals[0]);b.metric("Pick accuracy",f"{100*wins/(wins+losses):.0f}%" if wins+losses else "—")
-    c.metric("$100 paper entries",ptotals[0]);d.metric("Settled paper P&L",f"${ptotals[3]:+,.2f}")
+    c.metric("$100 paper entries",ptotals[0]);d.metric("Provisional paper P&L",f"${ptotals[3]:+,.2f}")
     st.caption(f"Predictions: {wins} won / {losses} lost · Paper trades: {pw} won / {pl} lost · Results are provisional until exchange settlement is checked.")
     filter_choice=st.radio("Show history",["All Picks","Paper Trades","Results"],horizontal=True,key="royal_history_filter")
     paper_by_prediction={r["prediction_id"]:r for r in papers}
@@ -843,8 +912,8 @@ def prediction_panel():
         filtered=[r for r in rows if r["result"] in ("WIN","LOSS","VOID","PUSH")]
     else:
         filtered=rows
-    st.caption(f"Showing {min(len(filtered),st.session_state.get('royal_history_limit',12))} of {len(filtered)} saved picks · Newest first")
-    limit=st.session_state.get("royal_history_limit",12)
+    st.caption(f"Showing {min(len(filtered),st.session_state.get('royal_history_limit',6))} of {len(filtered)} saved picks · Newest first")
+    limit=st.session_state.get("royal_history_limit",6)
     shown=filtered[:limit]
     # Fetch once for visible saved picks, even if those events are absent from the
     # current Polymarket market scan. No invented live status for unmatched games.
@@ -967,8 +1036,18 @@ def display_row(x, number=None):
         else:
             status_text, status_color = "👀 WATCH · NO LOCKED FORECAST", "#64748b"
         st.caption(status_text+" · "+royal_game_clock(game, x.get("start")))
+        if game and game.get("state") in ("in", "post"):
+            teams = game.get("teams") or []
+            raw_scores = game.get("scores") or {}
+            if len(teams)==2 and all(str(raw_scores.get(t) or "").strip() for t in teams):
+                sc1, sc2 = str(raw_scores[teams[0]]), str(raw_scores[teams[1]])
+                time_label = royal_game_clock(game, x.get("start"))
+                st.markdown(f"""<div style="padding:12px;border:1px solid #70429b;border-radius:12px;text-align:center;background:#1b1028">
+                <div style="color:#cda9ee;font-size:14px;margin-bottom:6px">{html.escape(time_label)}</div>
+                <div style="font-size:23px;font-weight:800;color:#f2e8fa">{html.escape(teams[0])} &nbsp; {html.escape(sc1)} — {html.escape(sc2)} &nbsp; {html.escape(teams[1])}</div>
+                </div>""", unsafe_allow_html=True)
         score_line=royal_score_line(game,locked.get("selection") if locked else None)
-        if score_line: st.markdown(score_line)
+        if score_line: st.caption(score_line)
         elif game and game.get("state")=="in": st.caption("Live scoreboard connected · score currently unavailable")
         if sport=="Tennis" and game and game.get("state") in ("in","post"):
             sets=game.get("sets") or {}
@@ -1072,7 +1151,7 @@ def paper_panel():
     st.subheader("🧪 $100 Paper Results")
     a,b,c,d = st.columns(4)
     a.metric("Paper entries", totals[0]); b.metric("Wins", totals[1] or 0)
-    c.metric("Losses", totals[2] or 0); d.metric("Settled paper P&L", f"${totals[3]:,.2f}")
+    c.metric("Losses", totals[2] or 0); d.metric("Provisional paper P&L", f"${totals[3]:,.2f}")
     st.caption("Each qualifying pregame YES contract is simulated at its observed ask; no orders are placed. Open P&L uses indicative bid, not a guaranteed cash-out. Game results are provisional until official market settlement is checked. Fees/slippage excluded.")
     if not records:
         st.info("No qualifying paper entries yet. Scan Today or Next 3 Days, then open 'Why paper entries are skipped' to share the sample contract metadata. No unverified team will be paper-traded.")
@@ -1153,47 +1232,50 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V4.9 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
+st.caption("V5.1 · ROYAL FOCUS: NBA • NFL • NHL • NCAAF · POLYMARKET US · PAPER ONLY · $20 BASE UNIT")
 
-# The primary dashboard shows ONLY the post-switch Royal Focus cohort.
-_focus_picks, _focus_papers, _focus_parlays, _all_saved = royal_focus_stats()
-st.markdown("#### 👑 Royal Dashboard")
-_q1,_q2,_q3,_q4=st.columns(4)
-_q1.metric("Focus picks",_focus_picks['n'])
-_q2.metric("Focus paper trades",_focus_papers['n'])
-_q3.metric("Focus parlays",_focus_parlays)
-_q4.metric("Focus paper P&L",f"${_focus_papers['pnl']:+,.2f}")
-# One simple refresh button. Automatic updates run only while the app session is active.
-if st.button("👑 Refresh Queen", type="primary", use_container_width=True):
-    api.clear()
-    scores.clear()
-    st.rerun()
-st.caption("Live scores: ESPN where available. Previous sports remain in saved history.")
-st.caption("Live market scans refresh about every 2 minutes while the page is active; ESPN scores are cached for up to 60 seconds and saved finals are checked about every 10 minutes. Updates pause when Streamlit sleeps. Tap Refresh Queen for a manual check.")
+restore_bundled_royal_backup()
+# Simple primary navigation: every major page is one tap away, no nested archive menus.
+tab_results, tab_live, tab_history = st.tabs(["🏁 RESULTS", "🔴 LIVE & TOP 10", "📚 HISTORY & SETTINGS"])
+with tab_results:
+    if st.button("🔄 Check results now", key="refresh_results_now", use_container_width=True):
+        scores.clear()
+        st.rerun()
+    st.caption("Automatic saved-result checks run while the app is awake. Game scores and exchange settlements are separate feeds.")
+    st.caption("Recovery snapshot: 419 saved picks, 4 paper entries, 20 parlay ticket headers. Parlay leg details were not included in the uploaded backups.")
 
-@st.fragment(run_every="600s")
+@st.fragment(run_every="180s")
 def royal_auto_results():
-    with st.spinner("Checking saved game results..."):
-        try:
-            changed, parlay_changes, _ = refresh_saved_results()
-            st.caption(f"Results checked {utc().astimezone(CT).strftime('%I:%M %p CT')} · {changed} new graded picks · {parlay_changes} parlay updates")
-        except Exception as exc:
-            st.warning(f"Results check unavailable ({type(exc).__name__}); saved picks unchanged.")
+    try:
+        changed, parlay_changes, note = refresh_saved_results()
+        st.caption(f"Latest results check {utc().astimezone(CT).strftime('%I:%M %p CT')} · {changed} newly graded picks · {parlay_changes} parlay updates")
+    except Exception as exc:
+        st.warning(f"Results source unavailable ({type(exc).__name__}). Existing results preserved.")
     royal_results_dashboard()
 
-royal_auto_results()
+with tab_results:
+    royal_auto_results()
 
-with st.expander("📚 Historical archive, units & backups", expanded=False):
-    st.caption("All-time historical records below include picks from before Royal Focus. They do not affect the Focus scoreboard above.")
-    royal_unit_manager()
-    st.caption("0 U = SKIP / WATCH: no verified edge. Experimental paper units are not real-money recommendations.")
+with tab_history:
+    st.subheader("📚 Full Saved History")
+    st.caption("All sports and older experiments are here. Backup files preserve original entry prices and pick timestamps.")
     prediction_panel()
+    st.divider()
+    royal_unit_manager()
     with db() as _backup_db:
         _parlay_tickets=[dict(r) for r in _backup_db.execute("SELECT * FROM royal_parlays_v37")]
         _parlay_legs=[dict(r) for r in _backup_db.execute("SELECT * FROM royal_parlay_legs_v37")]
-    st.markdown("**🎯 Parlay backups**")
+    st.markdown("**💾 Parlay backups**")
     st.download_button("⬇️ Parlay tickets CSV", _csv_bytes(_parlay_tickets), "royal_parlays_v37_backup.csv", "text/csv", disabled=not _parlay_tickets, use_container_width=True)
     st.download_button("⬇️ Parlay legs CSV", _csv_bytes(_parlay_legs), "royal_parlay_legs_v37_backup.csv", "text/csv", disabled=not _parlay_legs, use_container_width=True)
+
+with tab_live:
+    st.subheader("🔴 Live Sports & Queen's Picks")
+    if st.button("👑 Refresh scores & prices", type="primary", use_container_width=True):
+        api.clear()
+        scores.clear()
+        st.rerun()
+    st.caption("ESPN score updates as available; Polymarket US quote scans every ~2 minutes while awake. Streaming prices are not guaranteed.")
 
 # Automatic discovery covers live games and the next three calendar days.
 # One stable daily session prevents duplicate parlays from changing filters.
@@ -1293,11 +1375,38 @@ def royal_auto_scan():
     lock_predictions(rows)
     grade_predictions(rows)
     st.session_state["royal_locked"] = prediction_lookup()
-    st.caption(f"Market scan updated {utc().astimezone(CT).strftime('%I:%M %p CT')}")
+    matched_games = len({x['event_id'] for x in rows if x.get('score_game')})
+    st.caption(f"Market scan {utc().astimezone(CT).strftime('%I:%M %p CT')} · {len(rows)} markets · {quoted} valid quotes · {matched_games} ESPN-matched events · {live_count} live events")
+    if not matched_games and rows:
+        st.warning("Sports events are arriving, but none were confidently linked to an ESPN score. Live clocks and automatic grading may remain unavailable until matched.")
     # Keep historical V3.3 paper tests intact; new pick-linked paper tests live in V3.4 tables.
 
 
 
+
+    st.subheader("🔴 Live Game Tracker")
+    live_rows = [x for x in checked if x.get("score_game") and x["score_game"].get("state")=="in"]
+    unique_live = {}
+    for candidate in live_rows:
+        unique_live.setdefault(candidate["event_id"],candidate)
+    if unique_live:
+        st.caption("Current matched scores and game clocks. A LIVE score is not a final result or settled wager.")
+        for candidate in list(unique_live.values())[:15]:
+            game = candidate["score_game"]
+            teams=game.get("teams") or []
+            if len(teams)!=2: continue
+            a,b=teams
+            sa,sb=game.get("scores",{}).get(a),game.get("scores",{}).get(b)
+            with st.container(border=True):
+                st.markdown(f"**{SPORT_ICON.get(candidate['sport'],'🏆')} {html.escape(a)} vs. {html.escape(b)}** · 🔴 {html.escape(royal_game_clock(game))}")
+                st.markdown(f"### {html.escape(str(sa if sa not in (None,'') else '—'))} — {html.escape(str(sb if sb not in (None,'') else '—'))}")
+                saved=next((p for p in st.session_state.get('royal_locked',{}).values() if p.get('event_id')==candidate['event_id'] and p.get('sport')==candidate['sport']),None)
+                if saved:
+                    st.caption(f"👑 Queen picked {saved['selection']} · {saved['result']} · {saved['model']}")
+                else:
+                    st.caption("No linked locked pick for this game")
+    else:
+        st.info("No confidently matched LIVE scores in the current quote scan. Saved history and final-result checks continue separately.")
 
     st.subheader("👑 Queen’s Top 10 Picks")
     st.caption("NBA · NFL · NHL · NCAAF | Up to ten independent record-based candidates, with cross-sport representation when available.")
@@ -1336,7 +1445,7 @@ def royal_auto_scan():
                              st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{}).get("model")=="Season-record baseline"}),
                            "quoted":sum(1 for x in checked if x["sport"]==league and x.get("quote") and x["quote"].get("valid"))}
                    for league in ACTIVE_SPORTS}
-    with st.expander("🔎 Sports coverage · why a league may be missing",expanded=False):
+    with st.expander("🔎 Feed health & league coverage",expanded=True):
         for league,counts in league_counts.items():
             st.caption(f"{league}: {counts['events']} events in window · {counts['record']} independent record-baseline games · {counts['quoted']} valid market quotes")
         if errors: st.caption("Feed errors: "+" | ".join(errors))
@@ -1532,4 +1641,5 @@ def royal_auto_scan():
     with st.expander("ℹ️ Paper testing & data storage",expanded=False):
         st.caption("No real orders. Paper results do not establish profitability. Local SQLite on Streamlit Community Cloud may be lost on restart/redeploy; export backups or use persistent storage.")
 
-royal_auto_scan()
+with tab_live:
+    royal_auto_scan()
