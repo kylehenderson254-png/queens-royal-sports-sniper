@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V5.6.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -1540,7 +1540,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V5.6 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
+st.caption("V5.6.1 · NBA • NFL • NHL • NCAAF • TENNIS · RESEARCH & PAPER ONLY")
 
 restore_bundled_royal_backup()
 royal_enable_one_game_lock_v54()
@@ -1551,6 +1551,20 @@ with tab_current:
     royal_current_picks_panel('FOCUS')
 with tab_tennis:
     royal_tennis_live_panel()
+    st.subheader('🎾 Tennis Parlays')
+    st.caption('Separate tennis-only paper research. No forced selections or automatic locks from live scores alone.')
+    with db() as tennis_db:
+        tennis_rows=tennis_db.execute("""SELECT * FROM royal_primary_predictions_v54
+            WHERE sport='Tennis'""").fetchall()
+        tennis_saved=[dict(r) for r in tennis_rows]
+        tennis_auto=tennis_db.execute("""SELECT COUNT(*) FROM royal_parlay_legs_v37 l
+            JOIN royal_parlays_v37 p ON p.id=l.parlay_id
+            WHERE l.sport='Tennis' AND p.session_key LIKE 'V56-QUEEN-AUTO-%'""").fetchone()[0]
+    t1,t2=st.columns(2)
+    t1.metric('Saved tennis picks',len(tennis_saved))
+    t2.metric('Tennis legs in auto tickets',tennis_auto)
+    st.info('👀 NO QUALIFIED TENNIS PARLAY YET. Live scores alone do not establish a pre-match edge. Queen needs independently verified player research, event start times, and pre-match market pricing before an automatic tennis ticket can be locked.')
+    st.caption('When qualified tennis paper picks are available, tennis-only tickets will appear here, and historical tickets remain in the compact parlay history under Picks / Parlays.')
     royal_current_picks_panel('TENNIS')
 with tab_results:
     if st.button("🔄 Check results now", key="refresh_results_now", use_container_width=True):
@@ -1904,18 +1918,20 @@ def royal_auto_scan():
     st.caption("Underdog prices alone do not establish value. Paper testing only.")
 
     st.subheader('👑 Queen’s Original Locked Parlays')
-    st.caption('Automatically locked once per available size for TODAY’S slate only, when every leg has a verified same-day start and qualifying evidence. Paper records never change.')
+    st.caption('Automatic first qualifying same-day paper tickets. Past tickets are in Previous Parlays below.')
     if royal_new:
         st.success('New original paper tickets saved: '+', '.join(f'{n}-leg' for n in royal_new))
-    own=[t for t in royal_tickets if str(t.get('session_key') or '').startswith('V56-QUEEN-AUTO-')]
-    if not own:
-        st.info('No qualifying original parlay ticket yet today. Queen will SKIP rather than add tomorrow’s games or weak legs.')
+    own_today=[t for t in royal_tickets if str(t.get('session_key') or '').startswith('V56-QUEEN-AUTO-'+current.isoformat()+'-')]
+    if not own_today:
+        st.info('No eligible original parlay yet for today. Queen will wait instead of mixing dates.')
     else:
-        for t in sorted(own,key=lambda x:x.get('created_at') or '',reverse=True)[:8]:
+        for t in sorted(own_today,key=lambda x:x.get('leg_count') or 0):
             legs=royal_legs.get(t['id'],[])
-            st.markdown(f"**🔒 {t['leg_count']}-leg · {html.escape(t.get('status') or 'PENDING')}** · {html.escape(str(t.get('session_key','').split('-')[-2]))} CT")
-            for leg in legs:
-                st.caption(('✅ ' if leg.get('leg_result')=='WIN' else '❌ ' if leg.get('leg_result')=='LOSS' else '⏳ ')+str(leg.get('selection') or '')+' · '+str(leg.get('sport') or ''))
+            status={'WIN':'✅ WIN','LOSS':'❌ LOSS','PENDING':'⏳ PENDING'}.get(t.get('status'),'⏳ PENDING')
+            teams=' · '.join(str(leg.get('selection') or '?') for leg in legs)
+            st.markdown(f"**🔒 {t['leg_count']}-leg · {status}**")
+            st.caption(teams if teams else 'Original ticket awaiting recovered leg details')
+    st.caption('🎾 Tennis-only automatic tickets require independent pre-match evidence; scores alone do not qualify.')
     st.divider()
     st.subheader('🎯 My Parlay Builder')
     st.caption('Suggestions stay UNLOCKED until you press paper lock. All legs must start on the SAME Central Time calendar day.')
@@ -2020,22 +2036,45 @@ def royal_auto_scan():
     else:
         st.info(f'Only {len(same_day_candidates)} qualified games on {chosen_day} CT; {selected_legs} are needed. Queen will not mix dates or invent legs.')
 
-    st.markdown('**📋 All Previously Locked Paper Parlays**')
+    st.divider()
+    st.subheader('📋 Previous Parlays')
+    st.caption('Compact history: choose a time period, then select ONE ticket to see its legs. All saved tickets remain intact.')
     if not royal_tickets:
-        st.caption('No paper tickets locked yet. Proposed tickets are not tracked as bets.')
+        st.caption('No paper tickets locked yet. Generated proposals are not tracked unless locked.')
     else:
         recent=sorted(royal_tickets,key=lambda t:t.get('created_at') or '',reverse=True)
-        for t in recent[:8]:
-            legs=royal_legs.get(t['id'],[])
-            label=f"{'✅ WON' if t['status']=='WIN' else '❌ LOST' if t['status']=='LOSS' else '⏳ PENDING'} · {t['leg_count']}-leg · {local(t['created_at'])}"
-            with st.expander(label,expanded=False):
-                st.caption(f"{t['wins']} won · {t['losses']} lost · {max(0,len(legs)-t['wins']-t['losses'])} pending · paper only")
-                if not legs: st.caption('Older backup contained the ticket header but not its leg details.')
+        period=st.radio('Show tickets',('Today','Previous','All'),horizontal=True,key='royal_v561_history_period')
+        today_ct=current.isoformat()
+        def ticket_ct_day(t):
+            dt=parse_date(t.get('created_at'))
+            return dt.astimezone(CT).date().isoformat() if dt else ''
+        visible=[t for t in recent if period=='All' or (ticket_ct_day(t)==today_ct if period=='Today' else ticket_ct_day(t)!=today_ct)]
+        won=sum(t.get('status')=='WIN' for t in visible)
+        lost=sum(t.get('status')=='LOSS' for t in visible)
+        pending=sum(t.get('status') not in ('WIN','LOSS') for t in visible)
+        st.caption(f'{len(visible)} tickets · ✅ {won} won · ❌ {lost} lost · ⏳ {pending} pending')
+        if visible:
+            def ticket_label(t):
+                icon={'WIN':'✅','LOSS':'❌','PENDING':'⏳'}.get(t.get('status'),'⏳')
+                key=str(t.get('session_key') or '')
+                source='Queen' if key.startswith('V56-QUEEN-AUTO-') else 'Mine' if key.startswith('V56-MANUAL-') else 'Older'
+                return f"{icon} {t['leg_count']}-leg · {source} · {local(t.get('created_at'))}"
+            chosen_id=st.selectbox('Select a parlay to review',[t['id'] for t in visible],
+                format_func=lambda tid: ticket_label(next(t for t in visible if t['id']==tid)),key='royal_v561_history_selected')
+            ticket=next(t for t in visible if t['id']==chosen_id)
+            legs=royal_legs.get(ticket['id'],[])
+            status={'WIN':'✅ WIN','LOSS':'❌ LOSS','PENDING':'⏳ PENDING'}.get(ticket.get('status'),'⏳ PENDING')
+            with st.container(border=True):
+                st.markdown(f"**{status} · {ticket['leg_count']}-leg paper parlay**")
+                st.caption(f"{ticket.get('wins') or 0} won · {ticket.get('losses') or 0} lost · {max(0,len(legs)-(ticket.get('wins') or 0)-(ticket.get('losses') or 0))} pending")
+                if not legs:
+                    st.caption('This older backup preserved the ticket header but not the leg details.')
                 for leg in legs:
                     result=leg.get('leg_result','PENDING')
                     mark='✅' if result=='WIN' else '❌' if result=='LOSS' else '⏳'
-                    st.markdown(mark+' '+html.escape(str(leg.get('selection') or ''))+' · '+html.escape(str(leg.get('sport') or '')))
-        if len(recent)>8: st.caption(f'Showing 8 of {len(recent)} locked paper tickets; older tickets remain in backup exports.')
+                    st.markdown(f"{mark} **{html.escape(str(leg.get('selection') or 'Unknown'))}** · {html.escape(str(leg.get('sport') or ''))}")
+        else:
+            st.caption('No tickets for this period. Switch to All to see the complete saved history.')
     with st.expander('ℹ️ Parlay limitations',expanded=False):
         st.caption('Research suggestions are not verified value bets or purchasable Polymarket parlay contracts. No validated combined odds, executable payout, or trade is assumed.')
     with st.expander('📰 Research sources & feed health', expanded=False):
