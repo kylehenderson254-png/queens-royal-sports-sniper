@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.9 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -2140,7 +2140,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V6.7 · MATCHUP INTELLIGENCE · EXISTING PICKS PRESERVED · SHADOW REVIEW")
+st.caption("V6.9 · LIVE STATS & INJURY WATCH · ORIGINAL PICKS PRESERVED")
 st.markdown("""<style>
 .stApp {background:linear-gradient(160deg,#0e0920 0%,#100e1d 55%,#090b16 100%);}
 div[data-testid="stMetric"] {background:linear-gradient(130deg,#261447,#14142d);border:1px solid #65449b;border-radius:15px;padding:13px;}
@@ -2232,6 +2232,146 @@ def royal66_news_matches(team, articles):
     # A team nickname may match an unrelated phrase. Research-only links.
     return [x for x in articles if any(re.search(r'\b'+re.escape(t)+r'\b',x['title'].lower()) for t in tokens)][0:3]
 
+# ==============================================================
+# V6.9: timestamped, current ESPN injury and matchup snapshots.
+# These are NOT official NBA injury designations or retroactive
+# evidence for an already locked prediction. Existing decision and
+# persistence logic are unchanged. All missing data fail closed.
+# ============================================================== 
+ROYAL68_INJURY_SOURCE = 'https://site.api.espn.com/apis/site/v2/sports/{path}/injuries'
+ROYAL68_OFFICIAL_NBA = 'https://www.nba.com/players/injury-report'
+
+@st.cache_data(ttl=900, show_spinner=False)
+def royal68_injury_feed(sport):
+    path=ESPN.get(sport)
+    if not path or sport not in ROYAL66_FOCUS:
+        return {'items':[], 'error':'Unsupported league', 'fetched_at':None}
+    fetched=utc().isoformat()
+    try:
+        response=requests.get(ROYAL68_INJURY_SOURCE.format(path=path),timeout=10,
+                              headers={'Accept':'application/json','User-Agent':'QueensEdgeResearch/6.8'})
+        response.raise_for_status()
+        data=response.json()
+        if not isinstance(data,(dict,list)):
+            return {'items':[],'error':'Unexpected provider response','fetched_at':fetched}
+        # Provider structures vary by league. Extract only explicitly
+        # identified teams, athletes, statuses; never guess missing values.
+        roots=(data if isinstance(data,list) else
+               (data.get('injuries') or data.get('items') or data.get('teams') or []))
+        if not isinstance(roots,list): roots=[]
+        out=[]
+        for root in roots[:150]:
+            if not isinstance(root,dict): continue
+            outerteam=root.get('team') or {}
+            if isinstance(outerteam,str): outerteam={'displayName':outerteam}
+            if not isinstance(outerteam,dict): outerteam={}
+            base_team=str(outerteam.get('displayName') or outerteam.get('name') or
+                          root.get('teamDisplayName') or '').strip()
+            children=root.get('injuries') or root.get('items')
+            if isinstance(children,list): records=children[:60]
+            elif root.get('athlete') or root.get('player'): records=[root]
+            else: records=[]
+            for item in records:
+                if not isinstance(item,dict):continue
+                athlete=item.get('athlete') or item.get('player') or {}
+                if isinstance(athlete,str): athlete={'displayName':athlete}
+                if not isinstance(athlete,dict): athlete={}
+                tm=item.get('team') or {}
+                if not isinstance(tm,dict): tm={}
+                team=str(tm.get('displayName') or tm.get('name') or base_team).strip()
+                player=str(athlete.get('displayName') or athlete.get('fullName') or
+                           item.get('athleteName') or item.get('playerName') or '').strip()
+                raw=item.get('status') or item.get('injuryStatus') or item.get('designation')
+                if isinstance(raw,dict): raw=raw.get('description') or raw.get('name') or raw.get('type')
+                status=str(raw or '').strip()
+                detail=item.get('details') or item.get('detail') or item.get('type') or ''
+                if isinstance(detail,dict): detail=detail.get('detail') or detail.get('name') or ''
+                if team and player and status:
+                    out.append({'team':team,'player':player,'status':status,'detail':str(detail)[:90]})
+        # Avoid treating an empty response as confirmation no one is injured.
+        return {'items':out[:500], 'error':None if out else 'No usable player statuses returned',
+                'fetched_at':fetched}
+    except (requests.RequestException,ValueError,TypeError) as exc:
+        return {'items':[],'error':f'Provider unavailable ({type(exc).__name__})', 'fetched_at':fetched}
+
+
+def royal68_team_injuries(name, sport, feed):
+    choices={r['team'] for r in feed.get('items',[])}
+    matches=[]
+    for candidate in choices:
+        if clean(candidate)==clean(name) or _team_name_match(candidate,name)>=.95:
+            matches.append(candidate)
+    if len(matches)!=1:return []  # never merge ambiguous names
+    return [r for r in feed['items'] if r['team']==matches[0]][:8]
+
+
+def royal68_event_day(row):
+    # The same date in an explicit ISO-format market slug identifies a
+    # schedule lookup date, not an assertion about game start or settlement.
+    s=' '.join(str(row.get(k) or '') for k in ('slug','event_id','title'))
+    m=re.search(r'(?<!\d)(20\d{2})-(\d{2})-(\d{2})(?!\d)',s)
+    if not m:return None
+    try:
+        day=datetime(int(m.group(1)),int(m.group(2)),int(m.group(3)),tzinfo=timezone.utc)
+        if abs((utc()-day).days)>14:return None
+        return day.strftime('%Y%m%d')
+    except ValueError:return None
+
+
+def royal68_scoreboard_record(row):
+    sport=row.get('sport')
+    date=royal68_event_day(row)
+    if not date or sport not in ROYAL66_FOCUS:return None
+    picks=[row.get('selection') or '',row.get('opponent') or '']
+    possible=[]
+    for event in scores(sport,date):
+        comps=((event.get('competitions') or [{}])[0].get('competitors') or [])
+        if len(comps)!=2:continue
+        names=[_score_competitor_name(c) for c in comps]
+        if not all(any(clean(t)==clean(n) or _team_name_match(t,n)>=.95 for n in names) for t in picks):continue
+        possible.append(comps)
+    if len(possible)!=1:return None
+    found=[]
+    for comp in possible[0]:
+        records=comp.get('records') or []
+        overall=[]
+        for r in records:
+            if not isinstance(r,dict):continue
+            typ=str(r.get('type') or r.get('name') or '').lower()
+            val=str(r.get('summary') or r.get('displayValue') or '').strip()
+            if typ in ('total','overall','overall record') and re.fullmatch(r'\d+-\d+(?:-\d+)?',val):
+                overall.append(val)
+        if len(overall)!=1:return None
+        found.append((_score_competitor_name(comp),overall[0]))
+    return found if len(found)==2 else None
+
+
+def royal68_snapshot_html(row, feed, record):
+    sport=row.get('sport')
+    a,b=row.get('selection') or '',row.get('opponent') or ''
+    lines=[]
+    if record:
+        safe=' · '.join(f'{html.escape(n)} {html.escape(wl)}' for n,wl in record)
+        lines.append(f'📊 ESPN matchup records: {safe} (current feed, NOT at original pick lock)')
+    else:
+        lines.append('📊 ESPN matchup records: unavailable or ambiguous · original W/L unverified')
+    if feed.get('fetched_at'):
+        stamp=local(feed['fetched_at'])
+    else:stamp='not fetched'
+    lines.append(f'🏥 ESPN injury feed checked: {html.escape(stamp)} · provider-reported, not official final game-day designations')
+    for name in (a,b):
+        found=royal68_team_injuries(name,sport,feed)
+        if found:
+            for item in found[:4]:
+                txt=f"{name}: {item['player']} — {item['status']}"
+                if item.get('detail'):txt+=f" ({item['detail']})"
+                lines.append('• '+html.escape(txt))
+            if len(found)>4:lines.append('• '+html.escape(name)+f': +{len(found)-4} more reported')
+        else:
+            lines.append('• '+html.escape(name)+': no reliably matched status available (NOT proof of health)')
+    if feed.get('error'):lines.append('⚠️ '+html.escape(feed['error']))
+    return ''.join(f"<div class='q67-small'>{line}</div>" for line in lines)
+
 def royal67_form_before_lock(team, sport, games, locked_at):
     """Research context available before the original pick time, not future games.
     This is retrospective reconstruction from sampled ESPN games, not timestamped
@@ -2298,6 +2438,143 @@ def royal67_review_html(record, outcome):
             f"<div class='q67-small'>{form}</div>"
             f"<div class='q67-small'>⚠️ Retrospective research only · No verified injuries or priced edge · Original pick unchanged</div>")
 
+
+# ================================================================
+# V6.9: CURRENT TEAM RECORDS + VERIFIED SAME-SIDE BUY ASK
+# Informational read-only checks. No automatic decisions or database
+# mutations. Exact game, market and side required. Fail closed.
+# ================================================================
+
+@st.cache_data(ttl=600, show_spinner=False)
+def royal69_team_record_by_id(sport, team_id):
+    path=ESPN.get(sport)
+    if not path or not re.fullmatch(r'\d+',str(team_id or '')):
+        return None
+    try:
+        url=f'https://site.api.espn.com/apis/site/v2/sports/{path}/teams/{team_id}/record'
+        response=requests.get(url,timeout=9,headers={'Accept':'application/json'})
+        response.raise_for_status()
+        payload=response.json()
+        if not isinstance(payload,dict):return None
+        candidates=[]
+        for key in ('items','records','entries'):
+            arr=payload.get(key)
+            if isinstance(arr,list):candidates.extend(arr)
+        if isinstance(payload.get('record'),dict):
+            nested=payload['record']
+            for key in ('items','records'):
+                arr=nested.get(key)
+                if isinstance(arr,list):candidates.extend(arr)
+        overall=[]
+        for r in candidates:
+            if not isinstance(r,dict):continue
+            typ=str(r.get('type') or r.get('name') or '').lower()
+            value=str(r.get('summary') or r.get('displayValue') or '').strip()
+            if typ in ('total','overall','overall record') and re.fullmatch(r'\d+-\d+(?:-\d+)?',value):
+                overall.append(value)
+        return overall[0] if len(set(overall))==1 and overall else None
+    except (requests.RequestException,ValueError,TypeError,KeyError):
+        return None
+
+@st.cache_data(ttl=300, show_spinner=False)
+def royal69_verified_records(sport,event_day,team_a,team_b):
+    if not event_day or sport not in ROYAL66_FOCUS:return None
+    try: events=scores(sport,event_day)
+    except Exception:return None
+    matches=[]
+    for event in events:
+        comps=((event.get('competitions') or [{}])[0].get('competitors') or [])
+        if len(comps)!=2:continue
+        names=[_score_competitor_name(c) for c in comps]
+        if not all(names):continue
+        def match(team):
+            return [i for i,n in enumerate(names) if clean(team)==clean(n) or _team_name_match(team,n)>=.95]
+        ai,bi=match(team_a),match(team_b)
+        if len(ai)!=1 or len(bi)!=1 or ai[0]==bi[0]:continue
+        matches.append((comps,ai[0],bi[0]))
+    if len(matches)!=1:return None
+    comps,ai,bi=matches[0]
+    result=[]
+    for idx in (ai,bi):
+        comp=comps[idx]
+        values=[]
+        for item in comp.get('records') or []:
+            if not isinstance(item,dict):continue
+            typ=str(item.get('type') or item.get('name') or '').lower()
+            val=str(item.get('summary') or item.get('displayValue') or '').strip()
+            if typ in ('total','overall','overall record') and re.fullmatch(r'\d+-\d+(?:-\d+)?',val): values.append(val)
+        record=values[0] if len(set(values))==1 and values else None
+        if not record:
+            team=comp.get('team') or {}
+            record=royal69_team_record_by_id(sport,team.get('id'))
+        if not record:return None
+        result.append((_score_competitor_name(comp),record))
+    return result
+
+@st.cache_data(ttl=75, show_spinner=False)
+def royal69_pick_buy_quote(sport,event_id,chosen,opponent):
+    """Quote is displayed only for a verified YES team in the SAME event.
+    Do not map NO automatically; multiple matching contracts are ambiguous.
+    Bid/ask are a point-in-time top-of-book snapshot, not guaranteed fills.
+    """
+    if sport not in ROYAL66_FOCUS or not event_id or not chosen or not opponent:
+        return {'error':'Pick identity unavailable'}
+    try:
+        events,err=events_for(sport)
+    except Exception:
+        return {'error':'Market discovery unavailable'}
+    if err and not events:return {'error':'Market discovery unavailable'}
+    exact=[e for e in events if str(e.get('id') or '')==str(event_id)]
+    if len(exact)!=1:return {'error':'Exact Polymarket event not found'}
+    event=exact[0]
+    names=set()
+    candidates=[]
+    for market in (event.get('markets') or [])[:40]:
+        if not isinstance(market,dict) or market.get('closed') or market.get('archived'):continue
+        slug=str(market.get('slug') or '')
+        if not slug:continue
+        sides=[str((side.get('team') or {}).get('name') or '') for side in market.get('marketSides') or [] if isinstance(side,dict)]
+        # Avoid conflating spread/total/prop markets with win-the-game bets.
+        mtype=str(market.get('sportsMarketTypeV2') or market.get('sportsMarketType') or '').upper()
+        question=str(market.get('question') or market.get('contractQuestion') or '')
+        if any(word in mtype for word in ('SPREAD','TOTAL','PLAYER','PROP')):continue
+        if re.search(r'\b(over|under|points|spread|yards|rebounds)\b',question,re.I):continue
+        if not all(any(clean(n)==clean(t) for n in sides) for t in (chosen,opponent)):continue
+        team,reason,source=resolve_contract(market)
+        if not team or clean(team)!=clean(chosen):continue
+        q,err=bbo(slug)
+        if not q or not q.get('valid'):continue
+        if 'OPEN' not in str(q.get('state') or '').upper():continue
+        candidates.append((slug,q,reason,source))
+    if len(candidates)!=1:return {'error':'No unique verified YES contract + live OPEN quote'}
+    slug,q,reason,source=candidates[0]
+    return {'ask':q['ask'],'bid':q['bid'],'slug':slug,'fetched_at':utc().isoformat(),
+            'mapping':reason,'source':source,'error':None}
+
+def royal69_snapshot_html(row):
+    a,b=str(row.get('selection') or ''),str(row.get('opponent') or '')
+    sport=str(row.get('sport') or '')
+    day=royal68_event_day(row)
+    record=royal69_verified_records(sport,day,a,b) if day else None
+    if record:
+        rec=' · '.join(html.escape(n)+' '+html.escape(v) for n,v in record)
+        record_line=f'📊 Current ESPN season W–L: {rec} · refreshed feed, NOT original lock-time record'
+    else:
+        record_line='📊 Current season W–L: NOT VERIFIED · no estimate substituted'
+    quote=royal69_pick_buy_quote(sport,row.get('event_id'),a,b)
+    if quote.get('error'):
+        price_line='💵 BUY ASK: UNAVAILABLE · '+html.escape(quote['error'])+' · WATCH ONLY'
+    else:
+        age=utc()-parse_date(quote['fetched_at'])
+        if age.total_seconds()>120:
+            price_line='💵 BUY ASK: STALE · WATCH ONLY'
+        else:
+            price_line=(f'💵 Verified YES buy ask for {html.escape(a)}: <b>{quote["ask"]*100:.1f}¢</b>'
+                        f' · sell bid {quote["bid"]*100:.1f}¢ · spread {(quote["ask"]-quote["bid"])*100:.1f}¢'
+                        f' · checked {html.escape(local(quote["fetched_at"]))}'
+                        ' · indicative top-of-book, not a guaranteed fill')
+    return ''.join(f"<div class='q67-small'>{line}</div>" for line in (record_line,price_line))
+
 def royal66_command_center():
     st.markdown("""<style>
     .q66-header{padding:16px 18px;border-radius:16px;background:linear-gradient(112deg,#29104b,#161125 55%,#3c143f);border:1px solid #9652cc;box-shadow:0 6px 25px #5d22b122;margin:10px 0 10px}
@@ -2310,14 +2587,15 @@ def royal66_command_center():
     .q66-meta{color:#c6aedc;font-size:.77rem;margin-top:5px}
     .q67-agree{color:#2fe4b0;font-weight:850}.q67-warn{color:#ffbf67;font-weight:850}.q67-neutral{color:#b6a2d5;font-weight:850}
     .q67-small{font-size:.76rem;color:#c7b8d8;margin-top:5px}
+    .q68-separator{margin-top:12px;padding-top:9px;border-top:1px solid #654674;color:#e3aaff;font-size:.7rem;font-weight:850;letter-spacing:.07em}
     [data-testid='stMetric']{background:linear-gradient(125deg,#241337,#171027)!important;border:1px solid #7652a2!important;border-radius:14px!important}
     div[data-testid='stTabs'] button[aria-selected='true']{background:linear-gradient(90deg,#6f31b5,#9a367b)!important}
     div[data-testid='stButton'] button[kind='primary']{background:linear-gradient(100deg,#6f36cd,#c23c8f)!important;color:#fff!important;border:1px solid #b37bee!important}
     @media(max-width:650px){.q66-heading{font-size:1.1rem}.q66-header{padding:12px}.q66-team{font-size:.95rem}}
     </style>""", unsafe_allow_html=True)
     st.markdown("""<div class='q66-header'><div class='q66-kicker'>QUEEN'S EDGE | 254</div>
-    <div class='q66-heading'>👑 ROYAL SPORTS · MATCHUP INTELLIGENCE</div>
-    <div class='q66-sub'>NBA · NFL · NHL · NCAAF | Existing picks locked | Evidence reviewed separately</div></div>""",unsafe_allow_html=True)
+    <div class='q66-heading'>👑 ROYAL SPORTS · RECORDS & LIVE PRICE WATCH</div>
+    <div class='q66-sub'>NBA · NFL · NHL · NCAAF | Current season records, exact-side ask/bid, injuries & form | Original picks unchanged</div></div>""",unsafe_allow_html=True)
     with db() as conn:
         rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_predictions_v34
                     WHERE sport IN ('NBA','NFL','NHL','NCAAF')
@@ -2346,6 +2624,9 @@ def royal66_command_center():
     form_games={}
     for focus_league in {r.get('sport') for r in display_rows if r.get('sport') in ROYAL66_FOCUS}:
         form_games[focus_league]=royal66_recent_finals(focus_league, days=14)
+    # At most one injury request per visible league, cached for 15 minutes.
+    injury_snapshots={league:royal68_injury_feed(league) for league in
+                      {r.get('sport') for r in display_rows if r.get('sport') in ROYAL66_FOCUS}}
     for r in display_rows:
         name=html.escape(str(r.get('selection') or 'Unspecified'))
         opponent=html.escape(str(r.get('opponent') or 'Unknown'))
@@ -2354,7 +2635,12 @@ def royal66_command_center():
         model=html.escape(str(r.get('model') or 'Unspecified baseline'))
         timestamp=html.escape(local(r.get('created_at')))
         review=royal67_shadow_review(r,form_games.get(r.get('sport'),[]))
-        st.markdown(f"<div class='q66-pick'><div class='q66-status'>{league} · {status} · SAVED {timestamp}</div><div class='q66-team'>👑 {name} <span style='color:#917da8;font-weight:500'>vs {opponent}</span></div><div class='q66-meta'>Original decision: {model} · uncalibrated</div>{royal67_review_html(r,review)}</div>",unsafe_allow_html=True)
+        injury_feed=injury_snapshots.get(r.get('sport'),{'items':[],'error':'Feed unsupported','fetched_at':None})
+        matchup_records=royal68_scoreboard_record(r)
+        snapshot=royal68_snapshot_html(r,injury_feed,matchup_records) + royal69_snapshot_html(r)
+        st.markdown(f"<div class='q66-pick'><div class='q66-status'>{league} · {status} · SAVED {timestamp}</div><div class='q66-team'>👑 {name} <span style='color:#917da8;font-weight:500'>vs {opponent}</span></div><div class='q66-meta'>Original decision: {model} · uncalibrated</div>{royal67_review_html(r,review)}<div class='q68-separator'>CURRENT SOURCE CHECK · NOT RETROACTIVE</div>{snapshot}</div>",unsafe_allow_html=True)
+        if r.get('sport')=='NBA':
+            st.caption('Official NBA injury reports: https://www.nba.com/players/injury-report · Check the most recent game-day report before relying on any status.')
     if len(filtered)>4:st.caption(f'+{len(filtered)-4} older picks in Records')
     st.markdown('**🔬 Evidence Lab — shadow analysis (not changing picks)**')
     chosen_sport=st.selectbox('Research league',ROYAL66_FOCUS,index=0,key='royal66_research_league')
@@ -2385,7 +2671,7 @@ def royal66_command_center():
                 st.caption('Headlines are context only. No injury designation or player status inferred from them; verify with official team/league announcements.')
             else:st.caption('No fresh matching headlines available. This does NOT establish that the team is healthy.')
             st.markdown('**Market-price audit:** separate verified YES-side mapping and fresh bid/ask are required. Unmatched quotes are WATCH ONLY.')
-    st.caption('V6.7 SHADOW: The live V6.5 selection and paper logic are unchanged. Recent-game comparisons are descriptive and computed after the fact; news headlines do not determine injuries. Existing results remain provisional until official settlements are checked.')
+    st.caption('V6.9 SHADOW: The live V6.5 selection and paper logic are unchanged. Recent-game comparisons are descriptive and computed after the fact; news headlines do not determine injuries. Existing results remain provisional until official settlements are checked.')
 
 # V6.1: Do not replay bundled historical exports on every new deployment.
 # Old history remains available in the database until explicitly archived.
