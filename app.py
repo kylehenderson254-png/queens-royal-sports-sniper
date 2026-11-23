@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -2140,7 +2140,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V6.6 · ROYAL COMMAND CENTER · LEGACY PICKS CONTINUE · NEW RESEARCH SHADOW ONLY")
+st.caption("V6.7 · MATCHUP INTELLIGENCE · EXISTING PICKS PRESERVED · SHADOW REVIEW")
 st.markdown("""<style>
 .stApp {background:linear-gradient(160deg,#0e0920 0%,#100e1d 55%,#090b16 100%);}
 div[data-testid="stMetric"] {background:linear-gradient(130deg,#261447,#14142d);border:1px solid #65449b;border-radius:15px;padding:13px;}
@@ -2156,7 +2156,7 @@ st.caption("🔒 Existing V6.2+ records unchanged · ESPN research and news are 
 
 
 # ========================================================
-# V6.6 - ADDITIVE COMMAND CENTER / EVIDENCE SHADOW STUDY
+# V6.7 - ADDITIVE COMMAND CENTER / RETROSPECTIVE EVIDENCE STUDY
 # Does not modify legacy pick engine, predictions, or order tables.
 # ========================================================
 ROYAL66_FOCUS = ('NBA', 'NFL', 'NHL', 'NCAAF')
@@ -2232,6 +2232,72 @@ def royal66_news_matches(team, articles):
     # A team nickname may match an unrelated phrase. Research-only links.
     return [x for x in articles if any(re.search(r'\b'+re.escape(t)+r'\b',x['title'].lower()) for t in tokens)][0:3]
 
+def royal67_form_before_lock(team, sport, games, locked_at):
+    """Research context available before the original pick time, not future games.
+    This is retrospective reconstruction from sampled ESPN games, not timestamped
+    proof that these data had been captured at lock time.
+    """
+    cutoff=parse_date(locked_at)
+    if not cutoff or not team:
+        return None
+    found=[]
+    seen=set()
+    for game in games:
+        if game.get('state')!='post' or not game.get('completed') or not game.get('winner'):
+            continue
+        event_id=str(game.get('event_id') or '')
+        match=_unique_score_team(team,game.get('teams') or [],sport)
+        game_when=parse_date(game.get('date'))
+        if not match or not event_id or not game_when or game_when>=cutoff or event_id in seen:
+            continue
+        found.append((game_when,game,match))
+        seen.add(event_id)
+    found.sort(key=lambda entry:entry[0],reverse=True)
+    latest=found[:5]
+    if len(latest)<3:
+        return None
+    wins=sum(game.get('winner')==mapped for _,game,mapped in latest)
+    return dict(wins=wins, losses=len(latest)-wins, sample=len(latest),
+                win_rate=wins/len(latest),
+                newest=latest[0][0].astimezone(CT).strftime('%b %d'))
+
+
+def royal67_shadow_review(record, games):
+    """A *descriptive* form comparison, not a forecast or betting edge.
+    Minimum samples & 20pp gap limit false conviction on tiny samples.
+    No writing to DB; never alter locked prediction or grading.
+    """
+    pick=record.get('selection') or ''
+    other=record.get('opponent') or ''
+    sport=record.get('sport') or ''
+    when=record.get('created_at')
+    a=royal67_form_before_lock(pick,sport,games,when)
+    b=royal67_form_before_lock(other,sport,games,when)
+    if not a or not b:
+        return {'label':'INCONCLUSIVE','css':'q67-neutral',
+                'reason':'Too few confidently matched completed games before this pick was locked.',
+                'pick':a,'other':b}
+    delta=a['win_rate']-b['win_rate']
+    if delta >= .20:
+        label,css,reason=('AGREES','q67-agree','Recent observed results favor the locked side, but opponent strength and player availability are not verified.')
+    elif delta <= -.20:
+        label,css,reason=('DISAGREES','q67-warn','Recent observed results favor the opponent; review why the season-record model chose this side.')
+    else:
+        label,css,reason=('INCONCLUSIVE','q67-neutral','Recent form is too similar to support either side.')
+    return {'label':label,'css':css,'reason':reason,'pick':a,'other':b}
+
+
+def royal67_review_html(record, outcome):
+    a,b=outcome.get('pick'),outcome.get('other')
+    form=(f"Recent pre-lock games: {html.escape(str(record.get('selection') or '?'))} "
+          f"{a['wins']}W–{a['losses']}L ({a['sample']} sampled); "
+          f"{html.escape(str(record.get('opponent') or '?'))} "
+          f"{b['wins']}W–{b['losses']}L ({b['sample']} sampled).") if a and b else 'Recent pre-lock games: insufficient verified sample.'
+    return (f"<div class='q67-small'>🔬 Form check: <span class='{outcome['css']}'>{outcome['label']}</span> · "
+            f"{html.escape(outcome['reason'])}</div>"
+            f"<div class='q67-small'>{form}</div>"
+            f"<div class='q67-small'>⚠️ Retrospective research only · No verified injuries or priced edge · Original pick unchanged</div>")
+
 def royal66_command_center():
     st.markdown("""<style>
     .q66-header{padding:16px 18px;border-radius:16px;background:linear-gradient(112deg,#29104b,#161125 55%,#3c143f);border:1px solid #9652cc;box-shadow:0 6px 25px #5d22b122;margin:10px 0 10px}
@@ -2242,14 +2308,16 @@ def royal66_command_center():
     .q66-status{color:#f4c56b;font-size:.70rem;font-weight:800}
     .q66-team{color:#fff;font-weight:850;font-size:1.08rem}
     .q66-meta{color:#c6aedc;font-size:.77rem;margin-top:5px}
+    .q67-agree{color:#2fe4b0;font-weight:850}.q67-warn{color:#ffbf67;font-weight:850}.q67-neutral{color:#b6a2d5;font-weight:850}
+    .q67-small{font-size:.76rem;color:#c7b8d8;margin-top:5px}
     [data-testid='stMetric']{background:linear-gradient(125deg,#241337,#171027)!important;border:1px solid #7652a2!important;border-radius:14px!important}
     div[data-testid='stTabs'] button[aria-selected='true']{background:linear-gradient(90deg,#6f31b5,#9a367b)!important}
     div[data-testid='stButton'] button[kind='primary']{background:linear-gradient(100deg,#6f36cd,#c23c8f)!important;color:#fff!important;border:1px solid #b37bee!important}
     @media(max-width:650px){.q66-heading{font-size:1.1rem}.q66-header{padding:12px}.q66-team{font-size:.95rem}}
     </style>""", unsafe_allow_html=True)
     st.markdown("""<div class='q66-header'><div class='q66-kicker'>QUEEN'S EDGE | 254</div>
-    <div class='q66-heading'>👑 ROYAL SPORTS COMMAND CENTER</div>
-    <div class='q66-sub'>NBA · NFL · NHL · NCAAF  |  Live picks preserved  |  New evidence tested separately</div></div>""",unsafe_allow_html=True)
+    <div class='q66-heading'>👑 ROYAL SPORTS · MATCHUP INTELLIGENCE</div>
+    <div class='q66-sub'>NBA · NFL · NHL · NCAAF | Existing picks locked | Evidence reviewed separately</div></div>""",unsafe_allow_html=True)
     with db() as conn:
         rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_predictions_v34
                     WHERE sport IN ('NBA','NFL','NHL','NCAAF')
@@ -2270,16 +2338,23 @@ def royal66_command_center():
     st.caption('Results are provisional ESPN-scoreboard grades until exchange settlement is independently confirmed. Counts reflect the latest 180 saved rows queried and may not include full history.')
     sport=st.segmented_control('League',['All','NBA','NFL','NHL','NCAAF'],default='All',key='royal66_league')
     filtered=sorted((r for r in saved if sport=='All' or r['sport']==sport),key=lambda r:r.get('created_at') or '',reverse=True)
-    st.markdown('**🎯 Queen\'s saved picks**')
+    st.markdown('**🎯 Queen\'s saved picks + research check**')
+    st.caption('Original locked picks remain unchanged. The form check reconstructs games played before each pick, but it is NOT a saved pregame prediction or an independently validated edge.')
     if not filtered:st.info('No locked picks for this league. Existing V6.5 rules still apply; Queen may SKIP.')
-    for r in filtered[:4]:
+    # Fetch up to one cached league research batch per displayed league.
+    display_rows=filtered[:4]
+    form_games={}
+    for focus_league in {r.get('sport') for r in display_rows if r.get('sport') in ROYAL66_FOCUS}:
+        form_games[focus_league]=royal66_recent_finals(focus_league, days=14)
+    for r in display_rows:
         name=html.escape(str(r.get('selection') or 'Unspecified'))
         opponent=html.escape(str(r.get('opponent') or 'Unknown'))
         status=html.escape(str(r.get('result') or 'PENDING'))
         league=html.escape(str(r.get('sport') or '?'))
         model=html.escape(str(r.get('model') or 'Unspecified baseline'))
         timestamp=html.escape(local(r.get('created_at')))
-        st.markdown(f"<div class='q66-pick'><div class='q66-status'>{league} · {status} · SAVED {timestamp}</div><div class='q66-team'>👑 {name} <span style='color:#917da8;font-weight:500'>vs {opponent}</span></div><div class='q66-meta'>Why it was picked: {model} · not yet a verified statistical edge</div></div>",unsafe_allow_html=True)
+        review=royal67_shadow_review(r,form_games.get(r.get('sport'),[]))
+        st.markdown(f"<div class='q66-pick'><div class='q66-status'>{league} · {status} · SAVED {timestamp}</div><div class='q66-team'>👑 {name} <span style='color:#917da8;font-weight:500'>vs {opponent}</span></div><div class='q66-meta'>Original decision: {model} · uncalibrated</div>{royal67_review_html(r,review)}</div>",unsafe_allow_html=True)
     if len(filtered)>4:st.caption(f'+{len(filtered)-4} older picks in Records')
     st.markdown('**🔬 Evidence Lab — shadow analysis (not changing picks)**')
     chosen_sport=st.selectbox('Research league',ROYAL66_FOCUS,index=0,key='royal66_research_league')
@@ -2292,14 +2367,14 @@ def royal66_command_center():
             recent=royal66_recent_finals(chosen_sport)
             team=r.get('selection') or ''
             opponent=r.get('opponent') or ''
-            a=royal66_form_summary(team,recent)
-            b=royal66_form_summary(opponent,recent)
+            a=royal67_form_before_lock(team,chosen_sport,recent,r.get('created_at'))
+            b=royal67_form_before_lock(opponent,chosen_sport,recent,r.get('created_at'))
             st.write(f"**Latest saved pick:** {team} vs {opponent}")
             if a and b:
-                st.write(f'**ESPN recent completed games:** {team} {a["wins"]}W–{a["losses"]}L in last {a["sample"]} observed; {opponent} {b["wins"]}W–{b["losses"]}L in last {b["sample"]} observed.')
-                st.caption('Small sampled window; these are observations, not opponent-adjusted probabilities. Missing ESPN fixtures may make samples incomplete.')
+                st.write(f'**ESPN observed games before pick lock:** {team} {a["wins"]}W–{a["losses"]}L in last {a["sample"]} observed; {opponent} {b["wins"]}W–{b["losses"]}L in last {b["sample"]} observed.')
+                st.caption('Retrospective pre-lock sample only; not opponent-adjusted, not evidence it was captured at pick time. Missing fixtures may make samples incomplete.')
             else:
-                st.warning('Not enough confidently matched completed games for both teams. Recent form remains unverified; no made-up estimate.')
+                st.warning('Not enough confidently matched completed games for both teams. No reliable before-lock form comparison; no made-up estimate.')
             articles=royal66_news_matches(team,royal66_league_news(chosen_sport))
             st.markdown('**Recent ESPN headlines mentioning Queen\'s selected team**')
             if articles:
@@ -2310,7 +2385,7 @@ def royal66_command_center():
                 st.caption('Headlines are context only. No injury designation or player status inferred from them; verify with official team/league announcements.')
             else:st.caption('No fresh matching headlines available. This does NOT establish that the team is healthy.')
             st.markdown('**Market-price audit:** separate verified YES-side mapping and fresh bid/ask are required. Unmatched quotes are WATCH ONLY.')
-    st.caption('V6.6 comparison mode: current V6.5 picks and parlay tools are kept; upgraded evidence is not yet used to make or alter locked predictions.')
+    st.caption('V6.7 SHADOW: The live V6.5 selection and paper logic are unchanged. Recent-game comparisons are descriptive and computed after the fact; news headlines do not determine injuries. Existing results remain provisional until official settlements are checked.')
 
 # V6.1: Do not replay bundled historical exports on every new deployment.
 # Old history remains available in the database until explicitly archived.
