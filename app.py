@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -2140,7 +2140,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V6.4.1 · ROYAL FOCUS FIX · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
+st.caption("V6.6 · ROYAL COMMAND CENTER · LEGACY PICKS CONTINUE · NEW RESEARCH SHADOW ONLY")
 st.markdown("""<style>
 .stApp {background:linear-gradient(160deg,#0e0920 0%,#100e1d 55%,#090b16 100%);}
 div[data-testid="stMetric"] {background:linear-gradient(130deg,#261447,#14142d);border:1px solid #65449b;border-radius:15px;padding:13px;}
@@ -2152,7 +2152,165 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-radius:16px;}
 div[data-testid="stPills"] button {border-radius:999px !important;border:1px solid #8756c7 !important;background:#23133e !important;color:#f0e2ff !important;font-weight:750 !important;padding:0.65rem 1.1rem !important;}
 div[data-testid="stPills"] button[aria-pressed="true"] {background:linear-gradient(115deg,#8a37e8,#bc347f) !important;border-color:#e9a5ff !important;color:white !important;box-shadow:0 0 16px #853ed080 !important;}
 </style>""",unsafe_allow_html=True)
-st.info("👑 V6.4.1 ROYAL FOCUS FIX · Fresh records only. Old V6.1 picks are not imported. Your downloaded CSV backups remain unchanged.")
+st.caption("🔒 Existing V6.2+ records unchanged · ESPN research and news are observational; not validated betting signals.")
+
+
+# ========================================================
+# V6.6 - ADDITIVE COMMAND CENTER / EVIDENCE SHADOW STUDY
+# Does not modify legacy pick engine, predictions, or order tables.
+# ========================================================
+ROYAL66_FOCUS = ('NBA', 'NFL', 'NHL', 'NCAAF')
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def royal66_recent_finals(sport, days=8):
+    """ESPN provider-reported completed games, cached; avoid repeated requests.
+    This is an observation, NOT an independent probability or bookmaker edge.
+    """
+    now_local=utc().astimezone(CT).date()
+    result={}
+    for offset in range(1, days+1):
+        date=(now_local-timedelta(days=offset)).strftime('%Y%m%d')
+        for ev in scores(sport,date):
+            for item in _score_records(ev,sport):
+                if item and item.get('state')=='post' and item.get('completed') and item.get('winner'):
+                    eid=str(item.get('event_id') or '')
+                    if eid:
+                        result[eid]=item
+    return list(result.values())
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def royal66_league_news(sport):
+    """Unverified editorial news context from ESPN's unofficial Site API.
+    Never treat a headline as verified injury availability or score it.
+    """
+    path=ESPN.get(sport)
+    if not path:return []
+    try:
+        response=requests.get(f'https://site.api.espn.com/apis/site/v2/sports/{path}/news',params={'limit':35},timeout=9)
+        response.raise_for_status()
+        articles=response.json().get('articles',[])
+        if not isinstance(articles,list):return []
+        out=[]
+        for article in articles[:35]:
+            title=str(article.get('headline') or '').strip()
+            published=parse_date(article.get('published') or article.get('lastModified'))
+            if not title or not published or (utc()-published).total_seconds()>3*86400:continue
+            links=article.get('links') or {}
+            direct=links.get('web') or {}
+            url=direct.get('href') if isinstance(direct,dict) else None
+            if not isinstance(url,str) or not url.startswith('https://'):url=None
+            out.append({'title':title,'published':published.isoformat(),'url':url})
+        return out
+    except (requests.RequestException,ValueError,TypeError,KeyError):return []
+
+def royal66_form_summary(pick, games):
+    """Unambiguous matching only; no guessed results or made-up opponent form."""
+    team=str(pick or '').strip()
+    if not team:return None
+    matches=[]
+    for game in games:
+        mapped=_unique_score_team(team,game.get('teams') or [],'NBA')
+        if not mapped or mapped!=team and _team_name_match(mapped,team)<.90:continue
+        when=parse_date(game.get('date'))
+        if not when:continue
+        matches.append((when,game,mapped))
+    matches.sort(key=lambda x:x[0],reverse=True)
+    unique=[];used=set()
+    for when,game,mapped in matches:
+        if game.get('event_id') in used:continue
+        unique.append((when,game,mapped));used.add(game.get('event_id'))
+    if len(unique)<3:return None
+    selected=unique[:5]
+    won=sum(g.get('winner')==mapped for _,g,mapped in selected)
+    return {'wins':won,'losses':len(selected)-won,'sample':len(selected),
+            'last':selected[0][0].astimezone(CT).strftime('%b %d')}
+
+def royal66_news_matches(team, articles):
+    """Headline keyword match only; not a fact-checked injury/status classifier."""
+    tokens=[v for v in _name_tokens(team) if len(v)>3]
+    if not tokens:return []
+    # A team nickname may match an unrelated phrase. Research-only links.
+    return [x for x in articles if any(re.search(r'\b'+re.escape(t)+r'\b',x['title'].lower()) for t in tokens)][0:3]
+
+def royal66_command_center():
+    st.markdown("""<style>
+    .q66-header{padding:16px 18px;border-radius:16px;background:linear-gradient(112deg,#29104b,#161125 55%,#3c143f);border:1px solid #9652cc;box-shadow:0 6px 25px #5d22b122;margin:10px 0 10px}
+    .q66-heading{font-size:1.28rem;font-weight:900;color:#f7eaff;letter-spacing:.02em}
+    .q66-kicker{color:#f9bdff;font-weight:800;font-size:.73rem;letter-spacing:.12em}
+    .q66-sub{color:#bbadd0;font-size:.80rem;margin-top:4px}
+    .q66-pick{padding:13px 15px;border-radius:14px;border:1px solid #6d4b8f;background:linear-gradient(125deg,#231334,#151123);margin:7px 0}
+    .q66-status{color:#f4c56b;font-size:.70rem;font-weight:800}
+    .q66-team{color:#fff;font-weight:850;font-size:1.08rem}
+    .q66-meta{color:#c6aedc;font-size:.77rem;margin-top:5px}
+    [data-testid='stMetric']{background:linear-gradient(125deg,#241337,#171027)!important;border:1px solid #7652a2!important;border-radius:14px!important}
+    div[data-testid='stTabs'] button[aria-selected='true']{background:linear-gradient(90deg,#6f31b5,#9a367b)!important}
+    div[data-testid='stButton'] button[kind='primary']{background:linear-gradient(100deg,#6f36cd,#c23c8f)!important;color:#fff!important;border:1px solid #b37bee!important}
+    @media(max-width:650px){.q66-heading{font-size:1.1rem}.q66-header{padding:12px}.q66-team{font-size:.95rem}}
+    </style>""", unsafe_allow_html=True)
+    st.markdown("""<div class='q66-header'><div class='q66-kicker'>QUEEN'S EDGE | 254</div>
+    <div class='q66-heading'>👑 ROYAL SPORTS COMMAND CENTER</div>
+    <div class='q66-sub'>NBA · NFL · NHL · NCAAF  |  Live picks preserved  |  New evidence tested separately</div></div>""",unsafe_allow_html=True)
+    with db() as conn:
+        rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_predictions_v34
+                    WHERE sport IN ('NBA','NFL','NHL','NCAAF')
+                    ORDER BY created_at DESC LIMIT 180""").fetchall()]
+    # Track unique events; keep first known saved prediction per match where possible.
+    dedup={}
+    for r in rows:
+        key=(r.get('sport'),r.get('event_id'))
+        if key not in dedup or str(r.get('created_at') or '')<str(dedup[key].get('created_at') or ''):
+            dedup[key]=r
+    saved=list(dedup.values())
+    wins=sum(r.get('result')=='WIN' for r in saved)
+    losses=sum(r.get('result')=='LOSS' for r in saved)
+    pending=sum(r.get('result') not in ('WIN','LOSS') for r in saved)
+    cols=st.columns(4)
+    for col,label,value in zip(cols,('Saved picks','Scoreboard W','Scoreboard L','Pending'),(len(saved),wins,losses,pending)):
+        col.metric(label,value)
+    st.caption('Results are provisional ESPN-scoreboard grades until exchange settlement is independently confirmed. Counts reflect the latest 180 saved rows queried and may not include full history.')
+    sport=st.segmented_control('League',['All','NBA','NFL','NHL','NCAAF'],default='All',key='royal66_league')
+    filtered=sorted((r for r in saved if sport=='All' or r['sport']==sport),key=lambda r:r.get('created_at') or '',reverse=True)
+    st.markdown('**🎯 Queen\'s saved picks**')
+    if not filtered:st.info('No locked picks for this league. Existing V6.5 rules still apply; Queen may SKIP.')
+    for r in filtered[:4]:
+        name=html.escape(str(r.get('selection') or 'Unspecified'))
+        opponent=html.escape(str(r.get('opponent') or 'Unknown'))
+        status=html.escape(str(r.get('result') or 'PENDING'))
+        league=html.escape(str(r.get('sport') or '?'))
+        model=html.escape(str(r.get('model') or 'Unspecified baseline'))
+        timestamp=html.escape(local(r.get('created_at')))
+        st.markdown(f"<div class='q66-pick'><div class='q66-status'>{league} · {status} · SAVED {timestamp}</div><div class='q66-team'>👑 {name} <span style='color:#917da8;font-weight:500'>vs {opponent}</span></div><div class='q66-meta'>Why it was picked: {model} · not yet a verified statistical edge</div></div>",unsafe_allow_html=True)
+    if len(filtered)>4:st.caption(f'+{len(filtered)-4} older picks in Records')
+    st.markdown('**🔬 Evidence Lab — shadow analysis (not changing picks)**')
+    chosen_sport=st.selectbox('Research league',ROYAL66_FOCUS,index=0,key='royal66_research_league')
+    league_rows=[r for r in filtered if r.get('sport')==chosen_sport] if sport!='All' else [r for r in saved if r.get('sport')==chosen_sport]
+    with st.expander('📈 Recent games and 📰 sourced news · research only',expanded=False):
+        if not league_rows:
+            st.info('No saved pick to research in this league yet. Refresh the live scanner below.')
+        else:
+            r=league_rows[0]
+            recent=royal66_recent_finals(chosen_sport)
+            team=r.get('selection') or ''
+            opponent=r.get('opponent') or ''
+            a=royal66_form_summary(team,recent)
+            b=royal66_form_summary(opponent,recent)
+            st.write(f"**Latest saved pick:** {team} vs {opponent}")
+            if a and b:
+                st.write(f'**ESPN recent completed games:** {team} {a["wins"]}W–{a["losses"]}L in last {a["sample"]} observed; {opponent} {b["wins"]}W–{b["losses"]}L in last {b["sample"]} observed.')
+                st.caption('Small sampled window; these are observations, not opponent-adjusted probabilities. Missing ESPN fixtures may make samples incomplete.')
+            else:
+                st.warning('Not enough confidently matched completed games for both teams. Recent form remains unverified; no made-up estimate.')
+            articles=royal66_news_matches(team,royal66_league_news(chosen_sport))
+            st.markdown('**Recent ESPN headlines mentioning Queen\'s selected team**')
+            if articles:
+                for item in articles:
+                    label=f"{item['title']} · {local(item['published'])}"
+                    if item['url']:st.markdown(f"- [{label}]({item['url']})")
+                    else:st.write('• '+label)
+                st.caption('Headlines are context only. No injury designation or player status inferred from them; verify with official team/league announcements.')
+            else:st.caption('No fresh matching headlines available. This does NOT establish that the team is healthy.')
+            st.markdown('**Market-price audit:** separate verified YES-side mapping and fresh bid/ask are required. Unmatched quotes are WATCH ONLY.')
+    st.caption('V6.6 comparison mode: current V6.5 picks and parlay tools are kept; upgraded evidence is not yet used to make or alter locked predictions.')
 
 # V6.1: Do not replay bundled historical exports on every new deployment.
 # Old history remains available in the database until explicitly archived.
@@ -2163,78 +2321,80 @@ with db() as _v61_db:
     _v61_db.commit()
 # V5.6.2: one All Sports page; Tennis is a sport filter, not another top tab.
 tab_home, tab_results, tab_history = st.tabs(
-    ["👑 HOME", "🏁 RESULTS", "📚 HISTORY"])
+    ["👑 GAMES & PICKS", "📊 RESULTS", "🗃️ RECORDS"])
 tab_current = tab_home
 tab_live = tab_home
 with tab_current:
-    st.subheader("👑 ROYAL COMMAND CENTER · NEW SEASON")
-    st.caption("Fresh V6.2 paper picks only · Scoreboard starts at zero · No actual bets.")
-    with db() as conn:
-        best_rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_primary_predictions_v54
-            WHERE sport IN ('NBA','NFL','NHL','NCAAF') AND result='PENDING'
-            ORDER BY created_at DESC, id DESC""")]
-        graded=conn.execute("""SELECT COALESCE(SUM(result='WIN'),0),COALESCE(SUM(result='LOSS'),0)
-            FROM royal_primary_predictions_v54 WHERE sport IN ('NBA','NFL','NHL','NCAAF')
-            AND created_at >= ?""",(ROYAL_FOCUS_SINCE_UTC,)).fetchone()
-    # Do not present an old ungraded selection as a fresh recommendation.
-    now=utc()
-    recent=[]
-    seen=set()
-    for r in best_rows:
-        dt=parse_date(r.get('created_at'))
-        if not dt or (now-dt).total_seconds()>3*86400 or dt>now: continue
-        k=(r.get('sport'),r.get('event_id'))
-        if k in seen: continue
-        seen.add(k)
-        recent.append(r)
-        if len(recent)>=12: break
-    cols=st.columns(3)
-    cols[0].metric('Verified focus wins',int(graded[0] or 0))
-    cols[1].metric('Verified focus losses',int(graded[1] or 0))
-    cols[2].metric('Recent unresolved locks',len(recent))
-    st.caption('Only picks created in the fresh V6.2 database are shown. A pending pick is not proof the game is still active.')
-    if recent:
-        st.markdown('**👑 Latest recorded paper lock · NOT a verified best-value ranking**')
-        r=recent[0]
-        st.info(f"{r.get('sport','')} · {r.get('selection','Unknown')} · {r.get('title','')} · {r.get('confidence') or 'Confidence unverified'}")
-    else:
-        st.info('No recent qualifying locked selection. Queen says WAIT rather than invent a pick.')
-    sport_cols=st.columns(4)
-    for col,sport in zip(sport_cols,('NBA','NFL','NHL','NCAAF')):
-        picks=[r for r in recent if r.get('sport')==sport]
-        with col:
-            st.markdown(f'**{SPORT_ICON.get(sport,"🏆")} {sport}**')
-            if picks:
-                r=picks[0]
-                # Reuse the same ESPN team-logo catalog used by live matchup cards.
-                logo_map=st.session_state.get('royal_logo_catalog',{}).get(sport,{})
-                team_name=str(r.get('selection') or 'Unknown')
-                logo_url=logo_map.get(clean(team_name))
-                if logo_url and safe_logo(logo_url):
-                    st.image(logo_url,width=68)
-                st.write(team_name)
-                st.caption((r.get('confidence') or 'Unrated')+' · V6.2 PAPER PICK')
-            else: st.caption('No recent qualifying pick')
-    with st.expander('📚 All saved picks, tennis research, and detailed game views',expanded=False):
-        selected_sport=st.segmented_control('Sport',["All","NBA","NFL","NHL","NCAAF","Tennis"],default='All',key='royal_v562_sport_filter')
-        if selected_sport=='All':
-            royal_current_picks_panel('FOCUS')
-            st.divider()
-            royal_tennis_live_panel()
-            royal_tennis_parlay_status()
-            royal_tennis_archive_summary()
-        elif selected_sport=='Tennis':
-            royal_current_picks_panel('TENNIS')
-            royal_tennis_live_panel()
-            royal_tennis_parlay_status()
-            royal_tennis_archive_summary()
+    royal66_command_center()
+    with st.expander("📚 Legacy V6.5 detailed picks & all-sports research",expanded=False):
+        st.subheader("👑 ROYAL COMMAND CENTER · EXISTING SAVED PICKS")
+        st.caption("Fresh V6.2 paper picks only · Scoreboard starts at zero · No actual bets.")
+        with db() as conn:
+            best_rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_primary_predictions_v54
+                WHERE sport IN ('NBA','NFL','NHL','NCAAF') AND result='PENDING'
+                ORDER BY created_at DESC, id DESC""")]
+            graded=conn.execute("""SELECT COALESCE(SUM(result='WIN'),0),COALESCE(SUM(result='LOSS'),0)
+                FROM royal_primary_predictions_v54 WHERE sport IN ('NBA','NFL','NHL','NCAAF')
+                AND created_at >= ?""",(ROYAL_FOCUS_SINCE_UTC,)).fetchone()
+        # Do not present an old ungraded selection as a fresh recommendation.
+        now=utc()
+        recent=[]
+        seen=set()
+        for r in best_rows:
+            dt=parse_date(r.get('created_at'))
+            if not dt or (now-dt).total_seconds()>3*86400 or dt>now: continue
+            k=(r.get('sport'),r.get('event_id'))
+            if k in seen: continue
+            seen.add(k)
+            recent.append(r)
+            if len(recent)>=12: break
+        cols=st.columns(3)
+        cols[0].metric('Scoreboard-graded focus wins',int(graded[0] or 0))
+        cols[1].metric('Scoreboard-graded focus losses',int(graded[1] or 0))
+        cols[2].metric('Recent unresolved locks',len(recent))
+        st.caption('Only picks created in the fresh V6.2 database are shown. A pending pick is not proof the game is still active.')
+        if recent:
+            st.markdown('**👑 Latest recorded paper lock · NOT a verified best-value ranking**')
+            r=recent[0]
+            st.info(f"{r.get('sport','')} · {r.get('selection','Unknown')} · {r.get('title','')} · {r.get('confidence') or 'Confidence unverified'}")
         else:
-            # NCAAF schedule is distinct from saved picks; display the slate FIRST.
-            # Filtering to NCAAF never creates a new locked selection.
-            if selected_sport=='NCAAF':
-                royal_ncaaf_games_panel()
+            st.info('No recent qualifying locked selection. Queen says WAIT rather than invent a pick.')
+        sport_cols=st.columns(4)
+        for col,sport in zip(sport_cols,('NBA','NFL','NHL','NCAAF')):
+            picks=[r for r in recent if r.get('sport')==sport]
+            with col:
+                st.markdown(f'**{SPORT_ICON.get(sport,"🏆")} {sport}**')
+                if picks:
+                    r=picks[0]
+                    # Reuse the same ESPN team-logo catalog used by live matchup cards.
+                    logo_map=st.session_state.get('royal_logo_catalog',{}).get(sport,{})
+                    team_name=str(r.get('selection') or 'Unknown')
+                    logo_url=logo_map.get(clean(team_name))
+                    if logo_url and safe_logo(logo_url):
+                        st.image(logo_url,width=68)
+                    st.write(team_name)
+                    st.caption((r.get('confidence') or 'Unrated')+' · V6.2 PAPER PICK')
+                else: st.caption('No recent qualifying pick')
+        with st.expander('📚 All saved picks, tennis research, and detailed game views',expanded=False):
+            selected_sport=st.segmented_control('Sport',["All","NBA","NFL","NHL","NCAAF","Tennis"],default='All',key='royal_v562_sport_filter')
+            if selected_sport=='All':
+                royal_current_picks_panel('FOCUS')
                 st.divider()
-            royal_current_picks_panel(selected_sport)
+                royal_tennis_live_panel()
+                royal_tennis_parlay_status()
+                royal_tennis_archive_summary()
+            elif selected_sport=='Tennis':
+                royal_current_picks_panel('TENNIS')
+                royal_tennis_live_panel()
+                royal_tennis_parlay_status()
+                royal_tennis_archive_summary()
+            else:
+                # NCAAF schedule is distinct from saved picks; display the slate FIRST.
+                # Filtering to NCAAF never creates a new locked selection.
+                if selected_sport=='NCAAF':
+                    royal_ncaaf_games_panel()
+                    st.divider()
+                royal_current_picks_panel(selected_sport)
 # ========================================================
 # V5.7.2 COMPACT DAILY SUMMARY · VERIFIED RESULTS ONLY
 # ========================================================
@@ -2982,4 +3142,5 @@ def royal_auto_scan():
             st.caption("No real orders. Paper results do not establish profitability. Local SQLite on Streamlit Community Cloud may be lost on restart/redeploy; export backups or use persistent storage.")
 
 with tab_home:
-    royal_auto_scan()
+    with st.expander("🏟️ Live market scanner · picks, scores, parlays and underdogs",expanded=False):
+        royal_auto_scan()
