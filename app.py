@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V6.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.0 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -2140,7 +2140,7 @@ if banner:
 else:
     st.markdown("# 👑 ROYAL SPORTS SNIPER | 254")
     st.caption("Original banner not found. Add its image to the GitHub repository to restore it.")
-st.caption("V6.4.1 · ROYAL FOCUS FIX · NBA • NFL • NHL • NCAAF · PAPER RESEARCH")
+st.caption("V7.0 · ROYAL PREDICTIONS · NBA • NFL • NHL • NCAAF · PREDICTION RESEARCH")
 st.markdown("""<style>
 .stApp {background:linear-gradient(160deg,#0e0920 0%,#100e1d 55%,#090b16 100%);}
 div[data-testid="stMetric"] {background:linear-gradient(130deg,#261447,#14142d);border:1px solid #65449b;border-radius:15px;padding:13px;}
@@ -2152,834 +2152,193 @@ div[data-testid="stVerticalBlockBorderWrapper"] {border-radius:16px;}
 div[data-testid="stPills"] button {border-radius:999px !important;border:1px solid #8756c7 !important;background:#23133e !important;color:#f0e2ff !important;font-weight:750 !important;padding:0.65rem 1.1rem !important;}
 div[data-testid="stPills"] button[aria-pressed="true"] {background:linear-gradient(115deg,#8a37e8,#bc347f) !important;border-color:#e9a5ff !important;color:white !important;box-shadow:0 0 16px #853ed080 !important;}
 </style>""",unsafe_allow_html=True)
-st.info("👑 V6.4.1 ROYAL FOCUS FIX · Fresh records only. Old V6.1 picks are not imported. Your downloaded CSV backups remain unchanged.")
 
-# V6.1: Do not replay bundled historical exports on every new deployment.
-# Old history remains available in the database until explicitly archived.
-royal_enable_one_game_lock_v54()
-with db() as _v61_db:
-    _v61_db.execute("CREATE TABLE IF NOT EXISTS royal_v61_archived_predictions (id TEXT PRIMARY KEY, original_json TEXT NOT NULL, archived_at TEXT NOT NULL)")
-    _v61_db.execute("CREATE TABLE IF NOT EXISTS royal_v61_archived_events (sport TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY(sport,event_id))")
-    _v61_db.commit()
-# V5.6.2: one All Sports page; Tennis is a sport filter, not another top tab.
-tab_home, tab_results, tab_history = st.tabs(
-    ["👑 HOME", "🏁 RESULTS", "📚 HISTORY"])
-tab_current = tab_home
-tab_live = tab_home
-with tab_current:
-    st.subheader("👑 ROYAL COMMAND CENTER · NEW SEASON")
-    st.caption("Fresh V6.2 paper picks only · Scoreboard starts at zero · No actual bets.")
-    with db() as conn:
-        best_rows=[dict(r) for r in conn.execute("""SELECT * FROM royal_primary_predictions_v54
-            WHERE sport IN ('NBA','NFL','NHL','NCAAF') AND result='PENDING'
-            ORDER BY created_at DESC, id DESC""")]
-        graded=conn.execute("""SELECT COALESCE(SUM(result='WIN'),0),COALESCE(SUM(result='LOSS'),0)
-            FROM royal_primary_predictions_v54 WHERE sport IN ('NBA','NFL','NHL','NCAAF')
-            AND created_at >= ?""",(ROYAL_FOCUS_SINCE_UTC,)).fetchone()
-    # Do not present an old ungraded selection as a fresh recommendation.
-    now=utc()
-    recent=[]
-    seen=set()
-    for r in best_rows:
-        dt=parse_date(r.get('created_at'))
-        if not dt or (now-dt).total_seconds()>3*86400 or dt>now: continue
-        k=(r.get('sport'),r.get('event_id'))
-        if k in seen: continue
-        seen.add(k)
-        recent.append(r)
-        if len(recent)>=12: break
-    cols=st.columns(3)
-    cols[0].metric('Verified focus wins',int(graded[0] or 0))
-    cols[1].metric('Verified focus losses',int(graded[1] or 0))
-    cols[2].metric('Recent unresolved locks',len(recent))
-    st.caption('Only picks created in the fresh V6.2 database are shown. A pending pick is not proof the game is still active.')
-    if recent:
-        st.markdown('**👑 Latest recorded paper lock · NOT a verified best-value ranking**')
-        r=recent[0]
-        st.info(f"{r.get('sport','')} · {r.get('selection','Unknown')} · {r.get('title','')} · {r.get('confidence') or 'Confidence unverified'}")
-    else:
-        st.info('No recent qualifying locked selection. Queen says WAIT rather than invent a pick.')
-    sport_cols=st.columns(4)
-    for col,sport in zip(sport_cols,('NBA','NFL','NHL','NCAAF')):
-        picks=[r for r in recent if r.get('sport')==sport]
-        with col:
-            st.markdown(f'**{SPORT_ICON.get(sport,"🏆")} {sport}**')
-            if picks:
-                r=picks[0]
-                # Reuse the same ESPN team-logo catalog used by live matchup cards.
-                logo_map=st.session_state.get('royal_logo_catalog',{}).get(sport,{})
-                team_name=str(r.get('selection') or 'Unknown')
-                logo_url=logo_map.get(clean(team_name))
-                if logo_url and safe_logo(logo_url):
-                    st.image(logo_url,width=68)
-                st.write(team_name)
-                st.caption((r.get('confidence') or 'Unrated')+' · V6.2 PAPER PICK')
-            else: st.caption('No recent qualifying pick')
-    with st.expander('📚 All saved picks, tennis research, and detailed game views',expanded=False):
-        selected_sport=st.segmented_control('Sport',["All","NBA","NFL","NHL","NCAAF","Tennis"],default='All',key='royal_v562_sport_filter')
-        if selected_sport=='All':
-            royal_current_picks_panel('FOCUS')
-            st.divider()
-            royal_tennis_live_panel()
-            royal_tennis_parlay_status()
-            royal_tennis_archive_summary()
-        elif selected_sport=='Tennis':
-            royal_current_picks_panel('TENNIS')
-            royal_tennis_live_panel()
-            royal_tennis_parlay_status()
-            royal_tennis_archive_summary()
-        else:
-            # NCAAF schedule is distinct from saved picks; display the slate FIRST.
-            # Filtering to NCAAF never creates a new locked selection.
-            if selected_sport=='NCAAF':
-                royal_ncaaf_games_panel()
-                st.divider()
-            royal_current_picks_panel(selected_sport)
-# ========================================================
-# V5.7.2 COMPACT DAILY SUMMARY · VERIFIED RESULTS ONLY
-# ========================================================
-def royal_daily_summary():
-    """Small yesterday report; full existing dashboard stays in one expander.
+# V7 preview: read-only research and historical recovery. No new paper fills.
+import json
 
-    'Yesterday' means result graded during the previous Central Time day.
-    It is NOT a claim that those matches necessarily started that day.
-    No assumptions are made for pending / unresolved records.
-    """
-    today=utc().astimezone(CT).date()
-    yesterday=today-timedelta(days=1)
-    with db() as c:
-        saved=[dict(r) for r in c.execute("""SELECT id,sport,title,selection,opponent,model,phase,
-             result,created_at,graded_at,grade_note FROM royal_primary_predictions_v54""")]
-        tickets=[dict(r) for r in c.execute("""SELECT id,status,created_at,wins,losses,leg_count
-             FROM royal_parlays_v37""")]
+def royal_secret(key):
+    try: return os.getenv(key) or st.secrets.get(key, '')
+    except Exception: return os.getenv(key, '')
 
-    def local_day(value):
-        dt=parse_date(value)
-        return dt.astimezone(CT).date() if dt else None
+ARCHIVE_TABLES=('royal_predictions_v34','royal_paper_v34','royal_parlays_v37','royal_parlay_legs_v37','royal_paper_v294')
 
-    graded_yesterday=[r for r in saved if r['result'] in ('WIN','LOSS')
-                       and local_day(r.get('graded_at'))==yesterday]
-    wins=sum(r['result']=='WIN' for r in graded_yesterday)
-    losses=sum(r['result']=='LOSS' for r in graded_yesterday)
-    accuracy=f'{wins/(wins+losses):.1%}' if wins+losses else '—'
-    graded_all=[r for r in saved if r['result'] in ('WIN','LOSS')]
-    all_w=sum(r['result']=='WIN' for r in graded_all)
-    all_l=len(graded_all)-all_w
-    all_accuracy=f'{all_w/(all_w+all_l):.1%}' if all_w+all_l else '—'
-    new_today=sum(local_day(r.get('created_at'))==today for r in saved)
-    pending=sum(r['result'] not in ('WIN','LOSS') for r in saved)
-    completed_parlays=[r for r in tickets if r['status'] in ('WIN','LOSS')]
-    day_parlays=[r for r in completed_parlays if local_day(r.get('created_at'))==yesterday]
-
-    st.markdown('**👑 Daily Royal Summary**')
-    st.caption(f'{yesterday.strftime("%a %b %d")} · Results recorded on this CT day')
-    # Single lightweight row: no four tall Streamlit metric blocks on a phone.
-    st.markdown(f'''<div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;margin:2px 0 7px;">
-    <div style="background:#211333;border:1px solid #493164;border-radius:8px;text-align:center;padding:7px 2px"><strong style="color:#65e9b5;font-size:19px">{wins}</strong><div style="font-size:10px;color:#cbb7ee">WINS</div></div>
-    <div style="background:#211333;border:1px solid #493164;border-radius:8px;text-align:center;padding:7px 2px"><strong style="color:#ff879f;font-size:19px">{losses}</strong><div style="font-size:10px;color:#cbb7ee">LOSSES</div></div>
-    <div style="background:#211333;border:1px solid #493164;border-radius:8px;text-align:center;padding:7px 2px"><strong style="color:#f0dcff;font-size:19px">{accuracy}</strong><div style="font-size:10px;color:#cbb7ee">ACCURACY</div></div>
-    <div style="background:#211333;border:1px solid #493164;border-radius:8px;text-align:center;padding:7px 2px"><strong style="color:#e8b3ff;font-size:19px">{new_today}</strong><div style="font-size:10px;color:#cbb7ee">NEW TODAY</div></div>
-    </div>''',unsafe_allow_html=True)
-    st.caption(f'All-time scoreboard-graded W/L: {all_w} / {all_l} ({all_accuracy}) · '
-               f'{pending} unverified, excluded from accuracy · '
-               f'{len(completed_parlays)} graded parlays')
-    if not graded_yesterday:
-        st.caption('No new verified grades were recorded yesterday. Queen keeps checking while this app is awake.')
-    else:
-        by_sport={}
-        for r in graded_yesterday:
-            p=by_sport.setdefault(r['sport'],[0,0]);p[0 if r['result']=='WIN' else 1]+=1
-        st.caption(' · '.join(f'{sp}: {v[0]}–{v[1]}' for sp,v in sorted(by_sport.items())))
-    with st.expander('🔎 View results details',expanded=False):
-        st.caption('Saved picks are graded from unambiguous completed scoreboard results. '
-                   'Exchange settlements may differ; unverified picks are never counted as losses.')
-        if graded_yesterday:
-            st.markdown('**Yesterday’s newly graded picks**')
-            for r in sorted(graded_yesterday,key=lambda x:x.get('graded_at') or '',reverse=True)[:35]:
-                st.write(('✅' if r['result']=='WIN' else '❌')+' '+r['sport']+' · '+
-                         str(r['selection'])+' vs '+str(r['opponent'])+' — '+r['result'])
-        if day_parlays:
-            st.caption(f'Parlay tickets created yesterday that are now graded: '
-                       f'{sum(r["status"]=="WIN" for r in day_parlays)} wins, '
-                       f'{sum(r["status"]=="LOSS" for r in day_parlays)} losses. '
-                       'Ticket date is not the settlement date.')
-        royal_results_dashboard()  # Original full dashboard retained, not duplicated on screen.
-
-@st.fragment(run_every='180s')
-def royal_auto_results():
+def royal_archive_sync():
+    url=royal_secret('QUEEN_DATABASE_URL')
+    if not url: return 'Database URL missing; local history only'
     try:
-        changed,parlay_changes,_=refresh_saved_results()
-        st.caption(f'Auto-checked {utc().astimezone(CT).strftime("%I:%M %p CT")} · '
-                   f'{changed} newly graded picks · {parlay_changes} updated parlays')
+        import psycopg2
+        from psycopg2.extras import Json
+        with psycopg2.connect(url,connect_timeout=8,sslmode='require') as remote:
+            with remote.cursor() as cur, db() as local_db:
+                cur.execute('CREATE TABLE IF NOT EXISTS royal_sports_v7_archive (table_name text NOT NULL, row_key text NOT NULL, payload jsonb NOT NULL, PRIMARY KEY(table_name,row_key))')
+                for table in ARCHIVE_TABLES:
+                    allowed={r[1] for r in local_db.execute(f'PRAGMA table_info({table})')}
+                    cur.execute('SELECT payload FROM royal_sports_v7_archive WHERE table_name=%s',(table,))
+                    for (row,) in cur.fetchall():
+                        row={k:v for k,v in row.items() if k in allowed}
+                        if not row: continue
+                        keys=list(row)
+                        local_db.execute(f'INSERT OR IGNORE INTO {table} ({",".join(keys)}) VALUES ({",".join("?" for _ in keys)})',[row[k] for k in keys])
+                    for r in local_db.execute(f'SELECT * FROM {table}'):
+                        row=dict(r); key=str(row.get('id') or f"{row.get('parlay_id')}:{row.get('leg_number')}")
+                        cur.execute('INSERT INTO royal_sports_v7_archive VALUES (%s,%s,%s) ON CONFLICT DO NOTHING',(table,key,Json(row)))
+                local_db.commit()
+        return 'Archive connected · original snapshots preserved'
+    except Exception as exc: return 'Archive unavailable: '+type(exc).__name__+' · local history only'
+
+restore_bundled_royal_backup()
+archive_status=royal_archive_sync()
+FOCUS=('NBA','NFL','NHL','NCAAF')
+ODDS_KEYS={'NBA':'basketball_nba','NFL':'americanfootball_nfl','NHL':'icehockey_nhl','NCAAF':'americanfootball_ncaaf'}
+@st.cache_data(ttl=3600,show_spinner=False)
+def royal_consensus(sport):
+    key=royal_secret('ODDS_API_KEY') or royal_secret('THE_ODDS_API_KEY')
+    if not key: return [],'Odds API key not found'
+    try:
+        r=requests.get('https://api.the-odds-api.com/v4/sports/'+ODDS_KEYS[sport]+'/odds',params={'apiKey':key,'regions':'us','markets':'h2h,spreads,totals','oddsFormat':'decimal'},timeout=10)
+        r.raise_for_status(); data=r.json()
+        return data if isinstance(data,list) else [], 'Sportsbook consensus · hourly cache'
+    except Exception as exc: return [],'Odds feed unavailable: '+type(exc).__name__
+
+def royal_lines(event):
+    from statistics import median
+    spreads=[]; totals=[]; probs=[]
+    home=event.get('home_team'); away=event.get('away_team')
+    for book in event.get('bookmakers',[]):
+        for market in book.get('markets',[]):
+            outcomes=market.get('outcomes',[])
+            if market.get('key')=='h2h' and len(outcomes)==2:
+                prices={o.get('name'):numeric(o.get('price')) for o in outcomes}
+                if all(prices.get(t) and prices[t]>1 for t in (home,away)):
+                    a,b=1/prices[home],1/prices[away]; probs.append(a/(a+b))
+            if market.get('key')=='spreads':
+                spreads.extend(v for o in outcomes if o.get('name')==home and (v:=numeric(o.get('point'))) is not None)
+            if market.get('key')=='totals':
+                totals.extend(v for o in outcomes if o.get('name')=='Over' and (v:=numeric(o.get('point'))) is not None)
+    return tuple(median(x) if x else None for x in (probs,spreads,totals))
+
+
+# Separate accuracy-only journal. Legacy archive remains untouched.
+from statistics import mean
+
+def forecast(game, sport, history, spread, total):
+    home=game.get('home'); teams=game.get('teams',[])
+    if home not in teams or len(teams)!=2: return []
+    away=next(t for t in teams if t!=home)
+    def form(team):
+        rows=[]
+        for g in history:
+            if not g.get('completed') or g.get('state')!='post' or team not in g.get('teams',[]): continue
+            start=parse_date(g.get('date')); target=parse_date(game.get('date'))
+            if not start or not target or start>=target: continue
+            other=next(t for t in g['teams'] if t!=team)
+            a=numeric(g['scores'].get(team)); b=numeric(g['scores'].get(other))
+            if a is not None and b is not None: rows.append((start,a,b))
+        rows=sorted(rows,reverse=True)[:5]
+        if len(rows)<3: return None
+        return mean(r[1] for r in rows),mean(r[2] for r in rows),len(rows)
+    h,a=form(home),form(away)
+    if not h or not a: return []
+    hp=(h[0]+a[1])/2; ap=(a[0]+h[1])/2
+    phase='LIVE' if game.get('state')=='in' else 'PREGAME'
+    if phase=='LIVE':
+        hs=numeric(game['scores'].get(home)); aws=numeric(game['scores'].get(away))
+        if hs is None or aws is None or hs==aws: return []
+        # Explicit live score baseline, not a calibrated win probability.
+        return [('WINNER',home if hs>aws else away,None,'LIVE SCORE BASELINE',f'Current score {hs:g}–{aws:g}; leader only, clock not modeled.')]
+    why=f'Last {h[2]}/{a[2]} completed games: projected score {home} {hp:.1f}, {away} {ap:.1f}. Simple scoring-form baseline; uncalibrated.'
+    out=[]
+    if hp!=ap: out.append(('WINNER',home if hp>ap else away,None,'FORM BASELINE',why))
+    if spread is not None and abs(hp-ap+spread)>1e-6: out.append(('SPREAD',home if hp-ap+spread>0 else away,spread,'FORM BASELINE',why))
+    if total is not None and abs(hp+ap-total)>1e-6: out.append(('TOTAL','OVER' if hp+ap>total else 'UNDER',total,'FORM BASELINE',why))
+    return out
+
+def grade_new(r,g):
+    if not g or not g.get('completed') or g.get('state')!='post': return None
+    if set(g.get('teams',[]))!={r['home'],r['away']}: return None
+    h=numeric(g['scores'].get(r['home'])); a=numeric(g['scores'].get(r['away']))
+    if h is None or a is None: return None
+    if r['kind']=='WINNER':
+        if h==a: return 'PUSH'
+        if g.get('winner') not in (r['home'],r['away']): return None
+        return 'WIN' if g['winner']==r['selection'] else 'LOSS'
+    if r['kind']=='SPREAD': v=h-a+r['line']; positive=r['selection']==r['home']
+    else: v=h+a-r['line']; positive=r['selection']=='OVER'
+    return 'PUSH' if abs(v)<1e-8 else 'WIN' if (v>0)==positive else 'LOSS'
+
+@st.cache_data(ttl=900,show_spinner=False)
+def form_history(sport):
+    end=utc().astimezone(CT).date(); start=end-timedelta(days=45)
+    events=scores(sport,start.strftime('%Y%m%d')+'-'+end.strftime('%Y%m%d'))
+    return [g for e in events for g in _score_records(e,sport) if g.get('completed')]
+
+def run_predictions():
+    import psycopg2
+    from psycopg2.extras import Json
+    url=royal_secret('QUEEN_DATABASE_URL')
+    if not url: raise RuntimeError('Missing database URL')
+    index=score_index(FOCUS,future_days=3)
+    with psycopg2.connect(url,connect_timeout=8,sslmode='require') as conn:
+        with conn.cursor() as cur:
+            cur.execute('CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v7 (id text PRIMARY KEY, payload jsonb NOT NULL, result text NOT NULL DEFAULT \'PENDING\')')
+            cur.execute('SELECT id,payload FROM royal_sports_accuracy_v7 WHERE result=\'PENDING\'')
+            pending=cur.fetchall()
+            missing=[r['start'] for _,r in pending if (r['sport'],r['event_id']) not in index]
+            if missing: index.update(score_index(FOCUS,missing,future_days=0))
+            for key,r in pending:
+                result=grade_new(r,index.get((r['sport'],r['event_id'])))
+                if result: cur.execute('UPDATE royal_sports_accuracy_v7 SET result=%s WHERE id=%s AND result=\'PENDING\'',(result,key))
+            for sport in FOCUS:
+                events,_=royal_consensus(sport); history=form_history(sport)
+                for (league,eid),g in index.items():
+                    if league!=sport or g.get('state') not in ('pre','in') or not eid: continue
+                    start=parse_date(g.get('date'))
+                    if not start or (g['state']=='pre' and not utc()<start<=utc()+timedelta(hours=36)): continue
+                    home=g.get('home'); away=next((t for t in g['teams'] if t!=home),None)
+                    matches=[e for e in events if parse_date(e.get('commence_time')) and abs((parse_date(e['commence_time'])-start).total_seconds())<7200 and _unique_score_team(e.get('home_team'),g['teams'],sport)==home and _unique_score_team(e.get('away_team'),g['teams'],sport)==away]
+                    _,spread,total=royal_lines(matches[0]) if len(matches)==1 else (None,None,None)
+                    for kind,selection,line,confidence,why in forecast(g,sport,history,spread,total):
+                        phase='LIVE' if g['state']=='in' else 'PREGAME'
+                        key=f'{sport}:{eid}:{phase}:{kind}'
+                        row=dict(sport=sport,event_id=eid,home=home,away=away,start=g['date'],phase=phase,kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat())
+                        cur.execute('INSERT INTO royal_sports_accuracy_v7(id,payload) VALUES (%s,%s) ON CONFLICT DO NOTHING',(key,Json(row)))
+            cur.execute('SELECT payload,result FROM royal_sports_accuracy_v7')
+            rows=[dict(r,result=result) for r,result in cur.fetchall()]
+    return rows,index
+
+page=st.radio('View',['Picks','Live','Results','Stats'],horizontal=True,label_visibility='collapsed')
+@st.fragment(run_every='120s')
+def dashboard():
+    try: rows,index=run_predictions()
     except Exception as exc:
-        st.warning(f'Results feed temporarily unavailable ({type(exc).__name__}). Prior grades preserved.')
-    royal_daily_summary()
-
-with tab_results:
-    royal_auto_results()
-
-with tab_history:
-    st.subheader("📚 Full Saved History")
-    st.caption("All sports and older experiments are here. Backup files preserve original entry prices and pick timestamps.")
-    st.success("👑 Fresh V6.2 history is isolated from the previous database. No old-pick cleanup is needed.")
-    st.caption("Previous history remains in your downloaded CSV files and old database. Do not import old CSVs if you want a clean season.")
-    prediction_panel()
-    with st.expander("⚙️ Advanced unit manager",expanded=False):
-        royal_unit_manager()
-    with db() as _backup_db:
-        _parlay_tickets=[dict(r) for r in _backup_db.execute("SELECT * FROM royal_parlays_v37")]
-        _parlay_legs=[dict(r) for r in _backup_db.execute("SELECT * FROM royal_parlay_legs_v37")]
-    st.markdown("**💾 Parlay backups**")
-    st.download_button("⬇️ Parlay tickets CSV", _csv_bytes(_parlay_tickets), "royal_parlays_v37_backup.csv", "text/csv", disabled=not _parlay_tickets, use_container_width=True)
-    st.download_button("⬇️ Parlay legs CSV", _csv_bytes(_parlay_legs), "royal_parlay_legs_v37_backup.csv", "text/csv", disabled=not _parlay_legs, use_container_width=True)
-
-with tab_home:
-    st.subheader("🔴 LIVE SCORES · TEAM EMBLEMS · ROYAL PARLAYS")
-    if st.button("👑 Refresh scores & prices", type="primary", use_container_width=True):
-        api.clear()
-        scores.clear()
-        st.rerun()
-    st.caption("🏀 NBA  ·  🏈 NFL  ·  🏒 NHL  ·  🎓 NCAAF  |  ESPN logos and scores when supplied; icons otherwise. Quotes are indicative. Scans refresh while the app is awake.")
-
-# Automatic discovery covers live games and the next three calendar days.
-# One stable daily session prevents duplicate parlays from changing filters.
-max_quotes = 120
-ACTIVE_SPORTS = ("NBA", "NFL", "NHL", "NCAAF")
-window = st.segmented_control("📅 Scan games", ["Today", "Next 3 Days", "Next 7 Days"], default="Today", key="royal_v61_window")
-
-@st.fragment(run_every="120s")
-def royal_auto_scan():
-    # Four Royal Focus sports only; only independently qualified pregame
-    # predictions are auto-locked. Tennis is not forced into an unproven model.
-    selected = list(ACTIVE_SPORTS)
-    with st.spinner("Finding Polymarket US sports events and checking market quotes..."):
-        index = score_index(selected)
-        logo_catalog={}
-        for (league,_),game in index.items():
-            for team,url in game.get("logos",{}).items():
-                if safe_logo(url): logo_catalog.setdefault(league,{})[clean(team)]=url
-        st.session_state["royal_logo_catalog"]=logo_catalog
-        all_events, errors = [], []
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            futures={pool.submit(events_for,league):league for league in selected}
-            for future in as_completed(futures):
-                league=futures[future]
-                try: items,err=future.result()
-                except Exception as exc: items,err=[],type(exc).__name__
-                if err: errors.append(f"{league}: {err}")
-                all_events.extend((league,e) for e in items)
-
-    current = utc().astimezone(CT).date()
-    def in_window(s, e, game):
-        live = bool(e.get("live") or (e.get("eventState") or {}).get("live") or str(e.get("status", "")).lower() in ("live", "in_progress", "inprogress") or (game and game["state"] == "in"))
-        if live: return True
-        if window == "🔴 Live": return live
-        date = parse_date(e.get("eventDate") or e.get("startTime") or e.get("startDate") or (game.get("date") if game else None))
-        if not date: return False
-        d = date.astimezone(CT).date()
-        if window == "Today": return d == current
-        if window == "Next 7 Days": return current <= d < current + timedelta(days=7)
-        return current <= d < current + timedelta(days=3)
-
-    rows, live_count, quoted = [], 0, 0
-    for s, e in all_events:
-        game = event_score(s, e, index)
-        if not in_window(s, e, game): continue
-        is_live = bool(e.get("live") or (e.get("eventState") or {}).get("live") or str(e.get("status", "")).lower() in ("live", "in_progress", "inprogress") or (game and game["state"] == "in"))
-        if is_live: live_count += 1
-        for m in e.get("markets") or []:
-            if not isinstance(m, dict) or m.get("closed") or m.get("archived"): continue
-            slug = m.get("slug")
-            if not slug: continue
-            sides = m.get("marketSides") or []
-            # One contract is one instrument. Only label a side when the API identifies it.
-            verified_team, side_reason = identify_yes_team(m)
-            mapping_source = "event market" if verified_team else "not checked"
-            selection = verified_team or (m.get("titleShort") or m.get("question") or m.get("title") or slug)
-            market_type = str(m.get("sportsMarketTypeV2") or m.get("sportsMarketType") or "Market").replace("SPORTS_MARKET_TYPE_", "").replace("_", " ").title()
-            rows.append({"event_id":str(e.get("id")), "sport":s, "title":str(e.get("title") or "Sports event"),
-                         "slug":str(slug), "selection":str(selection), "market_type":market_type, "verified_side":bool(verified_team), "side_reason":side_reason, "mapping_source":mapping_source, "raw_sides":sides, "market_raw":m, "event_raw":e,
-                         "start":(game.get("date") if game else None) or e.get("eventDate") or e.get("startTime") or e.get("startDate"),
-                         "live":is_live, "game_state":game["state"] if game else "unknown",
-                         "score_detail":game["detail"] if game else "", "score_game":game, "quote":None, "error":None})
-
-    # Give every league a fair share of quote requests; one busy league cannot crowd out college sports.
-    rows.sort(key=lambda x:(not x["live"], parse_date(x["start"]) or datetime.max.replace(tzinfo=timezone.utc)))
-    from collections import defaultdict
-    buckets = defaultdict(list)
-    for row in rows:
-        buckets[row["sport"]].append(row)
-    checked = []
-    while len(checked) < max_quotes and any(buckets.values()):
-        for league in selected:
-            if len(checked) >= max_quotes: break
-            if buckets[league]:
-                checked.append(buckets[league].pop(0))
-    with ThreadPoolExecutor(max_workers=12) as pool:
-        futures={pool.submit(bbo,x["slug"]):x for x in checked}
-        for future in as_completed(futures):
-            x=futures[future]
-            try: x["quote"],x["error"]=future.result()
-            except Exception as exc: x["quote"],x["error"]=None,type(exc).__name__
-            if x["quote"] and x["quote"]["valid"]: quoted+=1
-    # Limit extra detailed contract checks to quoted markets, avoiding hundreds of lookups.
-    unmapped=[x for x in checked if not x["verified_side"] and x.get("quote") and x["quote"].get("valid")]
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        futures={pool.submit(resolve_contract,x["market_raw"]):x for x in unmapped[:20]}
-        for future in as_completed(futures):
-            x=futures[future]
-            try: name,reason,source=future.result()
-            except Exception: continue
-            if name:
-                x["selection"],x["verified_side"]=name,True
-                x["side_reason"],x["mapping_source"]=reason,source
-    observations(checked)
-    # Lock all discovered eligible named two-competitor markets, including those beyond
-    # the quote budget. Paper entries require actual checked valid quotes.
-    lock_predictions(rows)
-    grade_predictions(rows)
-    # College-football research must keep working even when the user is
-    # viewing All Sports, Tennis, or Picks / Parlays rather than the NCAAF tab.
-    research_games={}
-    try:
-        today_ct=utc().astimezone(CT).date()
-        with ThreadPoolExecutor(max_workers=3) as _pool:
-            _future_dates={_pool.submit(royal_ncaaf_schedule_day,(today_ct+timedelta(days=offset)).strftime('%Y%m%d')):offset for offset in range(3)}
-            for _future in as_completed(_future_dates):
-                _evts,_err=_future.result()
-                if _err:continue
-                for _evt in _evts:
-                    for _game in _score_records(_evt,'NCAAF'):
-                        _start=parse_date(_game.get('date'))
-                        if _start and today_ct <= _start.astimezone(CT).date() <= today_ct+timedelta(days=2):
-                            research_games[str(_game.get('event_id'))]=_game
-        # V6.1: research is watch-only, not an automatic lock.
-        pass
-    except Exception:
-        # Saved predictions and all other leagues remain operational.
-        pass
-    st.session_state["royal_locked"] = prediction_lookup()
-    # Display/Top 10/parlays reuse the same first locked row for all later
-    # scans of the event, regardless of market slug or live phase.
-    event_first = {(p['sport'],p['event_id']):p
-        for p in st.session_state['royal_locked'].values()}
-    for x in rows:
-        original = event_first.get((x['sport'],x['event_id']))
-        if original:
-            phase = 'LIVE' if x.get('live') else 'PREGAME'
-            st.session_state['royal_locked'][(x['event_id'],x['slug'],phase)] = original
-    matched_games = len({x['event_id'] for x in rows if x.get('score_game')})
-    st.caption(f"Market scan {utc().astimezone(CT).strftime('%I:%M %p CT')} · {len(rows)} markets · {quoted} valid quotes · {matched_games} ESPN-matched events · {live_count} live events")
-    if not matched_games and rows:
-        st.warning("Sports events are arriving, but none were confidently linked to an ESPN score. Live clocks and automatic grading may remain unavailable until matched.")
-    # Keep historical V3.3 paper tests intact; new pick-linked paper tests live in V3.4 tables.
-
-
-
-
-    # V5.3: Top 10 cards already show the matched game score and clock.
-    # A second live-board on this page duplicated those same fixtures.
-    st.markdown("### 👑 ROYAL FOCUS · SELECT YOUR SCREEN")
-    focus_choice = st.pills(
-        "Choose one focus",
-        ["🏀 LIVE PICKS & SCORES", "🏆 PARLAYS", "🔥 UNDERDOG", "📊 PAST TICKETS"],
-        default="🏀 LIVE PICKS & SCORES", key="royal_v64_focus", label_visibility="collapsed"
-    )
-    # Shared data must be initialized on EVERY rerun, regardless of selected focus.
-    watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
-    def evidence_rank(x):
-        locked=st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{})
-        model=locked.get("model","")
-        tier=3 if model in ('Season-record baseline','Tennis verified-seed baseline') else 2 if model=='Market-favorite baseline' else 1
-        verified=bool(x.get('verified_side'))
-        valid=bool(x.get('quote') and x['quote'].get('valid'))
-        return (-tier,-int(bool(x.get('score_game'))),-int(verified and valid),parse_date(x.get('start')) or datetime.max.replace(tzinfo=timezone.utc))
-    watch.sort(key=evidence_rank)
-    # V3.7: Separate, automatically locked prediction combinations. They are NOT
-    # exchange parlay contracts, verified quotes, simulated fills, or priced trades.
-    def royal_parlay_candidates():
-        pool=[];used=set();used_fixture=set()
-        # Read the original saved ESPN research picks, never fabricate new parlay legs.
-        # The upcoming ESPN fixture is the authoritative date; created_at is not kickoff.
-        saved_research=[]
-        with db() as conn:
-            saved_research=[dict(r) for r in conn.execute("""
-                SELECT * FROM royal_predictions_v34
-                WHERE sport='NCAAF' AND slug LIKE 'ESPN-RESEARCH-%'
-                  AND phase='PREGAME' AND result='PENDING'
-                ORDER BY created_at DESC""").fetchall()]
-        for game in research_games.values():
-            if game.get('state')!='pre' or len(game.get('teams') or [])!=2:continue
-            dt=parse_date(game.get('date'))
-            if not dt or dt<=utc()+timedelta(minutes=5):continue
-            event_id='ESPN-NCAAF-'+str(game.get('event_id') or '')
-            matches=[r for r in saved_research if r['event_id']==event_id]
-            if not matches:continue
-            names=game['teams']
-            for r in matches[:1]:
-                if not any(_team_name_match(r.get('selection'),name)>=.90 for name in names):continue
-                if not any(_team_name_match(r.get('opponent'),name)>=.90 for name in names):continue
-                # Fail closed if stale imported history was saved after kickoff.
-                made=parse_date(r.get('created_at'))
-                if not made or made>=dt:continue
-                fixture=('NCAAF',frozenset(clean(n) for n in names),dt.astimezone(CT).date().isoformat())
-                if fixture in used_fixture:continue
-                item=dict(r)
-                item['royal_slate_day']=royal_slate_day(dt)
-                item['royal_verified_start']=dt.isoformat()
-                item['royal_research_only']=True
-                pool.append(item);used.add(('NCAAF',r['event_id']));used_fixture.add(fixture)
-        for x in sorted(watch,key=evidence_rank):
-            dt=royal_verified_start(x)
-            if not dt: continue
-            phase='LIVE' if x.get('live') else 'PREGAME'
-            r=st.session_state['royal_locked'].get((x['event_id'],x['slug'],phase))
-            if not r or r.get('result')!='PENDING': continue
-            if r.get('model') not in ('Season-record baseline','Tennis verified-seed baseline'): continue
-            if r.get('model')=='Season-record baseline' and (numeric(r.get('model_probability')) or 0)<.58: continue
-            # Prevent stale lock belonging to a past match from being attached
-            # to a new matchup with similar player/team names.
-            if x.get('sport')!=r.get('sport') or x.get('event_id')!=r.get('event_id'): continue
-            # Only trust fixture identities backed by the matched scoreboard.
-            score_teams=(x.get('score_game') or {}).get('teams') or []
-            if len(score_teams)!=2: continue
-            if not all(any(_team_name_match(n,t)>=.90 for t in score_teams)
-                       for n in (r.get('selection'),r.get('opponent'))): continue
-            identity=(r['sport'],r['event_id'])
-            fixture=(r['sport'],frozenset(clean(n) for n in score_teams),royal_slate_day(dt))
-            if identity in used or (fixture[1] and fixture in used_fixture): continue
-            used.add(identity)
-            if fixture[1]:used_fixture.add(fixture)
-            item=dict(r)
-            item['royal_slate_day']=royal_slate_day(dt)
-            item['royal_verified_start']=dt.isoformat()
-            if royal_fixture_key(item) is None: continue
-            pool.append(item)
-        return pool
-
-    def royal_lock_parlays(candidates, slate_day):
-        """One original auto ticket per size, per CT day. Never mutate old tickets."""
-        created=[];cross_ticket_ids=set()
-        with db() as c:
-            for n in ROYAL_PARLAY_SIZES:
-                session_key=f'V56-QUEEN-AUTO-{slate_day}-{n}'
-                if c.execute('SELECT 1 FROM royal_parlays_v37 WHERE session_key=? AND leg_count=?',
-                             (session_key,n)).fetchone(): continue
-                chosen=royal_fit_ticket(candidates,n,slate_day,cross_ticket_ids)
-                if not royal_ticket_is_valid(chosen,slate_day): continue
-                pid=hashlib.sha256(session_key.encode()).hexdigest()[:32]
-                before=c.total_changes
-                c.execute("""INSERT OR IGNORE INTO royal_parlays_v37
-                       (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)""",
-                          (pid,session_key,n,utc().isoformat(),
-                           f'QUEEN AUTO V5.7.1 · Same-day {slate_day} CT · 0 U unpriced research if ESPN legs included. No executable parlay price.'))
-                if c.total_changes==before: continue
-                for i,r in enumerate(chosen,1):
-                    c.execute("""INSERT OR IGNORE INTO royal_parlay_legs_v37
-                      (parlay_id,leg_number,prediction_id,event_id,sport,title,selection,model)
-                      VALUES (?,?,?,?,?,?,?,?)""",
-                              (pid,i,r['id'],r['event_id'],r['sport'],r['title'],r['selection'],r['model']))
-                cross_ticket_ids.update(r['id'] for r in chosen)
-                created.append(n)
-            c.commit()
-        return created
-
-    def royal_grade_parlays():
-        """Link each leg to the original immutable prediction's graded result."""
-        with db() as c:
-            ids=[r["id"] for r in c.execute("SELECT id FROM royal_parlays_v37 WHERE status='PENDING'")]
-            for pid in ids:
-                results=[r[0] for r in c.execute("""SELECT COALESCE(p.result,'PENDING')
-                    FROM royal_parlay_legs_v37 l LEFT JOIN royal_predictions_v34 p ON p.id=l.prediction_id
-                    WHERE l.parlay_id=? ORDER BY l.leg_number""",(pid,))]
-                if not results: continue
-                wins=results.count("WIN")
-                losses=results.count("LOSS")
-                # One lost leg loses the combo, even if other legs are pending.
-                # A fully won combo requires every leg to have a WIN grade.
-                status="LOSS" if losses else "WIN" if wins==len(results) else "PENDING"
-                c.execute("UPDATE royal_parlays_v37 SET wins=?,losses=?,status=? WHERE id=?",(wins,losses,status,pid))
-            c.commit()
-
-    def royal_parlay_history():
-        with db() as c:
-            tickets=[dict(r) for r in c.execute("SELECT * FROM royal_parlays_v37 ORDER BY created_at DESC")]
-            legs={}
-            for r in c.execute("""SELECT l.*,COALESCE(p.result,'PENDING') AS leg_result
-                  FROM royal_parlay_legs_v37 l LEFT JOIN royal_predictions_v34 p ON p.id=l.prediction_id
-                  ORDER BY l.parlay_id,l.leg_number"""):
-                legs.setdefault(r["parlay_id"],[]).append(dict(r))
-        return tickets,legs
-
-    # Session is local calendar date + scan window + sport selector; a repeated scan
-    # never changes the picks already locked for that session.
-    royal_session=f"{current.isoformat()}|{window}|V56-FIVE-SPORTS"
-    royal_candidates=royal_parlay_candidates()
-    royal_slate_days=sorted({r['royal_slate_day'] for r in royal_candidates})
-    # Automatic original tickets only for today's slate. A later date gets its
-    # own original automatic tickets on that day, never blended across days.
-    royal_new=royal_lock_parlays(royal_candidates,current.isoformat())
-    royal_grade_parlays()
-    royal_tickets,royal_legs=royal_parlay_history()
-
-    def royal_pick_research_grade(r):
-        """Evidence-tier labels, not empirically validated accuracy estimates."""
-        model=str(r.get('model') or '')
-        prob=numeric(r.get('model_probability'))
-        evidence=str(r.get('evidence') or '')
-        if model=='Season-record baseline' and prob is not None:
-            if prob>=.67:return 'B','RECORD LEAN · LIMITED MODEL'
-            if prob>=.60:return 'B','RECORD LEAN · LIMITED MODEL'
-            return 'C','MODEST RECORD LEAN'
-        if model=='ESPN NCAAF season-record research':
-            return 'C','ESPN RECORD RESEARCH · UNPRICED'
-        if model=='Tennis verified-seed baseline':
-            return 'C','SEED COMPARISON · UNCALIBRATED'
-        return 'WATCH','NO QUALIFIED INDEPENDENT EVIDENCE'
-
-    def royal_pick_risk(r):
-        """Underdog designation needs a same-side verified YES quote.
-        Never misrepresent an unquoted research selection as a favorite.
-        """
-        ask=numeric(r.get('quote_ask'))
-        if ask is not None and 0<ask<.5:
-            return '🔴 HIGH RISK · QUOTED UNDERDOG'
-        if ask is not None and .5<=ask<1:
-            return '🟡 MARKET FAVORITE · RISK REMAINS'
-        return '⚪ UNPRICED · UNDERDOG STATUS UNKNOWN'
-
-    def royal_parlay_research_grade(legs):
-        grades=[royal_pick_research_grade(r)[0] for r in legs]
-        if any(g=='WATCH' for g in grades):grade='WATCH'
-        elif len(legs)>=5 or 'C' in grades:grade='C'
-        elif len(legs)>=3:grade='B'
-        else:grade='B'  # An A parlay needs backtested/calibrated evidence.
-        underdogs=sum('QUOTED UNDERDOG' in royal_pick_risk(r) for r in legs)
-        if len(legs)>=10:risk='🔴 VERY HIGH RISK · 10 LEGS'
-        elif len(legs)>=5:risk='🔴 HIGH RISK · MANY LEGS'
-        elif underdogs:risk=f'🔴 HIGH RISK · {underdogs} UNDERDOG LEG'+('S' if underdogs!=1 else '')
-        elif len(legs)>=3:risk='🟠 ELEVATED RISK · MULTI-LEG'
-        else:risk='🟡 MULTI-LEG RISK'
-        return grade,risk
-
-    if focus_choice == "🏀 LIVE PICKS & SCORES":
-        st.subheader("🏆 MATCHUP BOARD · LIVE SCORES & TEAM LOGOS")
-        st.caption("Research candidates with available live scores and team logos. Tennis is view-only; these are not verified best-value bets.")
-        watch = [x for x in rows if (x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME") in st.session_state.get("royal_locked",{})]
-
-        def evidence_rank(x):
-            locked = st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"), {})
-            model = locked.get("model", "")
-            tier = 3 if model in ('Season-record baseline','Tennis verified-seed baseline') else 2 if model == "Market-favorite baseline" else 1
-            verified = bool(x.get("verified_side"))
-            valid = bool(x.get("quote") and x["quote"].get("valid"))
-            return (-tier, -int(bool(x.get("score_game"))), -int(verified and valid), parse_date(x.get("start")) or datetime.max.replace(tzinfo=timezone.utc))
-
-        watch.sort(key=evidence_rank)
-        eligible=[]
-        used=set()
-        for x in watch:
-            if x["event_id"] in used: continue
-            locked=st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{})
-            if locked.get("model") not in ('Season-record baseline','Tennis verified-seed baseline'): continue
-            eligible.append(x);used.add(x["event_id"])
-        featured=[]; selected_events=set()
-        # Reserve up to two positions per sport only where evidence exists.
-        for sport in ("NBA","NFL","NHL","NCAAF"):
-            for x in [r for r in eligible if r["sport"]==sport][:2]:
-                if len(featured)<10:
-                    featured.append(x);selected_events.add(x["event_id"])
-        for x in eligible:
-            if x["sport"] not in ("NBA","NFL","NHL","NCAAF"): continue
-            if len(featured)>=10:break
-            if x["event_id"] not in selected_events:
-                featured.append(x);selected_events.add(x["event_id"])
-
-        # Show which leagues supplied eligible games, so missing sports are explainable.
-        league_counts={league:{"events":len({x["event_id"] for x in rows if x["sport"]==league}),
-                               "record":len({x["event_id"] for x in watch if x["sport"]==league and
-                                 st.session_state["royal_locked"].get((x["event_id"],x["slug"],"LIVE" if x.get("live") else "PREGAME"),{}).get("model")=="Season-record baseline"}),
-                               "quoted":sum(1 for x in checked if x["sport"]==league and x.get("quote") and x["quote"].get("valid"))}
-                       for league in ACTIVE_SPORTS}
-        with st.expander("🔎 Advanced feed coverage",expanded=False):
-            for league,counts in league_counts.items():
-                st.caption(f"{league}: {counts['events']} events in window · {counts['record']} independent record-baseline games · {counts['quoted']} valid market quotes")
-            if errors: st.caption("Feed errors: "+" | ".join(errors))
-            st.caption("No qualifying games means WATCH, not an invented selection. Season records are uncalibrated.")
-
-        st.caption("👑 Research picks are directional forecasts; WATCH means price/evidence needs verification. No forced daily quota.")
-        priced_research=[]
-        for item in eligible:
-            pred=st.session_state["royal_locked"].get((item["event_id"],item["slug"],"LIVE" if item.get("live") else "PREGAME"),{})
-            quote_data=item.get("quote") or {}
-            if (pred.get("model")=="Season-record baseline" and quote_data.get("valid")
-                and item.get("verified_side") and clean(item.get("selection"))==clean(pred.get("selection"))):
-                p=numeric(pred.get("model_probability"))
-                if p is not None:
-                    priced_research.append((p-quote_data["ask"],item))
-        priced_research.sort(key=lambda pair:pair[0],reverse=True)
-        st.markdown("#### 🟣 Polymarket US · Priced Research Shortlist")
-        if priced_research:
-            for edge,item in priced_research[:5]:
-                st.caption(f"{item.get('sport')} · {item.get('title')} · Queen: {st.session_state['royal_locked'].get((item['event_id'],item['slug'],'LIVE' if item.get('live') else 'PREGAME'),{}).get('selection')} · YES ask {item['quote']['ask']*100:.1f}¢ · model-minus-ask {edge*100:+.1f} pp (uncalibrated)")
-        else:
-            st.info("No current Queen selections with a verified matching Polymarket US YES quote. Directional picks remain visible below.")
-        if featured:
-            for offset in range(0,len(featured),2):
-                col1,col2=st.columns(2,gap="small")
-                with col1: display_row(featured[offset],offset+1)
-                if offset+1<len(featured):
-                    with col2: display_row(featured[offset+1],offset+2)
-        else:
-            st.info("No season-record-based candidates found in this scan. Queen says WAIT rather than copy market favorites.")
-
-        with st.expander("ℹ️ How Queen ranks picks", expanded=False):
-            st.caption("Season-record estimates are uncalibrated. Market-favorite selections repeat market sentiment and are not independent forecasts.")
-        with st.expander(f"📋 Other tracked games ({max(0,len(watch)-len(featured))})", expanded=False):
-            other = [x for x in watch if x not in featured]
-            st.caption("These are saved or monitored, but not highlighted as stronger predictions. Some older records use uninformed baselines.")
-            for x in other[:20]:
-                display_row(x)
-            if len(other)>20: st.caption(f"Showing 20 of {len(other)} other games. Saved history below includes all recorded picks.")
-
-    if focus_choice == "🔥 UNDERDOG":
-        st.subheader("🔥 Queen's Underdog Sniper")
-        dogs=[x for x in checked if x.get("verified_side") and x.get("quote") and x["quote"].get("valid") and x["quote"]["ask"]<.5]
-        dogs=sorted(dogs,key=lambda x:(x["sport"],x["quote"]["ask"]))
-        # Select across leagues first, then fill remaining slots.
-        dog_choices=[]; used_events=set()
-        for sport in ACTIVE_SPORTS:
-            for x in dogs:
-                if x["sport"]==sport and x["event_id"] not in used_events:
-                    dog_choices.append(x);used_events.add(x["event_id"]);break
-        for x in dogs:
-            if len(dog_choices)>=5:break
-            if x["event_id"] not in used_events:
-                dog_choices.append(x);used_events.add(x["event_id"])
-        if dogs:
-            for x in dog_choices[:5]:
-                ask=x["quote"]["ask"]
-                recommended,reason=royal_under_dog_units(x)
-                # Separate deliberately small shadow experiments from Queen's own pick.
-                # A contrary-side longshot must NEVER be called a recommended bet.
-                u=recommended if recommended>0 else .10
-                shadow=recommended==0
-                profit=royal_profit_preview(ask,u)
-                per_unit=royal_profit_preview(ask,1.0)
-                with st.container(border=True):
-                    dog_game=x.get("score_game")
-                    st.markdown(f"**{SPORT_ICON.get(x['sport'],'🏆')} {html.escape(str(x['selection']))}** · {ask*100:.1f}¢ YES")
-                    st.caption(royal_game_clock(dog_game,x.get("start")))
-                    dog_score=royal_score_line(dog_game,x.get("selection"))
-                    if dog_score: st.caption(dog_score)
-                    if shadow:
-                        st.markdown(f"**Queen: 0 U · WATCH ONLY** · {reason}")
-                        st.caption(f"Optional shadow-paper test: {u:g} U (${u*BASE_UNIT:.2f}) · NOT a recommended wager")
-                    else:
-                        st.markdown(f"**Experimental paper units: {u:g} U · ${u*BASE_UNIT:.2f}** · {reason}")
-                    if u>0 and profit is not None:
-                        st.caption(f"Shadow test if YES wins: +${profit:,.2f} gross · If wrong: -${u*BASE_UNIT:,.2f} · Per 1 U gross: +${per_unit:,.2f}")
-                    else:
-                        st.caption(f"Per 1 U ($20) hypothetical gross win profit: +${per_unit:,.2f} · Actual allocation $0")
-                    st.caption("Hypothetical quote-based payout before fees. No fill, wager, or guaranteed value. Shadow tests are NOT Queen's picks.")
-        else:
-            st.caption("No verified underdog quotes available right now. Queen will not invent candidates.")
-        st.caption("Underdog prices alone do not establish value. Paper testing only.")
-
-    if focus_choice == "🏆 PARLAYS":
-        st.subheader('👑 Queen’s Original Locked Parlays')
-        st.caption('Automatic first qualifying same-day paper tickets. Past tickets are in Previous Parlays below.')
-        if royal_new:
-            st.success('New original paper tickets saved: '+', '.join(f'{n}-leg' for n in royal_new))
-        own_today=[t for t in royal_tickets if str(t.get('session_key') or '').startswith('V56-QUEEN-AUTO-'+current.isoformat()+'-')]
-        if not own_today:
-            st.info('No eligible original parlay yet for today. Queen will wait instead of mixing dates.')
-        else:
-            for t in sorted(own_today,key=lambda x:x.get('leg_count') or 0):
-                legs=royal_legs.get(t['id'],[])
-                status={'WIN':'✅ WIN','LOSS':'❌ LOSS','PENDING':'⏳ PENDING'}.get(t.get('status'),'⏳ PENDING')
-                teams=' · '.join(str(leg.get('selection') or '?') for leg in legs)
-                st.markdown(f"**🔒 {t['leg_count']}-leg · {status}**")
-                saved_leg_lookup={r['id']:r for r in royal_candidates}
-                originals=[saved_leg_lookup[l['prediction_id']] for l in legs if l.get('prediction_id') in saved_leg_lookup]
-                if len(originals)==len(legs) and originals:
-                    automatic_grade,automatic_risk=royal_parlay_research_grade(originals)
-                    st.caption(f'👑 GRADE {automatic_grade} · {automatic_risk}')
-                st.markdown(f"**{royal_parlay_units_line(t['leg_count'],historical=True,research_only=royal_parlay_has_unpriced_research(legs))}**")
-                st.caption(teams if teams else 'Original ticket awaiting recovered leg details')
-        st.caption('🎾 Tennis-only automatic tickets require independent pre-match evidence; scores alone do not qualify.')
-        st.divider()
-        st.subheader('🎯 My Parlay Builder')
-        st.caption('Build from Queen’s ALREADY LOCKED predictions only. Generate Another changes the combination, never the original game picks. Same-day Central Time, future games only.')
-        sport_option=st.selectbox('Parlay sports', ['All Sports','NBA','NFL','NHL','NCAAF','Tennis'],key='royal_v571_parlay_sport')
-        selected_legs=st.radio('Choose your parlay',[2,3,5,10],horizontal=True,
-            format_func=lambda n:{2:'👑 2 Legs',3:'👑 3 Legs',5:'👑 5 Legs',10:'🎰 10 Lotto'}[n],
-            key='royal_parlay_size_v56')
-        selected_pool=[r for r in royal_candidates if sport_option=='All Sports' or r.get('sport')==sport_option]
-        available_days=sorted({r['royal_slate_day'] for r in selected_pool if r.get('royal_slate_day')})
-        if available_days:
-            chosen_day=st.selectbox('Games on (Central Time)',available_days,
-                                    index=available_days.index(current.isoformat()) if current.isoformat() in available_days else 0,
-                                    key='royal_v571_slate_day')
-        else:
-            chosen_day=current.isoformat()
-        same_day_candidates=[r for r in selected_pool if r.get('royal_slate_day')==chosen_day]
-        # Selection is a recombination of original prediction IDs. Multiple contracts
-        # on the same fixture must never count as separate legs.
-        unique_candidates=[];seen_fixtures=set()
-        for r in same_day_candidates:
-            fixture=royal_fixture_key(r)
-            if fixture is None or fixture in seen_fixtures:continue
-            seen_fixtures.add(fixture);unique_candidates.append(r)
-        same_day_candidates=unique_candidates
-        sport_counts={sport:sum(r.get('sport')==sport for r in same_day_candidates) for sport in ACTIVE_SPORTS}
-        counts=' · '.join(f'{sport} {n}' for sport,n in sport_counts.items() if n)
-        st.caption(f'✅ {len(same_day_candidates)} eligible saved picks for {chosen_day} CT'+(f' · {counts}' if counts else ' · None yet'))
-
-        def royal_v571_propose(n,iteration=0):
-            import random
-            if len(same_day_candidates)<n:return []
-            seed=f'{chosen_day}|{sport_option}|{n}|{iteration}|ROYAL-V571'
-            rng=random.Random(int(hashlib.sha256(seed.encode()).hexdigest()[:16],16))
-            pool=same_day_candidates.copy()
-            rng.shuffle(pool)
-            if sport_option=='All Sports':
-                # Round-robin sports when possible. Always fill available positions
-                # rather than requiring every sport to have a game today.
-                buckets={sport:[r for r in pool if r.get('sport')==sport] for sport in ACTIVE_SPORTS}
-                sports=[sport for sport in ACTIVE_SPORTS if buckets[sport]]
-                rng.shuffle(sports)
-                mixed=[]
-                while sports:
-                    remaining=[]
-                    for sport in sports:
-                        if buckets[sport]:mixed.append(buckets[sport].pop(0))
-                        if buckets[sport]:remaining.append(sport)
-                    sports=remaining
-                pool=mixed
-            selection=[];fixtures=set()
-            for r in pool:
-                fixture=royal_fixture_key(r)
-                if fixture is None or fixture in fixtures:continue
-                fixtures.add(fixture);selection.append(r)
-                if len(selection)==n:break
-            return selection if len(selection)==n else []
-
-        pkey=f'royal_v571_proposal|{chosen_day}|{sport_option}|{selected_legs}'
-        iteration_key=f'royal_v571_iteration|{chosen_day}|{sport_option}|{selected_legs}'
-        st.session_state.setdefault(iteration_key,0)
-        available_by_id={r['id']:r for r in same_day_candidates}
-        proposal_ids=st.session_state.get(pkey,[])
-        if not proposal_ids or len(proposal_ids)!=selected_legs or any(i not in available_by_id for i in proposal_ids):
-            st.session_state[pkey]=[r['id'] for r in royal_v571_propose(selected_legs,st.session_state[iteration_key])]
-        if st.button('🔄 Generate Another',key='royal_v571_another',use_container_width=True):
-            if len(same_day_candidates)>=selected_legs:
-                old=tuple(st.session_state.get(pkey,[]))
-                for _ in range(80):
-                    st.session_state[iteration_key]+=1
-                    attempt=[r['id'] for r in royal_v571_propose(selected_legs,st.session_state[iteration_key])]
-                    if tuple(attempt)!=old:
-                        st.session_state[pkey]=attempt
-                        break
-                else:
-                    st.info('There is only one distinct eligible combination right now.')
-            else:
-                st.info(f'{len(same_day_candidates)} eligible saved picks; {selected_legs} needed. Try 3 legs, All Sports, or a different date.')
-        proposal=[available_by_id[i] for i in st.session_state.get(pkey,[]) if i in available_by_id]
-        if len(proposal)==selected_legs and royal_ticket_is_valid(proposal,chosen_day):
-            grade,risk=royal_parlay_research_grade(proposal)
-            st.markdown(f'**🎯 {chosen_day} CT · {sport_option} · {selected_legs}-LEG · NOT LOCKED**')
-            st.markdown(f'**👑 PARLAY GRADE {grade} · {risk}**')
-            st.markdown(f'**{royal_parlay_units_line(selected_legs,research_only=royal_parlay_has_unpriced_research(proposal))}**')
+        st.error('Prediction storage or feed unavailable: '+type(exc).__name__+'. No new records confirmed.'); return
+    wins=sum(r['result']=='WIN' for r in rows); losses=sum(r['result']=='LOSS' for r in rows)
+    cols=st.columns(4)
+    for c,label,value in zip(cols,['Correct','Wrong','Accuracy','Pending'],[wins,losses,f'{wins/(wins+losses):.1%}' if wins+losses else '—',sum(r['result']=='PENDING' for r in rows)]): c.metric(label,value)
+    st.caption('Accuracy excludes pushes and pending. Experimental predictions, not calibrated confidence. Refreshes while dashboard is connected.')
+    if page=='Live':
+        for (sport,_),g in index.items():
+            if g.get('state')=='in': royal_scoreboard(g,sport,compact=True)
+    if page in ('Picks','Live'):
+        active=[r for r in rows if r['result']=='PENDING' and (page!='Live' or r['phase']=='LIVE')]
+        if not active: st.info('No qualifying predictions yet.')
+        for r in sorted(active,key=lambda x:x['start']):
             with st.container(border=True):
-                for pos,r in enumerate(proposal,1):
-                    time=parse_date(r.get('royal_verified_start'))
-                    time_label=time.astimezone(CT).strftime('%I:%M %p CT') if time else 'Time unavailable'
-                    pgrade,reason=royal_pick_research_grade(r)
-                    st.markdown(f"**{pos}. {SPORT_ICON.get(r['sport'],'🏆')} {html.escape(str(r['selection']))}** · {html.escape(str(r['sport']))} · {time_label}")
-                    st.caption(f'GRADE {pgrade} · {reason} · {royal_pick_risk(r)}')
-                st.caption('Research grades indicate evidence quality, not verified win probabilities. 3/5/10-leg combinations have compounding loss risk. No combined executable odds or verified fills.')
-            if st.button('🔒 Lock this parlay for PAPER tracking',key='royal_v571_lock',use_container_width=True):
-                if not royal_ticket_is_valid(proposal,chosen_day):
-                    st.warning('Start times changed. Regenerate before locking.')
-                    st.stop()
-                ids=tuple(r['id'] for r in proposal)
-                with db() as conn:
-                    prior=conn.execute('SELECT id FROM royal_parlays_v37 WHERE leg_count=?',(selected_legs,)).fetchall()
-                    duplicates=False
-                    for prev in prior:
-                        prior_ids=[x['prediction_id'] for x in conn.execute('SELECT prediction_id FROM royal_parlay_legs_v37 WHERE parlay_id=?',(prev['id'],))]
-                        if set(prior_ids)==set(ids):duplicates=True;break
-                    if duplicates:
-                        st.warning('This exact combination is already locked. Generate Another for a different set.')
-                    else:
-                        fingerprint=hashlib.sha256(('|'.join(sorted(ids))+'|'+utc().isoformat()).encode()).hexdigest()[:32]
-                        session_key='V571-MANUAL-'+chosen_day+'-'+fingerprint
-                        conn.execute('INSERT INTO royal_parlays_v37 (id,session_key,leg_count,created_at,note) VALUES (?,?,?,?,?)',
-                             (fingerprint,session_key,selected_legs,utc().isoformat(),
-                              f'V5.7.1 saved original picks, {sport_option}, CT {chosen_day}. Research grade {grade}; {risk}; no executable combined prices.'))
-                        for pos,r in enumerate(proposal,1):
-                            conn.execute("""INSERT INTO royal_parlay_legs_v37
-                                (parlay_id,leg_number,prediction_id,event_id,sport,title,selection,model)
-                                VALUES (?,?,?,?,?,?,?,?)""",
-                                (fingerprint,pos,r['id'],r['event_id'],r['sport'],r['title'],r['selection'],r.get('model','')))
-                        conn.commit()
-                        st.success('Paper parlay locked for tracking. Queen’s original picks have NOT changed.')
-                        st.session_state[iteration_key]+=1
-                        st.session_state.pop(pkey,None)
-        else:
-            st.info(f'Only {len(same_day_candidates)} eligible saved picks for {chosen_day} CT ({sport_option}); {selected_legs} needed. Queen won’t invent picks, include started games, or mix dates.')
-
-        st.divider()
-    if focus_choice == "📊 PAST TICKETS":
-        st.subheader('📋 Previous Parlays')
-        st.caption('Compact history: choose a time period, then select ONE ticket to see its legs. All saved tickets remain intact.')
-        if not royal_tickets:
-            st.caption('No paper tickets locked yet. Generated proposals are not tracked unless locked.')
-        else:
-            recent=sorted(royal_tickets,key=lambda t:t.get('created_at') or '',reverse=True)
-            period=st.radio('Show tickets',('Today','Previous','All'),horizontal=True,key='royal_v561_history_period')
-            today_ct=current.isoformat()
-            def ticket_ct_day(t):
-                dt=parse_date(t.get('created_at'))
-                return dt.astimezone(CT).date().isoformat() if dt else ''
-            visible=[t for t in recent if period=='All' or (ticket_ct_day(t)==today_ct if period=='Today' else ticket_ct_day(t)!=today_ct)]
-            won=sum(t.get('status')=='WIN' for t in visible)
-            lost=sum(t.get('status')=='LOSS' for t in visible)
-            pending=sum(t.get('status') not in ('WIN','LOSS') for t in visible)
-            st.caption(f'{len(visible)} tickets · ✅ {won} won · ❌ {lost} lost · ⏳ {pending} pending')
-            if visible:
-                def ticket_label(t):
-                    icon={'WIN':'✅','LOSS':'❌','PENDING':'⏳'}.get(t.get('status'),'⏳')
-                    key=str(t.get('session_key') or '')
-                    source='Queen' if key.startswith('V56-QUEEN-AUTO-') else 'Mine' if key.startswith('V56-MANUAL-') else 'Older'
-                    return f"{icon} {t['leg_count']}-leg · {source} · {local(t.get('created_at'))}"
-                chosen_id=st.selectbox('Select a parlay to review',[t['id'] for t in visible],
-                    format_func=lambda tid: ticket_label(next(t for t in visible if t['id']==tid)),key='royal_v561_history_selected')
-                ticket=next(t for t in visible if t['id']==chosen_id)
-                legs=royal_legs.get(ticket['id'],[])
-                status={'WIN':'✅ WIN','LOSS':'❌ LOSS','PENDING':'⏳ PENDING'}.get(ticket.get('status'),'⏳ PENDING')
-                with st.container(border=True):
-                    st.markdown(f"**{status} · {ticket['leg_count']}-leg paper parlay**")
-                    st.markdown(f"**{royal_parlay_units_line(ticket['leg_count'],historical=True,research_only=royal_parlay_has_unpriced_research(legs))}**")
-                    st.caption(f"{ticket.get('wins') or 0} won · {ticket.get('losses') or 0} lost · {max(0,len(legs)-(ticket.get('wins') or 0)-(ticket.get('losses') or 0))} pending")
-                    if not legs:
-                        st.caption('This older backup preserved the ticket header but not the leg details.')
-                    for leg in legs:
-                        result=leg.get('leg_result','PENDING')
-                        mark='✅' if result=='WIN' else '❌' if result=='LOSS' else '⏳'
-                        st.markdown(f"{mark} **{html.escape(str(leg.get('selection') or 'Unknown'))}** · {html.escape(str(leg.get('sport') or ''))}")
-            else:
-                st.caption('No tickets for this period. Switch to All to see the complete saved history.')
-        with st.expander('ℹ️ Parlay limitations',expanded=False):
-            st.caption('Research suggestions are not verified value bets or purchasable Polymarket parlay contracts. No validated combined odds, executable payout, or trade is assumed.')
-        with st.expander('📰 Research sources & feed health', expanded=False):
-            st.caption('ESPN: scoreboard cross-check · Polymarket US: discovered markets and indicative quotes · Live Tennis API: cached score-only feed.')
-            st.caption('Official league injury/lineup reports and reputable broadcaster updates can inform future model rules, but are NOT automatically ingested or scored by this version.')
-            st.caption('Read news in your browser: NBA.com · NFL.com · NHL.com · NCAA.com · ATPtour.com · WTAtennis.com. Do not interpret several articles about one report as independent evidence.')
-            st.caption('Tennis feed uses up to one request per 30-minute shared cache window when the Tennis page runs. Multiple server replicas/restarts can increase usage. Check provider usage directly.')
-        with st.expander("ℹ️ Paper testing & data storage",expanded=False):
-            st.caption("No real orders. Paper results do not establish profitability. Local SQLite on Streamlit Community Cloud may be lost on restart/redeploy; export backups or use persistent storage.")
-
-with tab_home:
-    royal_auto_scan()
+                st.markdown(f"**{r['sport']} · {r['away']} vs {r['home']}**")
+                line=r['line']; suffix='' if line is None else f' · {line:g}' if r['kind']=='TOTAL' else f' · {line if r["selection"]==r["home"] else -line:+g}'
+                st.write(f"{r['phase']} · {r['kind']} · {r['selection']}{suffix}")
+                st.caption(r['confidence']+' · '+r['why'])
+    elif page=='Results':
+        st.dataframe(rows,hide_index=True,use_container_width=True)
+        st.download_button('Export new predictions',_csv_bytes(rows),'royal_accuracy.csv','text/csv')
+        with db() as c: legacy=[dict(r) for r in c.execute('SELECT * FROM royal_predictions_v34')]
+        st.caption('Legacy history preserved separately; not counted in new accuracy.')
+        st.download_button('Export legacy predictions',_csv_bytes(legacy),'royal_legacy.csv','text/csv')
+    else:
+        for field in ('sport','kind','phase','confidence'):
+            st.subheader(field.title())
+            for value in sorted({r[field] for r in rows}):
+                group=[r for r in rows if r[field]==value]; w=sum(r['result']=='WIN' for r in group); l=sum(r['result']=='LOSS' for r in group)
+                st.write(f'{value}: {w} correct / {l} wrong · '+(f'{w/(w+l):.1%}' if w+l else '—'))
+    st.caption(archive_status)
+dashboard()
