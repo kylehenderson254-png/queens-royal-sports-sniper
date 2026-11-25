@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -177,8 +177,8 @@ def royal_secret(key):
 FOCUS=('NBA','NFL','NHL','NCAAF')
 ODDS_KEYS={'NBA':'basketball_nba','NFL':'americanfootball_nfl','NHL':'icehockey_nhl','NCAAF':'americanfootball_ncaaf'}
 @st.cache_data(ttl=900,show_spinner=False)
-def royal_consensus(sport):
-    key=royal_secret('ODDS_API_KEY') or royal_secret('THE_ODDS_API_KEY')
+def royal_consensus(sport, _key):
+    key=_key
     if not key: return [],'Odds API key not found'
     try:
         r=requests.get('https://api.the-odds-api.com/v4/sports/'+ODDS_KEYS[sport]+'/odds',params={'apiKey':key,'regions':'us','markets':'h2h,spreads,totals','oddsFormat':'decimal'},timeout=10)
@@ -298,21 +298,22 @@ def current_board(sport,today):
     future,fs=collect_days(sport,[today+timedelta(days=i) for i in range(1,7)],schedule_day)
     return list({g['event_id']:g for g in recent+future}.values()),status+'; upcoming '+fs
 
-def research(sport,today):
+def research(sport,today,odds_key):
     offsets=range(1,15) if sport in ('NBA','NHL') else [i for i in range(1,36) if (today-timedelta(days=i)).weekday() in ((3,4,5,6,0) if sport=='NFL' else (3,4,5))]
     games,status=collect_days(sport,[today-timedelta(days=i) for i in offsets],history_day)
-    odds,odds_status=royal_consensus(sport)
+    odds,odds_status=royal_consensus(sport,odds_key)
     return games,status,odds,odds_status
 
-def persist(new,index):
+def persist(new,index,url):
     import psycopg2
     from psycopg2.extras import Json, execute_values
-    url=royal_secret('QUEEN_DATABASE_URL')
     if not url: raise RuntimeError('Missing database URL')
-    conn=psycopg2.connect(url,connect_timeout=5,sslmode='require',options='-c statement_timeout=8000 -c lock_timeout=3000')
+    conn=psycopg2.connect(url,connect_timeout=12,sslmode='require')
     try:
         with conn:
             with conn.cursor() as c:
+                c.execute("SET LOCAL statement_timeout = '15000ms'")
+                c.execute("SET LOCAL lock_timeout = '5000ms'")
                 c.execute('SELECT pg_advisory_xact_lock(254740)')
                 c.execute("CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v74_test (id text PRIMARY KEY,payload jsonb NOT NULL,result text NOT NULL DEFAULT 'PENDING')")
                 if new:
@@ -342,16 +343,16 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.4.1 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.4.2 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
-def collect_snapshot():
+def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
     with ThreadPoolExecutor(max_workers=4) as pool:
         boards=list(pool.map(lambda sport:current_board(sport,today),FOCUS))
     index={(sport,g['event_id']):g for sport,(games,status) in zip(FOCUS,boards) for g in games if g['event_id']}
     active=[(sport,g) for (sport,_),g in index.items() if g['state'] in ('pre','in')]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        research_rows=list(pool.map(lambda sport:research(sport,today),FOCUS))
+        research_rows=list(pool.map(lambda sport:research(sport,today,odds_key),FOCUS))
     new=[]; diagnostics=[]; market_cards=[]
     for sport,(history,_,_,_) in zip(FOCUS,research_rows):
         for g in history: index.setdefault((sport,g['event_id']),g)
@@ -372,13 +373,14 @@ def collect_snapshot():
             predictions=forecast(g,sport,history,spread,total)
             for kind,selection,line,confidence,why in predictions:
                 new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
-    storage_ok=False
+    storage_ok=False; storage_error=None
     try:
-        rows=persist(new,index); storage_ok=True
+        rows=persist(new,index,db_url); storage_ok=True
     except Exception as e:
-        log.error('Prediction storage: %s SQLSTATE=%s',type(e).__name__,getattr(e,'pgcode',None))
+        storage_error=type(e).__name__ + (' / '+str(e.pgcode) if getattr(e,'pgcode',None) else '')
+        log.error('Prediction storage: %s',storage_error)
         rows=[dict(r,result='UNSAVED') for r in new]
-    return today,index,active,market_cards,diagnostics,rows,storage_ok
+    return today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error
 
 class SnapshotWorker:
     def __init__(self):
@@ -388,7 +390,7 @@ class SnapshotWorker:
         self.snapshot=None
         self.finished=-float("inf")
         self.error=None
-    def poll(self):
+    def poll(self,db_url,odds_key):
         with self.lock:
             if self.future is not None and self.future.done():
                 try:
@@ -398,21 +400,50 @@ class SnapshotWorker:
                     log.error('Research worker: %s',self.error)
                 self.future=None; self.finished=time.monotonic()
             if self.future is None and time.monotonic()-self.finished>=30:
-                self.future=self.pool.submit(collect_snapshot)
+                self.future=self.pool.submit(collect_snapshot,db_url,odds_key)
             return self.snapshot,self.future is not None,self.error
 
 @st.cache_resource
 def snapshot_worker(): return SnapshotWorker()
 
+def plain_bet(x):
+    selection=x['selection']; line=x['line']
+    if x['kind']=='WINNER': return 'Moneyline · '+selection, selection+' must win the game outright.'
+    if x['kind']=='SPREAD':
+        n=line if selection==x['home'] else -line
+        if n<0: detail=f'{selection} must win by at least {math.floor(-n)+1}.'
+        elif n>0: detail=f'{selection} can win or lose by at most {math.ceil(n)-1}.'
+        else: detail=f'{selection} must win outright.'
+        if float(n).is_integer(): detail+=' Exact handicap tie is a push under standard spread rules.'
+        return f'Spread · {selection} {n:+g}',detail
+    over=selection=='OVER'
+    detail=f'Both teams combined must score {math.floor(line)+1} or more.' if over else f'Both teams combined must score {math.ceil(line)-1} or fewer.'
+    if float(line).is_integer(): detail+=' Exactly '+str(int(line))+' is a push under standard total rules.'
+    return f'Over/under · {selection.title()} {line:g}',detail
+
+def render_games(items):
+    for i in range(0,len(items),3):
+        for col,m in zip(st.columns(3),items[i:i+3]):
+            with col:
+                g=m.get('game',{}); live=g.get('state')=='in'
+                def team(t):
+                    logo=g.get('logos',{}).get(t) or ""
+                    mark=f'<img src="{html.escape(logo,quote=True)}" width="24" height="24" style="object-fit:contain">' if logo else ''
+                    score=g.get('scores',{}).get(t) if live else None
+                    return f'<div class="rteam">{mark}<span>{html.escape(t)}</span><b>{html.escape(str(score)) if score is not None else ""}</b></div>'
+                detail=g.get('detail') if live else local(m['start'])
+                p=m.get('prob'); extra=('Market favorite: '+(m['home'] if p>.5 else m['away'] if p<.5 else 'Even')+f' {max(p,1-p):.0%}') if p is not None else ('Live score' if live else 'Scheduled')
+                st.markdown(f'<div class="rgame"><small>{html.escape(m["sport"]+" · "+str(detail))}</small>{team(m["away"])}{team(m["home"])}<small>{html.escape(extra)} · {"ESPN" if g else "Odds API"}</small></div>',unsafe_allow_html=True)
+
 @st.fragment(run_every='5s')
 def dashboard():
-    snapshot,busy,error=snapshot_worker().poll()
+    snapshot,busy,error=snapshot_worker().poll(royal_secret("QUEEN_DATABASE_URL"),royal_secret("ODDS_API_KEY") or royal_secret("THE_ODDS_API_KEY"))
     if snapshot is None:
         st.info('Loading initial research in background. Navigation remains available.' if not error else 'Research failed: '+error+'; retry scheduled.')
         return
-    today,index,active,market_cards,diagnostics,rows,storage_ok=snapshot
+    today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error=snapshot
     if storage_ok: st.caption('Permanent TEST prediction storage connected')
-    else: st.warning('Permanent storage unavailable; accuracy totals are not available.')
+    else: st.warning('Permanent storage unavailable; accuracy totals are not available. '+str(storage_error or 'Unknown error'))
     if busy: st.caption('Updating research in background; showing last completed snapshot.')
     if error: st.warning('Latest research refresh failed: '+error)
     saved=all(r['result']!='UNSAVED' for r in rows) and storage_ok
@@ -423,7 +454,7 @@ def dashboard():
         selected=st.segmented_control('Sport',['All',*FOCUS],default='All',key='sport_filter') or 'All'
         horizon=st.segmented_control('Schedule',['Today','Next 3 days','Next 7 days'],default='Today') or 'Today' if page=='Picks' else 'Today'
         days={'Today':0,'Next 3 days':2,'Next 7 days':6}[horizon]
-        st.subheader('Live scoreboard' if page=='Live' else 'Scoreboard')
+
         display=[]
         for sport,g in active:
             if selected!='All' and sport!=selected: continue
@@ -439,38 +470,37 @@ def dashboard():
                 if not today<=parse_date(m['start']).astimezone(CT).date()<=today+timedelta(days=days): continue
                 if any(x['sport']==m['sport'] and _unique_score_team(m['home'],[x['home'],x['away']],m['sport'])==x['home'] and _unique_score_team(m['away'],[x['home'],x['away']],m['sport'])==x['away'] and abs((parse_date(x['start'])-parse_date(m['start'])).total_seconds())<7200 for x in display): continue
                 display.append(m)
-        for i in range(0,len(display),4):
-            for col,m in zip(st.columns(4),sorted(display,key=lambda x:x['start'])[i:i+4]):
-                with col:
-                    g=m.get('game',{}); live=g.get('state')=='in'
-                    def team(t):
-                        logo=g.get('logos',{}).get(t) or ""
-                        mark=f'<img src="{html.escape(logo,quote=True)}" width="24" height="24" style="object-fit:contain">' if logo else ''
-                        score=g.get('scores',{}).get(t) if live else None
-                        return f'<div class="rteam">{mark}<span>{html.escape(t)}</span><b>{html.escape(str(score)) if score is not None else ""}</b></div>'
-                    detail=g.get('detail') if live else local(m['start'])
-                    p=m.get('prob'); extra=('Market favorite: '+(m['home'] if p>.5 else m['away'] if p<.5 else 'Even')+f' {max(p,1-p):.0%}') if p is not None else ('Live score' if live else 'Scheduled')
-                    st.markdown(f'<div class="rgame"><small>{html.escape(m["sport"]+" · "+str(detail))}</small>{team(m["away"])}{team(m["home"])}<small>{html.escape(extra)} · {"ESPN" if g else "Odds API"}</small></div>',unsafe_allow_html=True)
+        live_items=[m for m in display if m.get('game',{}).get('state')=='in']
+        if live_items:
+            st.subheader('Live games')
+            render_games(sorted(live_items,key=lambda m:m['start']))
         if not display: st.info('Live status unavailable or no games confirmed in progress. Check Stats for feed health.' if page=='Live' else 'No verified games available for this view.')
-        st.subheader('♛ Queen’s research & predictions')
+        st.subheader('♛ Queen’s pregame predictions' if page=='Picks' else 'Live research')
         st.caption('Scoring-form baseline only; injuries, rest and opponent strength are not modeled. Exact-line ties may push.')
         shown=[r for r in rows if r['result'] in ('PENDING','UNSAVED') and (r['sport'],r['event_id']) in index and index[(r['sport'],r['event_id'])]['state']=='pre' and page=='Picks' and (selected=='All' or r['sport']==selected) and parse_date(r['start']) and today<=parse_date(r['start']).astimezone(CT).date()<=today+timedelta(days=days)]
         groups={}
         for r in shown: groups.setdefault((r['sport'],r['event_id']),[]).append(r)
-        for group in sorted(groups.values(),key=lambda group:group[0]['start']):
-            r=group[0]
-            with st.container(border=True):
-                st.markdown(f"**{r['sport']} · {r['away']} vs {r['home']}**")
-                for x in group:
-                    line=x['line']; selection=x['selection']
-                    if x['kind']=='SPREAD':
-                        n=line if selection==x['home'] else -line
-                        detail=f'{selection} {n:+g} — '+(f'must win by more than {abs(n):g}' if n<0 else f'can win or lose by less than {n:g}' if n>0 else 'must win')
-                    elif x['kind']=='TOTAL': detail=f'{selection} {line:g} — combined score must be {"above" if selection=="OVER" else "below"} this number'
-                    else: detail=selection+' to win outright'
-                    st.write(x['kind'].title()+': '+detail)
-                st.caption(r['why'].replace('Simple scoring-form baseline; uncalibrated.',''))
-        if not shown: st.info('Independent research unavailable for this view. Market favorites are not Queen predictions.')
+        ordered=sorted(groups.values(),key=lambda group:group[0]['start'])
+        for i in range(0,len(ordered),2):
+            for col,group in zip(st.columns(2),ordered[i:i+2]):
+                with col, st.container(border=True):
+                    r=group[0]
+                    st.markdown(f"**{r['away']} vs {r['home']}**")
+                    st.caption(r['sport']+' · '+local(r['start'])+' · '+('Not saved' if r['result']=='UNSAVED' else 'Saved research'))
+                    st.markdown('**Projected score & reasoning**')
+                    st.write(r['why'].replace('Simple scoring-form baseline; uncalibrated.',''))
+                    for x in sorted(group,key=lambda x:('WINNER','SPREAD','TOTAL').index(x['kind'])):
+                        label,detail=plain_bet(x)
+                        st.markdown('**'+label+'**')
+                        st.write(detail)
+                    st.caption('WATCH · Experimental model; exchange price not verified. No calibrated confidence.')
+        if not shown: st.info('No qualifying pregame research for this view.' if page=='Picks' else 'Live predictions are not enabled. Live scores only.')
+        if page=='Picks':
+            upcoming=[m for m in display if m.get('game',{}).get('state')!='in']
+            st.subheader('Upcoming games')
+            for day in sorted({parse_date(m['start']).astimezone(CT).date() for m in upcoming}):
+                st.markdown('**'+day.strftime('%A, %b %d')+'**')
+                render_games(sorted([m for m in upcoming if parse_date(m['start']).astimezone(CT).date()==day],key=lambda m:m['start']))
     elif page=='Results':
         if rows and saved: st.dataframe(rows,width='stretch',hide_index=True)
         else: st.info('No verified saved results available.')
