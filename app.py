@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.2A | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -335,7 +335,7 @@ def logo_directory(sport):
     except Exception: return {}
 def logo_for(sport,name): return logo_directory(sport).get(clean(name),'')
 
-st.markdown("""<style>.block-container{max-width:none!important;padding:1rem 2vw 2rem!important;width:100%!important}.stApp{background:radial-gradient(ellipse at top,#29134b 0%,#100d20 42%,#090812 100%)}div[data-testid=stMetric]{border:1px solid #67449b;border-radius:12px;padding:12px}img{object-fit:contain}div[data-testid=stImage]{width:100%!important}div[data-testid=stImage] img{width:100%!important;border-radius:12px}div[data-testid=stSegmentedControl] button{min-height:44px;font-weight:700}div[data-testid=stMetric]{background:#1c1532}.rgame{background:linear-gradient(125deg,#201435,#100d1d);border:1px solid #634293;border-radius:12px;padding:9px 12px;margin-bottom:5px;color:#fff;box-shadow:0 0 10px #57288a33}.rteam{display:flex;align-items:center;gap:9px;min-height:27px;font-size:13px}.rteam b{margin-left:auto}.rgame small{color:#c2addd;font-size:11px}</style>""",unsafe_allow_html=True)
+st.markdown("""<style>.block-container{max-width:none!important;padding:1rem 2vw 2rem!important;width:100%!important}.stApp{background:radial-gradient(ellipse at top,#29134b 0%,#100d20 42%,#090812 100%)}div[data-testid=stMetric]{border:1px solid #67449b;border-radius:12px;padding:12px}img{object-fit:contain}div[data-testid=stImage]{width:100%!important}div[data-testid=stImage] img{width:100%!important;border-radius:12px}div[data-testid=stSegmentedControl] button{min-height:44px;font-weight:700}div[data-testid=stMetric]{background:#1c1532}.rgame{background:linear-gradient(125deg,#201435,#100d1d);border:1px solid #634293;border-radius:12px;padding:9px 12px;margin-bottom:5px;color:#fff;box-shadow:0 0 10px #57288a33}.rteam{display:flex;align-items:center;gap:9px;min-height:27px;font-size:13px}.rteam b{margin-left:auto}.rgame small{color:#c2addd;font-size:11px}.rpred{background:linear-gradient(135deg,#28163f,#100d1d 80%);border:1px solid #8050b4;border-radius:13px;padding:12px;margin-bottom:9px;color:#fff;box-shadow:0 2px 12px #57288a33;font-size:13px}.rpred .meta{font-size:11px;color:#c6addf}.rpred .match{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:9px 0}.rpred .side{flex:1;text-align:center;font-weight:700}.rpred .side img{display:block;margin:0 auto 4px;width:32px;height:32px}.rpred .project{font-size:23px;font-weight:800;color:#e4c5ff;white-space:nowrap}.rpred .bet{border-top:1px solid #51346c;padding:6px 0}.rpred .bet b{color:#e0b5ff}.rpred .bet div{color:#eee;font-size:12px;line-height:1.35}.rpred .watch{color:#ffd18a;font-size:11px;margin-top:5px}.rpred .reason{color:#c6addf;font-size:11px;margin-bottom:6px}</style>""",unsafe_allow_html=True)
 banners=[p for folder in (Path('.'),Path('assets'),Path('images')) if folder.is_dir() for p in folder.iterdir() if p.is_file() and p.suffix.lower() in ('.png','.jpg','.jpeg','.webp') and 'banner' in p.stem.lower()]
 if banners:
     banner=sorted(banners)[0]
@@ -343,7 +343,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.4.2A TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.4.3 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -412,7 +412,7 @@ def plain_bet(x):
     if x['kind']=='SPREAD':
         n=line if selection==x['home'] else -line
         if n<0: detail=f'{selection} must win by at least {math.floor(-n)+1}.'
-        elif n>0: detail=f'{selection} can win or lose by at most {math.ceil(n)-1}.'
+        elif n>0: detail=f'{selection} can win outright or lose by fewer than {n:g} points.'
         else: detail=f'{selection} must win outright.'
         if float(n).is_integer(): detail+=' Exact handicap tie is a push under standard spread rules.'
         return f'Spread · {selection} {n:+g}',detail
@@ -420,6 +420,27 @@ def plain_bet(x):
     detail=f'Both teams combined must score {math.floor(line)+1} or more.' if over else f'Both teams combined must score {math.ceil(line)-1} or fewer.'
     if float(line).is_integer(): detail+=' Exactly '+str(int(line))+' is a push under standard total rules.'
     return f'Over/under · {selection.title()} {line:g}',detail
+
+def prediction_card(group,g):
+    r=group[0]; esc=lambda v:html.escape(str(v),quote=True)
+    why=r['why']; match=re.search(r'projected score (.+?) (-?\d+(?:\.\d+)?), (.+?) (-?\d+(?:\.\d+)?)\.',why)
+    scores={match[1]:match[2],match[3]:match[4]} if match else {}
+    # Keep decimal precision in the second score, even when followed by punctuation.
+    if match:
+        m=re.search(r'projected score (.+?) (\d+\.\d+), (.+?) (\d+\.\d+)\.',why)
+        if m: scores={m[1]:m[2],m[3]:m[4]}
+    def side(t):
+        logo=g.get('logos',{}).get(t) or ''
+        img=f'<img src="{esc(logo)}" alt="">' if logo.startswith('https://') else ''
+        return f'<div class="side">{img}{esc(t)}</div>'
+    projected=f"{scores[r['away']]} – {scores[r['home']]}" if r['away'] in scores and r['home'] in scores else '—'
+    reason=why.split(': projected score')[0]+' · Scoring-form baseline' if scores else why
+    bets=''
+    for x in sorted(group,key=lambda x:('WINNER','SPREAD','TOTAL').index(x['kind'])):
+        label,detail=plain_bet(x)
+        bets+=f'<div class="bet"><b>{esc(label)}</b><div>{esc(detail)}</div></div>'
+    status='Not saved' if r['result']=='UNSAVED' else 'Saved research'
+    return f'<div class="rpred"><div class="meta">{esc(r["sport"]+" · "+local(r["start"])+" · "+status)}</div><div class="match">{side(r["away"])}<div class="project">{esc(projected)}</div>{side(r["home"])}</div><div class="reason">Projected score · {esc(reason)}</div>{bets}<div class="watch">WATCH · Exchange price unverified · Experimental</div></div>'
 
 def render_games(items):
     for i in range(0,len(items),3):
@@ -481,19 +502,11 @@ def dashboard():
         groups={}
         for r in shown: groups.setdefault((r['sport'],r['event_id']),[]).append(r)
         ordered=sorted(groups.values(),key=lambda group:group[0]['start'])
-        for i in range(0,len(ordered),2):
-            for col,group in zip(st.columns(2),ordered[i:i+2]):
-                with col, st.container(border=True):
-                    r=group[0]
-                    st.markdown(f"**{r['away']} vs {r['home']}**")
-                    st.caption(r['sport']+' · '+local(r['start'])+' · '+('Not saved' if r['result']=='UNSAVED' else 'Saved research'))
-                    st.markdown('**Projected score & reasoning**')
-                    st.write(r['why'].replace('Simple scoring-form baseline; uncalibrated.',''))
-                    for x in sorted(group,key=lambda x:('WINNER','SPREAD','TOTAL').index(x['kind'])):
-                        label,detail=plain_bet(x)
-                        st.markdown('**'+label+'**')
-                        st.write(detail)
-                    st.caption('WATCH · Experimental model; exchange price not verified. No calibrated confidence.')
+        for i in range(0,len(ordered),3):
+            for col,group in zip(st.columns(3),ordered[i:i+3]):
+                with col:
+                    r=group[0]; g=index.get((r['sport'],r['event_id']),{})
+                    st.markdown(prediction_card(group,g),unsafe_allow_html=True)
         if not shown: st.info('No qualifying pregame research for this view.' if page=='Picks' else 'Live predictions are not enabled. Live scores only.')
         if page=='Picks':
             upcoming=[m for m in display if m.get('game',{}).get('state')!='in']
