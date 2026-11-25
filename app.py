@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.2A | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -343,7 +343,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.4.2 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.4.2A TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -382,7 +382,7 @@ def collect_snapshot(db_url,odds_key):
         rows=[dict(r,result='UNSAVED') for r in new]
     return today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error
 
-class SnapshotWorker:
+class RoyalClarityWorker742A:
     def __init__(self):
         self.pool=ThreadPoolExecutor(max_workers=1)
         self.lock=threading.Lock()
@@ -404,7 +404,7 @@ class SnapshotWorker:
             return self.snapshot,self.future is not None,self.error
 
 @st.cache_resource
-def snapshot_worker(): return SnapshotWorker()
+def royal_clarity_worker_742a(): return RoyalClarityWorker742A()
 
 def plain_bet(x):
     selection=x['selection']; line=x['line']
@@ -437,7 +437,7 @@ def render_games(items):
 
 @st.fragment(run_every='5s')
 def dashboard():
-    snapshot,busy,error=snapshot_worker().poll(royal_secret("QUEEN_DATABASE_URL"),royal_secret("ODDS_API_KEY") or royal_secret("THE_ODDS_API_KEY"))
+    snapshot,busy,error=royal_clarity_worker_742a().poll(royal_secret("QUEEN_DATABASE_URL"),royal_secret("ODDS_API_KEY") or royal_secret("THE_ODDS_API_KEY"))
     if snapshot is None:
         st.info('Loading initial research in background. Navigation remains available.' if not error else 'Research failed: '+error+'; retry scheduled.')
         return
