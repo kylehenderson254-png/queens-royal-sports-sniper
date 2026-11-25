@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -343,7 +343,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.4.5 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.4.6 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -424,6 +424,19 @@ def plain_bet(x):
     if float(line).is_integer(): detail+=' Exactly '+str(int(line))+' is a push under standard total rules.'
     return f'Over/under · {selection.title()} {line:g}',detail
 
+# Compact league marks; retain the text label if the remote image is unavailable.
+LEAGUE_MARKS = {
+    'NBA': 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png',
+    'NFL': 'https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png',
+    'NHL': 'https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png',
+    'NCAAF': 'https://a.espncdn.com/i/teamlogos/leagues/500/ncaa.png',
+}
+def league_mark(sport):
+    label=html.escape(str(sport),quote=True)
+    url=LEAGUE_MARKS.get(sport)
+    img=f'<img src="{url}" alt="" width="17" height="17" style="object-fit:contain;vertical-align:middle;margin-right:5px">' if url else ''
+    return f'<span style="display:inline-flex;align-items:center;font-weight:700">{img}{label}</span>'
+
 def prediction_card(group,g):
     r=group[0]; esc=lambda v:html.escape(str(v),quote=True)
     why=r['why']; match=re.search(r'projected score (.+?) (-?\d+(?:\.\d+)?), (.+?) (-?\d+(?:\.\d+)?)\.',why)
@@ -448,7 +461,7 @@ def prediction_card(group,g):
         crown="👑 " if x["kind"]=="WINNER" else ""
         bets+=f'<div class="{cls}"><b>{crown}{esc(label)}</b> <span>— {esc(detail)}</span></div>'
     status='Not saved' if r['result']=='UNSAVED' else 'Saved research'
-    return f'<div class="rpred"><div class="meta">{esc(r["sport"]+" · "+local(r["start"])+" · "+status)}</div><div class="match">{side(r["away"])}<div class="project">{esc(projected)}</div>{side(r["home"])}</div><div class="reason">Projected score · {esc(reason)}</div>{bets}<div class="watch">WATCH · Exchange price unverified · Experimental</div></div>'
+    return f'<div class="rpred"><div class="meta">{league_mark(r["sport"])}{esc(" · "+local(r["start"])+" · "+status)}</div><div class="match">{side(r["away"])}<div class="project">{esc(projected)}</div>{side(r["home"])}</div><div class="reason">Projected score · {esc(reason)}</div>{bets}<div class="watch">WATCH · Exchange price unverified · Experimental</div></div>'
 
 def render_games(items):
     for i in range(0,len(items),3):
@@ -462,7 +475,7 @@ def render_games(items):
                     return f'<div class="rteam">{mark}<span>{html.escape(t)}</span><b>{html.escape(str(score)) if score is not None else ""}</b></div>'
                 detail=g.get('detail') if live else local(m['start'])
                 p=m.get('prob'); extra=('Market favorite: '+(m['home'] if p>.5 else m['away'] if p<.5 else 'Even')+f' {max(p,1-p):.0%}') if p is not None else ('Live score' if live else 'Scheduled')
-                st.markdown(f'<div class="rgame"><small>{html.escape(m["sport"]+" · "+str(detail))}</small>{team(m["away"])}{team(m["home"])}<small>{html.escape(extra)} · {"ESPN" if g else "Odds API"}</small></div>',unsafe_allow_html=True)
+                st.markdown(f'<div class="rgame"><small>{league_mark(m["sport"])}{html.escape(" · "+str(detail))}</small>{team(m["away"])}{team(m["home"])}<small>{html.escape(extra)} · {"ESPN" if g else "Odds API"}</small></div>',unsafe_allow_html=True)
 
 @st.fragment(run_every='5s')
 def dashboard():
