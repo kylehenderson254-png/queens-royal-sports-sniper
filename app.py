@@ -6,9 +6,11 @@ from zoneinfo import ZoneInfo
 from urllib.parse import quote
 from difflib import SequenceMatcher
 import requests
+import time
+import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -304,18 +306,17 @@ def research(sport,today):
 
 def persist(new,index):
     import psycopg2
-    from psycopg2.extras import Json
+    from psycopg2.extras import Json, execute_values
     url=royal_secret('QUEEN_DATABASE_URL')
     if not url: raise RuntimeError('Missing database URL')
-    conn=psycopg2.connect(url,connect_timeout=5,sslmode='require')
+    conn=psycopg2.connect(url,connect_timeout=5,sslmode='require',options='-c statement_timeout=8000 -c lock_timeout=3000')
     try:
         with conn:
             with conn.cursor() as c:
                 c.execute('SELECT pg_advisory_xact_lock(254740)')
                 c.execute("CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v74_test (id text PRIMARY KEY,payload jsonb NOT NULL,result text NOT NULL DEFAULT 'PENDING')")
-                for r in new:
-                    key=f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}"
-                    c.execute('INSERT INTO royal_sports_accuracy_v74_test(id,payload) VALUES (%s,%s) ON CONFLICT DO NOTHING',(key,Json(r)))
+                if new:
+                    execute_values(c,'INSERT INTO royal_sports_accuracy_v74_test(id,payload) VALUES %s ON CONFLICT DO NOTHING',[(f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}",Json(r)) for r in new],page_size=200)
                 c.execute("SELECT id,payload FROM royal_sports_accuracy_v74_test WHERE result='PENDING'")
                 for key,r in c.fetchall():
                     result=grade_new(r,index.get((r['sport'],r['event_id'])))
@@ -341,10 +342,9 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.4 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.4.1 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
-@st.fragment(run_every='30s')
-def dashboard():
+def collect_snapshot():
     today=utc().astimezone(CT).date()
     with ThreadPoolExecutor(max_workers=4) as pool:
         boards=list(pool.map(lambda sport:current_board(sport,today),FOCUS))
@@ -374,10 +374,47 @@ def dashboard():
                 new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
     storage_ok=False
     try:
-        rows=persist(new,index); storage_ok=True; st.caption('Permanent TEST prediction storage connected')
+        rows=persist(new,index); storage_ok=True
     except Exception as e:
         log.error('Prediction storage: %s SQLSTATE=%s',type(e).__name__,getattr(e,'pgcode',None))
-        st.warning('Permanent storage unavailable; accuracy totals are not available.'); rows=[dict(r,result='UNSAVED') for r in new]
+        rows=[dict(r,result='UNSAVED') for r in new]
+    return today,index,active,market_cards,diagnostics,rows,storage_ok
+
+class SnapshotWorker:
+    def __init__(self):
+        self.pool=ThreadPoolExecutor(max_workers=1)
+        self.lock=threading.Lock()
+        self.future=None
+        self.snapshot=None
+        self.finished=-float("inf")
+        self.error=None
+    def poll(self):
+        with self.lock:
+            if self.future is not None and self.future.done():
+                try:
+                    self.snapshot=self.future.result(); self.error=None
+                except Exception as e:
+                    self.error=type(e).__name__
+                    log.error('Research worker: %s',self.error)
+                self.future=None; self.finished=time.monotonic()
+            if self.future is None and time.monotonic()-self.finished>=30:
+                self.future=self.pool.submit(collect_snapshot)
+            return self.snapshot,self.future is not None,self.error
+
+@st.cache_resource
+def snapshot_worker(): return SnapshotWorker()
+
+@st.fragment(run_every='5s')
+def dashboard():
+    snapshot,busy,error=snapshot_worker().poll()
+    if snapshot is None:
+        st.info('Loading initial research in background. Navigation remains available.' if not error else 'Research failed: '+error+'; retry scheduled.')
+        return
+    today,index,active,market_cards,diagnostics,rows,storage_ok=snapshot
+    if storage_ok: st.caption('Permanent TEST prediction storage connected')
+    else: st.warning('Permanent storage unavailable; accuracy totals are not available.')
+    if busy: st.caption('Updating research in background; showing last completed snapshot.')
+    if error: st.warning('Latest research refresh failed: '+error)
     saved=all(r['result']!='UNSAVED' for r in rows) and storage_ok
     w=sum(r['result']=='WIN' for r in rows); l=sum(r['result']=='LOSS' for r in rows)
     if page in ('Results','Stats'):
@@ -407,7 +444,7 @@ def dashboard():
                 with col:
                     g=m.get('game',{}); live=g.get('state')=='in'
                     def team(t):
-                        logo=g.get('logos',{}).get(t) or logo_for(m['sport'],t)
+                        logo=g.get('logos',{}).get(t) or ""
                         mark=f'<img src="{html.escape(logo,quote=True)}" width="24" height="24" style="object-fit:contain">' if logo else ''
                         score=g.get('scores',{}).get(t) if live else None
                         return f'<div class="rteam">{mark}<span>{html.escape(t)}</span><b>{html.escape(str(score)) if score is not None else ""}</b></div>'
@@ -445,5 +482,5 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('Experimental scoring-form research, not calibrated probabilities. Odds cache 15 minutes; scoreboard cache 30 seconds; future schedules 5 minutes. No live trading.')
+    st.caption('Experimental scoring-form research, not calibrated probabilities. Background snapshots refresh after completion; odds cache 15 minutes. No live trading.')
 dashboard()
