@@ -8,7 +8,7 @@ from difflib import SequenceMatcher
 import requests
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -174,14 +174,14 @@ def royal_secret(key):
 
 FOCUS=('NBA','NFL','NHL','NCAAF')
 ODDS_KEYS={'NBA':'basketball_nba','NFL':'americanfootball_nfl','NHL':'icehockey_nhl','NCAAF':'americanfootball_ncaaf'}
-@st.cache_data(ttl=3600,show_spinner=False)
+@st.cache_data(ttl=900,show_spinner=False)
 def royal_consensus(sport):
     key=royal_secret('ODDS_API_KEY') or royal_secret('THE_ODDS_API_KEY')
     if not key: return [],'Odds API key not found'
     try:
         r=requests.get('https://api.the-odds-api.com/v4/sports/'+ODDS_KEYS[sport]+'/odds',params={'apiKey':key,'regions':'us','markets':'h2h,spreads,totals','oddsFormat':'decimal'},timeout=10)
         r.raise_for_status(); data=r.json()
-        return data if isinstance(data,list) else [], 'Sportsbook consensus · hourly cache'
+        return data if isinstance(data,list) else [], 'Sportsbook consensus · 15-minute cache'
     except Exception as exc: return [],'Odds feed unavailable: '+type(exc).__name__
 
 def royal_lines(event):
@@ -225,7 +225,7 @@ def forecast(game, sport, history, spread, total):
     if not h or not a:
         if game.get('state')=='in':
             hs=numeric(game['scores'].get(home)); aws=numeric(game['scores'].get(away))
-            if hs is not None and aws is not None and hs!=aws: return [('WINNER',home if hs>aws else away,None,'LIVE SCORE BASELINE','Current score leader; historical form unavailable.')]
+            if hs is not None and aws is not None and hs!=aws: return []
         return []
     hp=(h[0]+a[1])/2; ap=(a[0]+h[1])/2
     phase='LIVE' if game.get('state')=='in' else 'PREGAME'
@@ -233,7 +233,7 @@ def forecast(game, sport, history, spread, total):
         hs=numeric(game['scores'].get(home)); aws=numeric(game['scores'].get(away))
         if hs is None or aws is None or hs==aws: return []
         # Explicit live score baseline, not a calibrated win probability.
-        return [('WINNER',home if hs>aws else away,None,'LIVE SCORE BASELINE',f'Current score {hs:g}–{aws:g}; leader only, clock not modeled.')]
+        return []
     why=f'Last {h[2]}/{a[2]} completed games: projected score {home} {hp:.1f}, {away} {ap:.1f}. Simple scoring-form baseline; uncalibrated.'
     out=[]
     if hp!=ap: out.append(('WINNER',home if hp>ap else away,None,'FORM BASELINE',why))
@@ -261,7 +261,7 @@ log=logging.getLogger("royal_predictions")
 @st.cache_data(ttl=90,show_spinner=False)
 def fetch_board(sport, dates):
     try:
-        params={'dates':dates,'limit':500}
+        params={'dates':dates,'limit':100}
         if sport=='NCAAF': params['groups']=80
         r=requests.get('https://site.api.espn.com/apis/site/v2/sports/'+ESPN[sport]+'/scoreboard',params=params,timeout=7)
         r.raise_for_status()
@@ -287,7 +287,7 @@ def persist(new,index):
     from psycopg2.extras import Json
     url=royal_secret('QUEEN_DATABASE_URL')
     if not url: raise RuntimeError('Missing database URL')
-    conn=psycopg2.connect(url,connect_timeout=5,sslmode='require',options='-c statement_timeout=6000 -c lock_timeout=3000')
+    conn=psycopg2.connect(url,connect_timeout=5,sslmode='require')
     try:
         with conn:
             with conn.cursor() as c:
@@ -304,11 +304,24 @@ def persist(new,index):
                 return [dict(r,result=result) for r,result in c.fetchall()]
     finally: conn.close()
 
-st.markdown("""<style>.block-container{max-width:none!important;padding:1rem 2vw 2rem!important;width:100%!important}.stApp{background:radial-gradient(ellipse at top,#29134b 0%,#100d20 42%,#090812 100%)}div[data-testid=stMetric]{border:1px solid #67449b;border-radius:12px;padding:12px}img{object-fit:contain}div[data-testid=stImage]{width:100%!important}div[data-testid=stImage] img{width:100%!important;border-radius:12px}div[data-testid=stSegmentedControl] button{min-height:44px;font-weight:700}div[data-testid=stMetric]{background:#1c1532}</style>""",unsafe_allow_html=True)
+@st.cache_data(ttl=86400,show_spinner=False)
+def logo_directory(sport):
+    try:
+        r=requests.get('https://site.api.espn.com/apis/site/v2/sports/'+ESPN[sport]+'/teams',params={'limit':500},timeout=5); r.raise_for_status()
+        teams=r.json()['sports'][0]['leagues'][0]['teams']
+        return {clean(t['team']['displayName']):_provider_image_url(t['team'].get('logos')) for t in teams}
+    except Exception: return {}
+def logo_for(sport,name): return logo_directory(sport).get(clean(name),'')
+
+st.markdown("""<style>.block-container{max-width:none!important;padding:1rem 2vw 2rem!important;width:100%!important}.stApp{background:radial-gradient(ellipse at top,#29134b 0%,#100d20 42%,#090812 100%)}div[data-testid=stMetric]{border:1px solid #67449b;border-radius:12px;padding:12px}img{object-fit:contain}div[data-testid=stImage]{width:100%!important}div[data-testid=stImage] img{width:100%!important;border-radius:12px}div[data-testid=stSegmentedControl] button{min-height:44px;font-weight:700}div[data-testid=stMetric]{background:#1c1532}.rgame{background:linear-gradient(125deg,#201435,#100d1d);border:1px solid #634293;border-radius:12px;padding:9px 12px;margin-bottom:5px;color:#fff;box-shadow:0 0 10px #57288a33}.rteam{display:flex;align-items:center;gap:9px;min-height:34px;font-size:14px}.rteam b{margin-left:auto}.rgame small{color:#c2addd;font-size:11px}</style>""",unsafe_allow_html=True)
 banners=[p for folder in (Path('.'),Path('assets'),Path('images')) if folder.is_dir() for p in folder.iterdir() if p.is_file() and p.suffix.lower() in ('.png','.jpg','.jpeg','.webp') and 'banner' in p.stem.lower()]
-if banners: st.image(str(sorted(banners)[0]),width='stretch')
+if banners:
+    banner=sorted(banners)[0]
+    mime='jpeg' if banner.suffix.lower() in ('.jpg','.jpeg') else banner.suffix.lower()[1:]
+    encoded=base64.b64encode(banner.read_bytes()).decode()
+    st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.2 · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.3 · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 @st.fragment(run_every='120s')
 def dashboard():
@@ -317,12 +330,6 @@ def dashboard():
         boards=list(pool.map(lambda sport:fetch_board(sport,date_range(today-timedelta(days=2),today+timedelta(days=3))),FOCUS))
     index={(sport,g['event_id']):g for sport,(games,status) in zip(FOCUS,boards) for g in games if g['event_id']}
     active=[(sport,g) for (sport,_),g in index.items() if g['state'] in ('pre','in')]
-    if page in ('Picks','Live'):
-        st.subheader('Games found')
-        for sport,g in sorted(active,key=lambda x:str(x[1]['date'])):
-            if page=='Live' and g['state']!='in': continue
-            st.write(f"{sport} · {' vs '.join(g['teams'])} · {g['detail'] or local(g['date'])}" + (f" · {g['scores']}" if g['state']=='in' else ''))
-        if not active: st.info('No upcoming or live games returned by the scoreboard.')
     with ThreadPoolExecutor(max_workers=4) as pool:
         research_rows=list(pool.map(lambda sport:research(sport,today),FOCUS))
     new=[]; diagnostics=[]; market_cards=[]
@@ -341,50 +348,84 @@ def dashboard():
             matches=[e for e in events if parse_date(e.get('commence_time')) and abs((parse_date(e['commence_time'])-start).total_seconds())<7200 and _unique_score_team(e.get('home_team'),g['teams'],sport)==home and _unique_score_team(e.get('away_team'),g['teams'],sport)==away]
             prob,spread,total=royal_lines(matches[0]) if len(matches)==1 else (None,None,None)
             predictions=forecast(g,sport,history,spread,total)
-            if not predictions and g['state']=='pre' and prob is not None and abs(prob-.5)>.01:
-                predictions=[('WINNER',home if prob>.5 else away,None,'SPORTSBOOK BASELINE',f'No-vig consensus {max(prob,1-prob):.1%}; independent form unavailable.')]
             for kind,selection,line,confidence,why in predictions:
                 new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
+    storage_ok=False
     try:
-        rows=persist(new,index); st.caption('Permanent prediction storage connected')
+        rows=persist(new,index); storage_ok=True; st.caption('Permanent prediction storage connected')
     except Exception as e:
         log.error('Prediction storage: %s SQLSTATE=%s',type(e).__name__,getattr(e,'pgcode',None))
-        st.warning('Storage unavailable: '+type(e).__name__+'. Showing unsaved research only.'); rows=[dict(r,result='UNSAVED') for r in new]
+        st.warning('Permanent storage unavailable; accuracy totals are not available.'); rows=[dict(r,result='UNSAVED') for r in new]
+    saved=all(r['result']!='UNSAVED' for r in rows) and storage_ok
     w=sum(r['result']=='WIN' for r in rows); l=sum(r['result']=='LOSS' for r in rows)
-    for c,label,value in zip(st.columns(4),['Correct','Wrong','Accuracy','Pending'],[w,l,f'{w/(w+l):.1%}' if w+l else '—',sum(r['result']=='PENDING' for r in rows)]): c.metric(label,value)
+    if page in ('Results','Stats'):
+        for c,label,value in zip(st.columns(4),['Correct','Wrong','Accuracy','Pending'],[w,l,f'{w/(w+l):.1%}' if w+l else '—',sum(r['result']=='PENDING' for r in rows)]): c.metric(label,value if saved else '—')
     if page in ('Picks','Live'):
-        st.subheader('Queen’s predictions')
-        shown=[r for r in rows if r['result'] in ('PENDING','UNSAVED') and (r['sport'],r['event_id']) in index and index[(r['sport'],r['event_id'])]['state'] in ('pre','in') and (page!='Live' or r['phase']=='LIVE')]
-        for r in sorted(shown,key=lambda r:r['start']):
+        selected=st.segmented_control('Sport',['All',*FOCUS],default='All',key='sport_filter') or 'All'
+        horizon=st.segmented_control('Schedule',['Today','Next 3 days','Next 7 days'],default='Today') or 'Today' if page=='Picks' else 'Today'
+        days={'Today':0,'Next 3 days':2,'Next 7 days':6}[horizon]
+        st.subheader('Live scoreboard' if page=='Live' else 'Scoreboard')
+        display=[]
+        for sport,g in active:
+            if selected!='All' and sport!=selected: continue
+            start=parse_date(g['date'])
+            if not start or (page=='Live' and g['state']!='in') or (page=='Picks' and not today<=start.astimezone(CT).date()<=today+timedelta(days=days)): continue
+            home=g['home']; away=next((t for t in g['teams'] if t!=home),None)
+            if not home or not away: continue
+            display.append(dict(sport=sport,home=home,away=away,start=g['date'],game=g))
+        if page=='Picks':
+            for m in market_cards:
+                if selected!='All' and m['sport']!=selected: continue
+                if not today<=parse_date(m['start']).astimezone(CT).date()<=today+timedelta(days=days): continue
+                if any(x['sport']==m['sport'] and _unique_score_team(m['home'],[x['home'],x['away']],m['sport'])==x['home'] and _unique_score_team(m['away'],[x['home'],x['away']],m['sport'])==x['away'] and abs((parse_date(x['start'])-parse_date(m['start'])).total_seconds())<7200 for x in display): continue
+                display.append(m)
+        for i in range(0,len(display),3):
+            for col,m in zip(st.columns(3),sorted(display,key=lambda x:x['start'])[i:i+3]):
+                with col:
+                    g=m.get('game',{}); live=g.get('state')=='in'
+                    def team(t):
+                        logo=g.get('logos',{}).get(t) or logo_for(m['sport'],t)
+                        mark=f'<img src="{html.escape(logo,quote=True)}" width="30" height="30" style="object-fit:contain">' if logo else ''
+                        score=g.get('scores',{}).get(t) if live else None
+                        return f'<div class="rteam">{mark}<span>{html.escape(t)}</span><b>{html.escape(str(score)) if score is not None else ""}</b></div>'
+                    detail=g.get('detail') if live else local(m['start'])
+                    p=m.get('prob'); extra=('Market favorite: '+(m['home'] if p>.5 else m['away'] if p<.5 else 'Even')+f' {max(p,1-p):.0%}') if p is not None else ('Live score' if live else 'Scheduled')
+                    st.markdown(f'<div class="rgame"><small>{html.escape(m["sport"]+" · "+str(detail))}</small>{team(m["away"])}{team(m["home"])}<small>{html.escape(extra)} · {"ESPN" if g else "Odds API"}</small></div>',unsafe_allow_html=True)
+        if not display: st.info('No verified games available for this view. See Stats for feed status.')
+        st.subheader('♛ Queen’s research & predictions')
+        shown=[r for r in rows if r['result'] in ('PENDING','UNSAVED') and (r['sport'],r['event_id']) in index and index[(r['sport'],r['event_id'])]['state']=='pre' and page=='Picks' and (selected=='All' or r['sport']==selected)]
+        groups={}
+        for r in shown: groups.setdefault((r['sport'],r['event_id']),[]).append(r)
+        for group in groups.values():
+            r=group[0]
             with st.container(border=True):
-                st.write(f"**{r['sport']} · {r['away']} vs {r['home']}**")
-                line=r['line']; suffix='' if line is None else f' · {line:g}' if r['kind']=='TOTAL' else f' · {line if r["selection"]==r["home"] else -line:+g}'
-                st.write(f"{r['phase']} · {r['kind']} · {r['selection']}{suffix}"); st.caption(r['confidence']+' · '+r['why'])
-        if not shown: st.info('Independent predictions unavailable. Market research below is separate and is not graded as Queen predictions.')
+                st.markdown(f"**{r['sport']} · {r['away']} vs {r['home']}**")
+                for x in group:
+                    line=x['line']; selection=x['selection']
+                    if x['kind']=='SPREAD':
+                        n=line if selection==x['home'] else -line
+                        detail=f'{selection} {n:+g} — '+(f'must win by more than {abs(n):g}' if n<0 else f'can win or lose by less than {n:g}' if n>0 else 'must win')
+                    elif x['kind']=='TOTAL': detail=f'{selection} {line:g} — combined score must be {"above" if selection=="OVER" else "below"} this number'
+                    else: detail=selection+' to win outright'
+                    st.write(x['kind'].title()+': '+detail)
+                st.markdown('**Why Queen leans this way**'); st.write(r['why']); st.caption('Injuries, rest and opponent strength not modeled. Exact-line ties may push.')
+        if not shown: st.info('Independent research unavailable for this view. Market favorites are not Queen predictions.')
         if page=='Picks' and market_cards:
-            st.subheader('Sportsbook market outlook')
-            st.caption('Consensus only · not independent predictions · cached up to one hour · no verified live scores')
-            selected=st.segmented_control('Sport filter',['All',*FOCUS],default='All',key='market_filter') or 'All'
-            cards=sorted([m for m in market_cards if selected=='All' or m['sport']==selected],key=lambda m:m['start'])
-            for i in range(0,len(cards),3):
-                for col,m in zip(st.columns(3),cards[i:i+3]):
-                    with col:
-                        with st.container(border=True):
-                            st.caption(m['sport']+' · '+local(m['start']))
-                            st.markdown('**'+m['away']+' vs '+m['home']+'**')
-                            p=m['prob']
-                            if p is not None:
-                                st.write('Market favorite: '+(m['home'] if p>.5 else m['away'] if p<.5 else 'Even')+f' · {max(p,1-p):.0%}')
-                            else: st.write('Moneyline unavailable')
-                            st.caption(('Home spread: '+f"{m['spread']:+g}" if m['spread'] is not None else 'Spread unavailable')+' | '+('Total: '+f"{m['total']:g}" if m['total'] is not None else 'Total unavailable'))
+            st.subheader('Market reference lines')
+            for m in display:
+                if 'spread' not in m: continue
+                spread=m['spread']; total=m['total']
+                st.caption(m['away']+' @ '+m['home']+' · '+('Home handicap '+f'{spread:+g}' if spread is not None else 'No spread')+' · '+('Combined score line '+f'{total:g}' if total is not None else 'No total'))
     elif page=='Results':
-        st.dataframe(rows,width='stretch',hide_index=True)
+        if rows and saved: st.dataframe(rows,width='stretch',hide_index=True)
+        else: st.info('No verified saved results available.')
     else:
-        for field in ('sport','kind','phase','confidence'):
-            st.subheader(field.title())
-            for value in sorted({r[field] for r in rows}):
-                group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
-                st.write(f'{value}: {a} correct / {b} wrong')
-    st.caption('Experimental research, not calibrated probabilities. Results use final scoreboard; no P&L. Refreshes while connected.')
-    if page=='Stats': st.dataframe(diagnostics,width='stretch',hide_index=True)
+        if saved and rows:
+            for field in ('sport','kind','phase','confidence'):
+                st.subheader(field.title())
+                for value in sorted({r[field] for r in rows}):
+                    group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
+                    st.write(f'{value}: {a} correct / {b} wrong')
+        st.dataframe(diagnostics,width='stretch',hide_index=True)
+    st.caption('Experimental scoring-form research, not calibrated probabilities. Odds cache 15 minutes; scoreboard cache 90 seconds. No live trading.')
 dashboard()
