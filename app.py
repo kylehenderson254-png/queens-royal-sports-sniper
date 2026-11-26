@@ -461,7 +461,7 @@ class RoyalClarityWorker75C:
             return self.snapshot,self.future is not None,self.error
 
 @st.cache_resource
-def royal_clarity_worker_75d(): return RoyalClarityWorker75C()
+def royal_elite_worker_75e_fix1(): return RoyalClarityWorker75C()
 
 def plain_bet(x):
     selection=x['selection']; line=x['line']
@@ -536,11 +536,15 @@ def render_games(items):
 
 @st.fragment(run_every='5s')
 def dashboard():
-    snapshot,busy,error=royal_clarity_worker_75d().poll(royal_secret("QUEEN_DATABASE_URL"),"")
+    snapshot,busy,error=royal_elite_worker_75e_fix1().poll(royal_secret("QUEEN_DATABASE_URL"),"")
     if snapshot is None:
         st.info('Loading initial research in background. Navigation remains available.' if not error else 'Research failed: '+error+'; retry scheduled.')
         return
-    today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error,previews=snapshot
+    if not isinstance(snapshot, (tuple, list)) or len(snapshot) not in (8, 9):
+        st.warning('Research snapshot format changed. Waiting for a fresh snapshot.')
+        return
+    today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error=snapshot[:8]
+    previews=snapshot[8] if len(snapshot)==9 and isinstance(snapshot[8],dict) else {}
     if storage_ok: st.caption('Permanent clean V7.5C/V7.5D model-only prediction storage connected')
     else: st.warning('Permanent storage unavailable; accuracy totals are not available. '+str(storage_error or 'Unknown error'))
     if busy: st.caption('Updating research in background; showing last completed snapshot.')
