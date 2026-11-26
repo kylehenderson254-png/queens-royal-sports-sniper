@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5H.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5I | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -396,7 +396,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.5H.2 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.5I TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -535,68 +535,88 @@ def render_games(items):
                 st.markdown(f'<div class="rgame"><small>{league_mark(m["sport"])}{html.escape(" · "+str(detail))}</small>{team(m["away"])}{team(m["home"])}<small>{html.escape(extra)} · {"ESPN" if g else "Odds API"}</small></div>',unsafe_allow_html=True)
 
 
-# Read-only Polymarket US event discovery. Never infer which team owns a side.
-@st.cache_data(ttl=60,show_spinner=False)
-def poly_event(sport, away, home, day):
-    aliases={'wsh':'was','gs':'gsw','no':'nop','ny':'nyk','sa':'sas','utah':'uta','lv':'lv','jax':'jax'}
-    if sport not in FOCUS or not all(re.fullmatch(r'[a-z0-9]{2,6}',x or '') for x in (away,home)):
-        return '', [], 'Team identifiers unavailable'
-    slugs=list(dict.fromkeys(f'{sport.lower()}-{a}-{h}-{day}' for a,h in [(away,home),(aliases.get(away,away),aliases.get(home,home))]))
-    for slug in slugs:
-        try:
-            res=requests.get(BASE+'/v1/events/slug/'+quote(slug,safe=''),timeout=5)
-            if res.status_code==404: continue
-            res.raise_for_status(); payload=res.json(); event=payload.get('event',payload)
-            if event.get('slug')!=slug: continue
-            out=[]
-            for m in event.get('markets',[]):
-                if not isinstance(m,dict) or m.get('closed') is True or m.get('active') is False: continue
-                title=str(m.get('question') or m.get('title') or '')
-                typ=str(m.get('marketType') or '').lower(); label=(title+' '+typ).lower()
-                if re.search(r'first half|second half|[1-4](?:st|nd|rd|th) quarter|\bq[1-4]\b|1st half|2nd half|period',label): continue
-                category=next((c for c,pat in [('Passing','pass(?:ing)?[ _-]*yards'),('Rushing','rush(?:ing)?[ _-]*yards'),('Receiving','receiv(?:ing|er)?[ _-]*yards'),('Spread','spread|win by'),('Moneyline','moneyline|money.line|game.winner')] if re.search(pat,label)),None)
-                if not category or not title: continue
-                ms=m.get('slug') or m.get('marketSlug')
-                if not isinstance(ms,str) or not re.fullmatch(r'[a-zA-Z0-9_-]+',ms): continue
-                sides=m.get('marketSides') or []
-                long=[x for x in sides if isinstance(x,dict) and x.get('long') is True]
-                short=[x for x in sides if isinstance(x,dict) and x.get('long') is False]
-                def side(x):
-                    if len(x)!=1:return ''
-                    y=x[0]; return str(y.get('description') or y.get('label') or y.get('name') or '')
-                out.append(dict(category=category,title=title,slug=ms,long=side(long),short=side(short)))
-            return slug,out,'Event matched · '+str(len(out))+' supported markets'
-        except Exception as e:
-            code=getattr(getattr(e,'response',None),'status_code',None)
-            return '',[],'Poly HTTP '+str(code) if code else 'Poly '+type(e).__name__
-    return '',[],'Event not found (slug mapping unverified)'
+# Public, read-only league discovery; no guessed event slugs.
+@st.cache_data(ttl=90,show_spinner=False)
+def poly_league(sport):
+    events=[]
+    for offset in range(0,500,100):
+        r=requests.get(BASE+'/v2/leagues/'+quote(LEAGUES[sport],safe='')+'/events',params={'limit':100,'offset':offset,'type':'sport','section':'general'},timeout=5)
+        r.raise_for_status(); batch=r.json().get('events')
+        if not isinstance(batch,list): raise ValueError('Missing events array')
+        events.extend(batch)
+        if len(batch)<100: break
+    return events
 
-def parse_poly_bbo(payload):
-    if not isinstance(payload,dict): return None, 'Invalid quote response'
-    d=payload.get('marketData',payload)
-    if not isinstance(d,dict): return None,'Missing market data'
-    if d.get('marketState') not in ('MARKET_STATE_OPEN','OPEN'):
-        return None,'Market state not confirmed open'
-    b,a=numeric(d.get('bestBid')),numeric(d.get('bestAsk'))
-    if b is None or a is None or not 0<b<=a<1:
-        return None,'Missing or invalid two-sided prices'
+def poly_team(t, names, ab):
+    if not isinstance(t,dict): return None
+    exact={n for n in names if any(clean(t.get(k) or '')==clean(n) for k in ('name','safeName','alias'))}
+    if len(exact)==1: return next(iter(exact))
+    codes={clean(t.get(k) or '') for k in ('abbreviation','displayAbbreviation','alias')}-{''}
+    matches=[n for n in names if clean(ab.get(n) or '') in codes]
+    return matches[0] if len(matches)==1 else None
+
+def match_poly_event(events,names,ab,start):
+    matches={}
+    for e in events:
+        if not isinstance(e,dict) or e.get('closed') is True or e.get('ended') is True: continue
+        raw=e.get('startTime') or e.get('eventDate') or e.get('startDate')
+        dt=parse_date(raw)
+        if not dt or abs((dt-start).total_seconds())>7200: continue
+        teams=e.get('teams') or []
+        if len(teams)!=2: continue
+        mapped=[poly_team(t,names,ab) for t in teams]
+        slug=e.get('slug')
+        if set(mapped)==set(names) and isinstance(slug,str) and re.fullmatch(r'[a-zA-Z0-9_-]+',slug): matches[slug]=(e,dict(zip((str(t.get('id')) for t in teams),mapped)))
+    return next(iter(matches.values())) if len(matches)==1 else (None,{})
+
+def poly_for_game(m):
+    g=m['game']; start=parse_date(m['start']); names=g['teams']
+    if not start:return '',[],'Missing start'
+    try:
+        event,team_ids=match_poly_event(poly_league(m['sport']),names,g.get('abbr',{}),start)
+        if not event:return '',[],'No unique league event matched'
+        out=[]
+        for x in event.get('markets') or []:
+            if not isinstance(x,dict) or x.get('closed') is True or x.get('active') is False or x.get('hidden') is True:continue
+            title=str(x.get('question') or x.get('title') or '')
+            typ=' '.join(str(x.get(k) or '') for k in ('sportsMarketType','sportsMarketTypeV2','marketType')).lower()
+            label=(title+' '+typ).lower()
+            if re.search(r'first half|second half|[1-4](?:st|nd|rd|th) quarter|\bq[1-4]\b|1st half|2nd half|period',label):continue
+            category=next((c for c,pat in [('Passing','pass(?:ing)?[ _-]*yards'),('Rushing','rush(?:ing)?[ _-]*yards'),('Receiving','receiv(?:ing|er)?[ _-]*yards'),('Spread','spread|win by'),('Moneyline','moneyline|money.line|game.winner')] if re.search(pat,label)),None)
+            ms=x.get('slug'); sides=x.get('marketSides') or []
+            if not category or not isinstance(ms,str) or not re.fullmatch(r'[a-zA-Z0-9_-]+',ms):continue
+            def side(flag):
+                ss=[y for y in sides if isinstance(y,dict) and y.get('long') is flag]
+                if len(ss)!=1 or ss[0].get('tradable') is False:return ''
+                y=ss[0]; tid=y.get('teamId')
+                return team_ids.get(str(tid),'') if tid is not None else ''
+            out.append(dict(category=category,title=title,slug=ms,long=side(True),short=side(False)))
+        return event['slug'],out,'League event matched · '+str(len(out))+' supported markets'
+    except Exception as e:
+        code=getattr(getattr(e,'response',None),'status_code',None)
+        return '',[],'League HTTP '+str(code) if code else 'League '+type(e).__name__
+
+def parse_poly_bbo(payload,slug):
+    d=payload.get('marketData') if isinstance(payload,dict) else None
+    if not isinstance(d,dict):return None,'Missing marketData'
+    if d.get('marketSlug')!=slug:return None,'Quote slug mismatch'
+    if d.get('state')!='MARKET_STATE_OPEN':return None,'Market state: '+str(d.get('state') or 'unknown')
+    for k in ('bestBid','bestAsk'):
+        if not isinstance(d.get(k),dict) or d[k].get('currency')!='USD':return None,'Quote currency unverified'
+    b,a=numeric(d['bestBid']),numeric(d['bestAsk'])
+    if b is None or a is None or not 0<b<=a<1:return None,'Missing or invalid two-sided prices'
+    for k in ('bidDepth','askDepth','bidShares','askShares'):
+        if k in d and (numeric(d[k]) is None or not numeric(d[k])>0):return None,'Empty or invalid book depth'
     return (a,1-b),'Two-sided snapshot'
 
 @st.cache_data(ttl=20,show_spinner=False)
 def poly_quote(slug):
     try:
         r=requests.get(BASE+'/v1/markets/'+quote(slug,safe='')+'/bbo',timeout=4)
-        r.raise_for_status()
-        return parse_poly_bbo(r.json())
+        r.raise_for_status(); return parse_poly_bbo(r.json(),slug)
     except requests.HTTPError as e:
         return None,'Quote HTTP '+str(e.response.status_code if e.response is not None else 'unknown')
-    except Exception as e:
-        return None,'Quote '+type(e).__name__
-
-def poly_for_game(m):
-    g=m['game']; ab=g.get('abbr',{}); start=parse_date(m['start'])
-    if not start:return '',[],'Missing start'
-    return poly_event(m['sport'],ab.get(m['away'],''),ab.get(m['home'],''),start.astimezone(CT).date().isoformat())
+    except Exception as e:return None,'Quote '+type(e).__name__
 
 @st.fragment(run_every='5s')
 def dashboard():
@@ -673,7 +693,7 @@ def dashboard():
             q=None; price=None
             if len(ml)==1:
                 item=ml[0]; q,status=poly_quote(item['slug'])
-                sides=[_unique_score_team(item[k],g['teams'],m['sport']) for k in ('long','short')]
+                sides=[item[k] for k in ('long','short')]
                 if q and set(sides)==set(g['teams']) and r['selection'] in sides: price=q[sides.index(r['selection'])]
                 elif q: status='Team-side mapping unverified'
             elif slug: status='Unique moneyline not identified'
@@ -714,5 +734,5 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.5H.2 Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.5I Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
