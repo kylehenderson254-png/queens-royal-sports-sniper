@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5A | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5B | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -177,7 +177,7 @@ def royal_secret(key):
 FOCUS=('NBA','NFL','NHL','NCAAF')
 ODDS_KEYS={'NBA':'basketball_nba','NFL':'americanfootball_nfl','NHL':'icehockey_nhl','NCAAF':'americanfootball_ncaaf'}
 @st.cache_data(ttl=900,show_spinner=False)
-def royal_consensus(sport, _key):
+def royal_consensus(sport, key_fingerprint, _key):
     key=_key
     if not key: return [],'Odds API key not found'
     try:
@@ -211,39 +211,45 @@ def royal_lines(event):
 from statistics import mean
 
 def forecast(game, sport, history, spread, total):
-    home=game.get('home'); teams=game.get('teams',[])
-    if home not in teams or len(teams)!=2: return []
+    home=game.get('home'); teams=game.get('teams',[]); target=parse_date(game.get('date'))
+    if home not in teams or len(teams)!=2 or not target or game.get('state')!='pre' or target<=utc(): return []
     away=next(t for t in teams if t!=home)
-    def form(team):
-        rows=[]
-        for g in history:
-            if not g.get('completed') or g.get('state')!='post' or team not in g.get('teams',[]): continue
-            start=parse_date(g.get('date')); target=parse_date(game.get('date'))
-            if not start or not target or start>=target: continue
-            other=next(t for t in g['teams'] if t!=team)
-            a=numeric(g['scores'].get(team)); b=numeric(g['scores'].get(other))
-            if a is not None and b is not None: rows.append((start,a,b))
-        rows=sorted(rows,reverse=True)[:5]
-        if len(rows)<3: return None
-        return mean(r[1] for r in rows),mean(r[2] for r in rows),len(rows)
-    h,a=form(home),form(away)
-    if not h or not a:
-        if game.get('state')=='in':
-            hs=numeric(game['scores'].get(home)); aws=numeric(game['scores'].get(away))
-            if hs is not None and aws is not None and hs!=aws: return []
-        return []
-    hp=(h[0]+a[1])/2; ap=(a[0]+h[1])/2
-    phase='LIVE' if game.get('state')=='in' else 'PREGAME'
-    if phase=='LIVE':
-        hs=numeric(game['scores'].get(home)); aws=numeric(game['scores'].get(away))
-        if hs is None or aws is None or hs==aws: return []
-        # Explicit live score baseline, not a calibrated win probability.
-        return []
-    why=f'Last {h[2]}/{a[2]} completed games: projected score {home} {hp:.1f}, {away} {ap:.1f}. Simple scoring-form baseline; uncalibrated.'
+    valid=[]
+    for g in history:
+        d=parse_date(g.get('date')); ts=g.get('teams',[])
+        if not d or d>=min(target,utc()) or not g.get('completed') or g.get('state')!='post' or len(ts)!=2: continue
+        if any(x in str(g.get('detail','')).lower() for x in ('cancel','postpon','abandon','forfeit','suspend')): continue
+        scores=[numeric(g.get('scores',{}).get(t)) for t in ts]
+        if any(v is None or not math.isfinite(v) for v in scores): continue
+        valid.append((d,g,dict(zip(ts,scores))))
+    def rows(team):
+        return sorted([(d,sc[team],sc[next(t for t in sc if t!=team)],next(t for t in sc if t!=team),g.get('home')==team) for d,g,sc in valid if team in sc],key=lambda r:r[0],reverse=True)
+    def profile(team,is_home):
+        allr=rows(team); recent=allr[:10]
+        if len(recent)<5: return None
+        def avg(rs,i): return mean(r[i] for r in rs)
+        venue=[r for r in allr if r[4]==is_home]
+        attack=.6*avg(recent,1)+.4*avg(allr,1); defense=.6*avg(recent,2)+.4*avg(allr,2)
+        if len(venue)>=3: attack=.8*attack+.2*avg(venue,1); defense=.8*defense+.2*avg(venue,2)
+        # Opponent quality uses only games before the matchup, shrunk toward zero.
+        strength=[]
+        for r in recent:
+            opp=[x for x in rows(r[3]) if x[0]<r[0] and x[3]!=team][:10]
+            if len(opp)>=3: strength.append(mean(x[1]-x[2] for x in opp))
+        adj=.10*mean(strength) if strength else 0
+        rest=(target-recent[0][0]).total_seconds()/86400
+        return attack+adj,defense-adj,len(recent),len(venue),len(strength),rest
+    h,a=profile(home,True),profile(away,False)
+    if not h or not a: return []
+    hp=max(0,(h[0]+a[1])/2); ap=max(0,(a[0]+h[1])/2)
+    # Conservative research thresholds, not calibrated probabilities.
+    margin={'NBA':4,'NFL':3,'NHL':.6,'NCAAF':5}[sport]; totalgap={'NBA':6,'NFL':4,'NHL':.7,'NCAAF':6}[sport]
+    coverage='RESEARCH B' if min(h[2],a[2])>=8 and min(h[3],a[3])>=3 and min(h[4],a[4])>=3 else 'RESEARCH C'
+    why=f'Recent {h[2]}/{a[2]} games, available history and venue splits: projected score {home} {hp:.1f}, {away} {ap:.1f}. Opponent adjustment samples {h[4]}/{a[4]}; rest gap {h[5]:.1f}/{a[5]:.1f} days (informational). Injuries, travel, season completeness and exchange value unverified.'
     out=[]
-    if hp!=ap: out.append(('WINNER',home if hp>ap else away,None,'FORM BASELINE',why))
-    if spread is not None and abs(hp-ap+spread)>1e-6: out.append(('SPREAD',home if hp-ap+spread>0 else away,spread,'FORM BASELINE',why))
-    if total is not None and abs(hp+ap-total)>1e-6: out.append(('TOTAL','OVER' if hp+ap>total else 'UNDER',total,'FORM BASELINE',why))
+    if abs(hp-ap)>=margin: out.append(('WINNER',home if hp>ap else away,None,coverage,why))
+    if spread is not None and abs(hp-ap+spread)>=margin: out.append(('SPREAD',home if hp-ap+spread>0 else away,spread,coverage,why))
+    if total is not None and abs(hp+ap-total)>=totalgap: out.append(('TOTAL','OVER' if hp+ap>total else 'UNDER',total,coverage,why))
     return out
 
 def grade_new(r,g):
@@ -309,7 +315,7 @@ def current_board(sport,today):
 def research(sport,today,odds_key):
     offsets=range(1,15) if sport in ('NBA','NHL') else [i for i in range(1,36) if (today-timedelta(days=i)).weekday() in ((3,4,5,6,0) if sport=='NFL' else (3,4,5))]
     games,status=collect_days(sport,[today-timedelta(days=i) for i in offsets],history_day)
-    odds,odds_status=royal_consensus(sport,odds_key)
+    odds,odds_status=royal_consensus(sport,hashlib.sha256(odds_key.encode()).hexdigest(),odds_key)
     return games,status,odds,odds_status
 
 def recover_pending(index,url):
@@ -319,9 +325,9 @@ def recover_pending(index,url):
     conn=psycopg2.connect(url,connect_timeout=12,sslmode='require')
     try:
         with conn.cursor() as c:
-            c.execute("SELECT to_regclass('royal_sports_accuracy_v74_test')")
+            c.execute("SELECT to_regclass('royal_sports_accuracy_v75b_test')")
             if not c.fetchone()[0]: return
-            c.execute("SELECT payload FROM royal_sports_accuracy_v74_test WHERE result='PENDING'")
+            c.execute("SELECT payload FROM royal_sports_accuracy_v75b_test WHERE result='PENDING'")
             pending=[r[0] for r in c.fetchall()]
     finally: conn.close()
     dates=set()
@@ -360,15 +366,16 @@ def persist(new,index,url):
             with conn.cursor() as c:
                 c.execute("SET LOCAL statement_timeout = '15000ms'")
                 c.execute("SET LOCAL lock_timeout = '5000ms'")
-                c.execute('SELECT pg_advisory_xact_lock(254740)')
-                c.execute("CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v74_test (id text PRIMARY KEY,payload jsonb NOT NULL,result text NOT NULL DEFAULT 'PENDING')")
+                c.execute('SELECT pg_advisory_xact_lock(254751)')
+                c.execute("CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v75b_test (id text PRIMARY KEY,payload jsonb NOT NULL,result text NOT NULL DEFAULT 'PENDING')")
+                new=[r for r in new if r.get('phase')=='PREGAME' and parse_date(r.get('start')) and parse_date(r['start'])>utc()]
                 if new:
-                    execute_values(c,'INSERT INTO royal_sports_accuracy_v74_test(id,payload) VALUES %s ON CONFLICT DO NOTHING',[(f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}",Json(r)) for r in new],page_size=200)
-                c.execute("SELECT id,payload FROM royal_sports_accuracy_v74_test WHERE result='PENDING'")
+                    execute_values(c,'INSERT INTO royal_sports_accuracy_v75b_test(id,payload) VALUES %s ON CONFLICT DO NOTHING',[(f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}",Json(r)) for r in new],page_size=200)
+                c.execute("SELECT id,payload FROM royal_sports_accuracy_v75b_test WHERE result='PENDING'")
                 for key,r in c.fetchall():
                     result=grade_new(r,index.get((r['sport'],r['event_id'])))
-                    if result: c.execute("UPDATE royal_sports_accuracy_v74_test SET result=%s WHERE id=%s AND result='PENDING'",(result,key))
-                c.execute('SELECT payload,result FROM royal_sports_accuracy_v74_test')
+                    if result: c.execute("UPDATE royal_sports_accuracy_v75b_test SET result=%s WHERE id=%s AND result='PENDING'",(result,key))
+                c.execute('SELECT payload,result FROM royal_sports_accuracy_v75b_test')
                 return [dict(r,result=result) for r,result in c.fetchall()]
     finally: conn.close()
 
@@ -389,7 +396,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.5A TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.5B TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -501,7 +508,7 @@ def prediction_card(group,g):
         crown="👑 " if t==winner else ""
         return f'<div class="{cls}">{img}{crown}{esc(t)}</div>'
     projected=f"{scores[r['away']]} – {scores[r['home']]}" if r['away'] in scores and r['home'] in scores else '—'
-    reason=why.split(': projected score')[0]+' · Scoring-form baseline' if scores else why
+    reason=r['confidence']+' · '+why if scores else why
     bets=''
     for x in sorted(group,key=lambda x:('WINNER','SPREAD','TOTAL').index(x['kind'])):
         label,detail=plain_bet(x)
@@ -532,7 +539,7 @@ def dashboard():
         st.info('Loading initial research in background. Navigation remains available.' if not error else 'Research failed: '+error+'; retry scheduled.')
         return
     today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error=snapshot
-    if storage_ok: st.caption('Permanent TEST prediction storage connected')
+    if storage_ok: st.caption('Permanent V7.5B fresh prediction storage connected')
     else: st.warning('Permanent storage unavailable; accuracy totals are not available. '+str(storage_error or 'Unknown error'))
     if busy: st.caption('Updating research in background; showing last completed snapshot.')
     if error: st.warning('Latest research refresh failed: '+error)
@@ -565,22 +572,22 @@ def dashboard():
                 if any(x['sport']==m['sport'] and _unique_score_team(m['home'],[x['home'],x['away']],m['sport'])==x['home'] and _unique_score_team(m['away'],[x['home'],x['away']],m['sport'])==x['away'] and abs((parse_date(x['start'])-parse_date(m['start'])).total_seconds())<7200 for x in display): continue
                 display.append(m)
         live_items=[m for m in display if m.get('game',{}).get('state')=='in']
-        if live_items:
-            st.subheader('Live games')
-            render_games(sorted(live_items,key=lambda m:m['start']))
         if not display: st.info('Live status unavailable or no games confirmed in progress. Check Stats for feed health.' if page=='Live' else 'No verified games available for this view.')
         st.subheader('♛ Queen’s pregame predictions' if page=='Picks' else 'Live research')
-        st.caption('Scoring-form baseline only; injuries, rest and opponent strength are not modeled. Exact-line ties may push.')
+        st.caption('Research-ranked WATCH picks; coverage grades are not win probabilities. Injuries and exchange prices unverified. Exact-line ties may push.')
         shown=[r for r in rows if r['result'] in ('PENDING','UNSAVED') and (r['sport'],r['event_id']) in index and index[(r['sport'],r['event_id'])]['state']=='pre' and page=='Picks' and (selected=='All' or r['sport']==selected) and parse_date(r['start']) and today<=parse_date(r['start']).astimezone(CT).date()<=today+timedelta(days=days)]
         groups={}
         for r in shown: groups.setdefault((r['sport'],r['event_id']),[]).append(r)
-        ordered=sorted(groups.values(),key=lambda group:group[0]['start'])
+        ordered=sorted(groups.values(),key=lambda group:(0 if group[0]['confidence']=='RESEARCH B' else 1,group[0]['start']))
         for i in range(0,len(ordered),3):
             for col,group in zip(st.columns(3),ordered[i:i+3]):
                 with col:
                     r=group[0]; g=index.get((r['sport'],r['event_id']),{})
                     st.markdown(prediction_card(group,g),unsafe_allow_html=True)
         if not shown: st.info('No qualifying pregame research for this view.' if page=='Picks' else 'Live predictions are not enabled. Live scores only.')
+        if live_items:
+            st.subheader('Live games')
+            render_games(sorted(live_items,key=lambda m:m['start']))
         if page=='Picks':
             upcoming=[m for m in display if m.get('game',{}).get('state')!='in']
             st.subheader('Upcoming games')
@@ -601,5 +608,5 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('Experimental scoring-form research, not calibrated probabilities. Background snapshots refresh after completion; odds cache 15 minutes. No live trading.')
+    st.caption('V7.5B fresh research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; odds cache 15 minutes. No live trading.')
 dashboard()
