@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5E | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5F | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -108,7 +108,7 @@ def _score_record(event, sport, competition=None):
     scores = {n:p.get("score") for n,p in zip(names,participants)}
     sets = {n:_tennis_sets(p) for n,p in zip(names,participants)} if sport == "Tennis" else {}
     return {"state":state,"detail":detail,"date":comp.get("date") or event.get("date"),
-            "teams":names,"scores":scores,"sets":sets,
+            "teams":names,"abbr":{n:str((p.get("team") or {}).get("abbreviation") or "").lower() for n,p in zip(names,participants)},"scores":scores,"sets":sets,
             "winner":next((n for n,p in zip(names,participants) if p.get("winner") is True),None),
             "logos":{n:_team_provider_picture(p) for n,p in zip(names,participants)},
             "helmets":{n:_team_provider_picture(p,'helmet') for n,p in zip(names,participants)},
@@ -396,7 +396,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.5E TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.5F TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -461,7 +461,7 @@ class RoyalClarityWorker75C:
             return self.snapshot,self.future is not None,self.error
 
 @st.cache_resource
-def royal_elite_worker_75e_fix1(): return RoyalClarityWorker75C()
+def royal_elite_worker_75f(): return RoyalClarityWorker75C()
 
 def plain_bet(x):
     selection=x['selection']; line=x['line']
@@ -534,9 +534,60 @@ def render_games(items):
                 p=m.get('prob'); extra=('Market favorite: '+(m['home'] if p>.5 else m['away'] if p<.5 else 'Even')+f' {max(p,1-p):.0%}') if p is not None else ('Live score' if live else 'Scheduled')
                 st.markdown(f'<div class="rgame"><small>{league_mark(m["sport"])}{html.escape(" · "+str(detail))}</small>{team(m["away"])}{team(m["home"])}<small>{html.escape(extra)} · {"ESPN" if g else "Odds API"}</small></div>',unsafe_allow_html=True)
 
+
+# Read-only Polymarket US event discovery. Never infer which team owns a side.
+@st.cache_data(ttl=60,show_spinner=False)
+def poly_event(sport, away, home, day):
+    aliases={'wsh':'was','gs':'gsw','no':'nop','ny':'nyk','sa':'sas','utah':'uta','lv':'lv','jax':'jax'}
+    if sport not in FOCUS or not all(re.fullmatch(r'[a-z0-9]{2,6}',x or '') for x in (away,home)):
+        return '', [], 'Team identifiers unavailable'
+    slugs=list(dict.fromkeys(f'{sport.lower()}-{a}-{h}-{day}' for a,h in [(away,home),(aliases.get(away,away),aliases.get(home,home))]))
+    for slug in slugs:
+        try:
+            res=requests.get(BASE+'/v1/events/slug/'+quote(slug,safe=''),timeout=5)
+            if res.status_code==404: continue
+            res.raise_for_status(); payload=res.json(); event=payload.get('event',payload)
+            if event.get('slug')!=slug: continue
+            out=[]
+            for m in event.get('markets',[]):
+                if not isinstance(m,dict) or m.get('closed') is True or m.get('active') is False: continue
+                title=str(m.get('question') or m.get('title') or '')
+                typ=str(m.get('marketType') or '').lower(); label=(title+' '+typ).lower()
+                if re.search(r'first half|second half|[1-4](?:st|nd|rd|th) quarter|\bq[1-4]\b|1st half|2nd half|period',label): continue
+                category=next((c for c,pat in [('Passing','pass(?:ing)?[ _-]*yards'),('Rushing','rush(?:ing)?[ _-]*yards'),('Receiving','receiv(?:ing|er)?[ _-]*yards'),('Spread','spread|win by'),('Moneyline','moneyline|money.line|game.winner')] if re.search(pat,label)),None)
+                if not category or not title: continue
+                ms=m.get('slug') or m.get('marketSlug')
+                if not isinstance(ms,str) or not re.fullmatch(r'[a-zA-Z0-9_-]+',ms): continue
+                sides=m.get('marketSides') or []
+                long=[x for x in sides if isinstance(x,dict) and x.get('long') is True]
+                short=[x for x in sides if isinstance(x,dict) and x.get('long') is False]
+                def side(x):
+                    if len(x)!=1:return ''
+                    y=x[0]; return str(y.get('description') or y.get('label') or y.get('name') or '')
+                out.append(dict(category=category,title=title,slug=ms,long=side(long),short=side(short)))
+            return slug,out,'Event matched · '+str(len(out))+' supported markets'
+        except Exception as e:
+            code=getattr(getattr(e,'response',None),'status_code',None)
+            return '',[],'Poly HTTP '+str(code) if code else 'Poly '+type(e).__name__
+    return '',[],'Event not found (slug mapping unverified)'
+
+@st.cache_data(ttl=20,show_spinner=False)
+def poly_quote(slug):
+    try:
+        r=requests.get(BASE+'/v1/markets/'+quote(slug,safe='')+'/bbo',timeout=4); r.raise_for_status()
+        d=r.json().get('marketData',{}); b,a=numeric(d.get('bestBid')),numeric(d.get('bestAsk'))
+        if d.get('marketState') not in ('MARKET_STATE_OPEN','OPEN') or b is None or a is None or not 0<b<=a<1: return None
+        return a,1-b
+    except Exception: return None
+
+def poly_for_game(m):
+    g=m['game']; ab=g.get('abbr',{}); start=parse_date(m['start'])
+    if not start:return '',[],'Missing start'
+    return poly_event(m['sport'],ab.get(m['away'],''),ab.get(m['home'],''),start.astimezone(CT).date().isoformat())
+
 @st.fragment(run_every='5s')
 def dashboard():
-    snapshot,busy,error=royal_elite_worker_75e_fix1().poll(royal_secret("QUEEN_DATABASE_URL"),"")
+    snapshot,busy,error=royal_elite_worker_75f().poll(royal_secret("QUEEN_DATABASE_URL"),"")
     if snapshot is None:
         st.info('Loading initial research in background. Navigation remains available.' if not error else 'Research failed: '+error+'; retry scheduled.')
         return
@@ -581,7 +632,10 @@ def dashboard():
         if not display: st.info('Live status unavailable or no games confirmed in progress. Check Stats for feed health.' if page=='Live' else 'No verified games available for this view.')
         st.subheader('♛ Queen’s pregame predictions' if page=='Picks' else 'Live research')
         st.caption('Odds API paused. Research-ranked WATCH picks; coverage grades are not win probabilities. Injuries and exchange prices unverified. Exact-line ties may push.')
-        for m in sorted(display,key=lambda m:(m['start'])):
+        ordered=sorted(display,key=lambda m:(not any(r['event_id']==m.get('game',{}).get('event_id') and r['sport']==m['sport'] for r in rows),m['start']))
+        for i,m in enumerate(ordered):
+            if i%3==0: cols=st.columns(3)
+            col=cols[i%3]
             g=m.get('game',{}); key=(m['sport'],g.get('event_id'))
             saved_rows=[r for r in rows if (r['sport'],r['event_id'])==key and r['kind']=='WINNER' and r['phase']=='PREGAME']
             preview=previews.get(key,[])
@@ -601,18 +655,26 @@ def dashboard():
             detail=str(g.get('detail','')) if live else local(m['start'])
             live_score=' · '.join(f'{t} {g.get("scores",{}).get(t,"—")}' for t in (m['away'],m['home'])) if live else ''
             reason=why.split('. Opponent adjustment')[0] if why else 'No qualified projection available.'
-            props='<div style="font-size:12px"><span style="color:#60a5fa">PASSING</span> · <span style="color:#4ade80">RUSHING</span> · <span style="color:#fb923c">RECEIVING</span> — feed not connected</div>' if m["sport"]=="NFL" else ""
-            st.markdown(f'<div style="border-bottom:1px solid #50356c;padding:9px 4px;background:#171022"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(detail)} {esc(live_score)}</small><div style="font-weight:700">{title}</div><div style="color:#f3cf7c">♛ MONEYLINE · {esc(selection or "No pick")} <small> · {esc(status)}</small></div><small>{esc(score)} · {esc(reason)}</small><div style="font-size:12px;color:#b084ff">SPREAD · Market line not verified</div>{props}</div>',unsafe_allow_html=True)
-        if page=='Live': st.caption('Live scores and saved pregame research only. Live projections are not enabled.')
-        if live_items:
-            st.subheader('Live games')
-            render_games(sorted(live_items,key=lambda m:m['start']))
-        if page=='Picks':
-            upcoming=[m for m in display if m.get('game',{}).get('state')!='in']
-            st.subheader('Upcoming games')
-            for day in sorted({parse_date(m['start']).astimezone(CT).date() for m in upcoming}):
-                st.markdown('**'+day.strftime('%A, %b %d')+'**')
-                render_games(sorted([m for m in upcoming if parse_date(m['start']).astimezone(CT).date()==day],key=lambda m:m['start']))
+            slug,markets,poly_status=poly_for_game(m) if g else ('',[],'No verified game')
+            colors={'Moneyline':'#e8c16b','Spread':'#b084ff','Passing':'#60a5fa','Rushing':'#4ade80','Receiving':'#fb923c'}
+            lines=[]
+            for category,color in colors.items():
+                if category in ('Passing','Rushing','Receiving') and m['sport']!='NFL':continue
+                listed=[x for x in markets if x['category']==category]
+                lines.append(f'<div style="color:{color};font-size:12px">{category} · {len(listed)} markets</div>')
+            with col:
+                st.markdown(f'<div style="border:1px solid #654290;border-radius:12px;padding:10px;background:#171022"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(detail)}</small><div style="font-weight:700">{title}</div><div style="font-size:18px;font-weight:700">{esc(live_score)}</div><div style="color:#f3cf7c">♛ {esc(selection or "No pick")}</div><small>{esc(status)} · {esc(score)}</small><div style="font-size:12px">{esc(reason)}</div>{"".join(lines)}<small>{esc(poly_status)}</small></div>',unsafe_allow_html=True)
+                if slug:
+                    st.markdown(f'[Open Polymarket](https://polymarket.us/sports/{m["sport"].lower()}/{slug})')
+                if markets:
+                    with st.expander('Market lines and prices'):
+                        for category in colors:
+                            for item in [x for x in markets if x['category']==category][:5]:
+                                q=poly_quote(item['slug'])
+                                price=f'Long {q[0]:.0%} / Short {q[1]:.0%}' if q else 'Quote unavailable'
+                                st.write(item['title'])
+                                st.caption(price+' · '+(item['long']+' / '+item['short'] if item['long'] and item['short'] else 'Side labels unverified'))
+        st.caption('Market discovery is read-only. Prices are long/short offers, not verified team selections. No live or player projections yet.')
     elif page=='Results':
         if rows and saved:
             view=st.selectbox('Results filter',['All','Graded','Pending'])
@@ -627,5 +689,5 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.5E Royal Elite research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.5F Royal Poly Connect research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
