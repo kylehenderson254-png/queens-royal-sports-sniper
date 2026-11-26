@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5C | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5D | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -179,7 +179,7 @@ ODDS_KEYS={'NBA':'basketball_nba','NFL':'americanfootball_nfl','NHL':'icehockey_
 @st.cache_data(ttl=900,show_spinner=False)
 def royal_consensus(sport, key_fingerprint, _key):
     key=_key
-    if not key: return [],'Odds API key not found'
+    if not key: return [],'Odds API paused — no credits consumed'
     try:
         r=requests.get('https://api.the-odds-api.com/v4/sports/'+ODDS_KEYS[sport]+'/odds',params={'apiKey':key,'regions':'us','markets':'h2h,spreads,totals','oddsFormat':'decimal'},timeout=10)
         r.raise_for_status(); data=r.json()
@@ -396,7 +396,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.5C TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.5D TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -459,7 +459,7 @@ class RoyalClarityWorker75C:
             return self.snapshot,self.future is not None,self.error
 
 @st.cache_resource
-def royal_clarity_worker_75c(): return RoyalClarityWorker75C()
+def royal_clarity_worker_75d(): return RoyalClarityWorker75C()
 
 def plain_bet(x):
     selection=x['selection']; line=x['line']
@@ -534,12 +534,12 @@ def render_games(items):
 
 @st.fragment(run_every='5s')
 def dashboard():
-    snapshot,busy,error=royal_clarity_worker_75c().poll(royal_secret("QUEEN_DATABASE_URL"),royal_secret("ODDS_API_KEY") or royal_secret("THE_ODDS_API_KEY"))
+    snapshot,busy,error=royal_clarity_worker_75d().poll(royal_secret("QUEEN_DATABASE_URL"),"")
     if snapshot is None:
         st.info('Loading initial research in background. Navigation remains available.' if not error else 'Research failed: '+error+'; retry scheduled.')
         return
     today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error=snapshot
-    if storage_ok: st.caption('Permanent V7.5C clean model-only prediction storage connected')
+    if storage_ok: st.caption('Permanent clean V7.5C/V7.5D model-only prediction storage connected')
     else: st.warning('Permanent storage unavailable; accuracy totals are not available. '+str(storage_error or 'Unknown error'))
     if busy: st.caption('Updating research in background; showing last completed snapshot.')
     if error: st.warning('Latest research refresh failed: '+error)
@@ -574,7 +574,7 @@ def dashboard():
         live_items=[m for m in display if m.get('game',{}).get('state')=='in']
         if not display: st.info('Live status unavailable or no games confirmed in progress. Check Stats for feed health.' if page=='Live' else 'No verified games available for this view.')
         st.subheader('♛ Queen’s pregame predictions' if page=='Picks' else 'Live research')
-        st.caption('Research-ranked WATCH picks; coverage grades are not win probabilities. Injuries and exchange prices unverified. Exact-line ties may push.')
+        st.caption('Odds API paused. Research-ranked WATCH picks; coverage grades are not win probabilities. Injuries and exchange prices unverified. Exact-line ties may push.')
         shown=[r for r in rows if r['result'] in ('PENDING','UNSAVED') and (r['sport'],r['event_id']) in index and index[(r['sport'],r['event_id'])]['state']=='pre' and page=='Picks' and (selected=='All' or r['sport']==selected) and parse_date(r['start']) and today<=parse_date(r['start']).astimezone(CT).date()<=today+timedelta(days=days)]
         groups={}
         for r in shown: groups.setdefault((r['sport'],r['event_id']),[]).append(r)
@@ -598,7 +598,7 @@ def dashboard():
         if rows and saved:
             view=st.selectbox('Results filter',['All','Graded','Pending'])
             shown=[dict(r,grading_status=pending_status(r,index)) for r in rows if view=='All' or (view=='Pending')==(r['result']=='PENDING')]
-            st.dataframe(sorted(shown,key=lambda r:r.get('start',''),reverse=True),width='stretch',hide_index=True)
+            st.dataframe(sorted(shown,key=lambda r:r.get('start',''),reverse=True),column_order=['sport','selection','kind','result','confidence','grading_status','start','away','home','why'],width='stretch',hide_index=True)
         else: st.info('No verified saved results available.')
     else:
         if saved and rows:
@@ -608,5 +608,5 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.5C fresh research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; odds cache 15 minutes. No live trading.')
+    st.caption('V7.5D fresh research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
