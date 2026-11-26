@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5I | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5J | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -281,7 +281,7 @@ def fetch_board(sport, day):
 def board_request(sport, day):
     errors=[]
     for host in ('site.api.espn.com','site.web.api.espn.com'):
-        for params in ({'dates':day, **({'groups':80} if sport=='NCAAF' else {})}, {'dates':day}):
+        for params in ({'dates':day, 'limit':1000, **({'groups':80} if sport=='NCAAF' else {})}, {'dates':day,'limit':1000}):
             try:
                 r=requests.get('https://'+host+'/apis/site/v2/sports/'+ESPN[sport]+'/scoreboard',params=params,timeout=4,headers={'Accept':'application/json','User-Agent':'RoyalSportsResearch/7.4'})
                 r.raise_for_status()
@@ -396,7 +396,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.5I TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.5J TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -486,12 +486,12 @@ LEAGUE_MARKS = {
     'NBA': 'https://a.espncdn.com/i/teamlogos/leagues/500/nba.png',
     'NFL': 'https://a.espncdn.com/i/teamlogos/leagues/500/nfl.png',
     'NHL': 'https://a.espncdn.com/i/teamlogos/leagues/500/nhl.png',
-    'NCAAF': 'https://a.espncdn.com/i/teamlogos/leagues/500/ncaa.png',
+    'NCAAF': '',
 }
 def league_mark(sport):
     label=html.escape(str(sport),quote=True)
     url=LEAGUE_MARKS.get(sport)
-    img=f'<img src="{url}" alt="" width="17" height="17" style="object-fit:contain;vertical-align:middle;margin-right:5px">' if url else ''
+    img=f'<img src="{url}" alt="" width="17" height="17" style="object-fit:contain;vertical-align:middle;margin-right:5px">' if url else ('🏈 ' if sport=='NCAAF' else '')
     return f'<span style="display:inline-flex;align-items:center;font-weight:700">{img}{label}</span>'
 
 def prediction_card(group,g):
@@ -664,7 +664,7 @@ def dashboard():
         live_items=[m for m in display if m.get('game',{}).get('state')=='in']
         if live_items or page=='Live':
             st.subheader('🔴 Live Now')
-            st.caption('Latest completed score snapshot · live predictions not yet enabled')
+            st.caption('Score snapshot completed '+datetime.fromtimestamp(time.time()-max(0,time.monotonic()-royal_elite_worker_75g().finished),CT).strftime('%I:%M:%S %p CT')+' · No live predictions')
             if not live_items: st.info('No games confirmed in progress in this snapshot.')
             for i,m in enumerate(live_items):
                 if i%3==0: live_cols=st.columns(3)
@@ -679,7 +679,7 @@ def dashboard():
                     st.markdown(f'<div class="royal-live-card"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(g.get("detail", "In progress"))}</small>{live_team(m["away"])}{live_team(m["home"])}<small style="color:#f3cf7c">{esc(note)}</small></div>',unsafe_allow_html=True)
         if page=='Picks':
             st.subheader('♛ Queen’s Top Picks')
-            st.caption('Odds API paused. Research-ranked WATCH picks; coverage grades are not win probabilities. Injuries unverified. Quote snapshots are not guaranteed live or executable. Exact-line ties may push.')
+            st.caption('Research only · Odds API paused · Injuries unverified · Prices are snapshots.')
         candidates=[]
         for m in display:
             g=m.get('game',{}); key=(m['sport'],g.get('event_id'))
@@ -687,24 +687,31 @@ def dashboard():
             saved_rows=[r for r in rows if (r['sport'],r['event_id'])==key and r['kind']=='WINNER' and r['phase']=='PREGAME']
             r=saved_rows[0] if saved_rows else None
             if page=='Live': continue
-            if g.get('state')!='pre' or not r: continue
-            slug,markets,status=poly_for_game(m)
+            if g.get('state')!='pre': continue
+            if not r and days>0:
+                preview=next((v for v in previews.get(key,[]) if v[0]=='WINNER'),None)
+                if preview:
+                    _,selection,_,confidence,why=preview
+                    r=dict(selection=selection,confidence=confidence,why=why,preview=True)
+            if not r: continue
+            slug,markets,status=poly_for_game(m) if not r.get('preview') else ('',[],'Future research preview')
             ml=[x for x in markets if x['category']=='Moneyline']
-            q=None; price=None
+            q=None; price=None; both=''
             if len(ml)==1:
                 item=ml[0]; q,status=poly_quote(item['slug'])
                 sides=[item[k] for k in ('long','short')]
-                if q and set(sides)==set(g['teams']) and r['selection'] in sides: price=q[sides.index(r['selection'])]
+                if q and set(sides)==set(g['teams']) and r['selection'] in sides:
+                    price=q[sides.index(r['selection'])]; both=' / '.join(f'{t} {v:.0%}' for t,v in zip(sides,q))
                 elif q: status='Team-side mapping unverified'
             elif slug: status='Unique moneyline not identified'
             # Research coverage is not a calibrated probability or proof of value.
-            candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status))
+            candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status,both))
         if page=='Picks':
             candidates.sort(key=lambda x:(x[0],x[1]['start']))
             candidates=candidates[:5]
-            if not candidates: st.info('No saved upcoming research selections for this view.')
+            if not candidates: st.info('No qualified research previews or saved picks for this view.')
             else: st.caption('Research watchlist only — not validated betting value. Up to five selections, ranked by research coverage then start time.')
-        for i,(_,m,r,price,slug,status) in enumerate(candidates):
+        for i,(_,m,r,price,slug,status,both) in enumerate(candidates):
             if i%3==0: cols=st.columns(3)
             g=m['game']; esc=lambda x:html.escape(str(x),quote=True)
             def team(t):
@@ -715,10 +722,17 @@ def dashboard():
             detail=g.get('detail','') if live else local(m['start'])
             reason=r['why'].split('. Opponent adjustment')[0] if r else ''
             selection=('♛ '+r['selection']) if r else 'No saved pregame research'
-            label='Saved pregame · ' if live and r else ''
+            label='Preview · ' if r.get('preview') else ('Saved pregame · ' if live and r else '')
             with cols[i%3]:
-                st.markdown(f'<div class="royal-uniform-card" style="border:1px solid #654290;border-radius:12px;padding:12px;background:#171022"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(detail)}</small><div style="font-weight:700">{team(m["away"])} {esc(score)} {team(m["home"])}</div><div style="color:#f3cf7c">{esc(label+selection+(' · '+r['confidence'] if r else ''))}</div><small>{esc(reason)}</small>'+ (f'<div style="color:#f3cf7c">Snapshot ask {price:.0%} · WATCH</div>' if price is not None else (f'<div style="color:#bda5df">WATCH · {esc(status or "Price unavailable")}</div>' if not live else ''))+'</div>',unsafe_allow_html=True)
+                st.markdown(f'<div class="royal-uniform-card" style="border:1px solid #654290;border-radius:12px;padding:12px;background:#171022"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(detail)}</small><div style="font-weight:700">{team(m["away"])} {esc(score)} {team(m["home"])}</div><div style="color:#f3cf7c">{esc(label+selection+(' · '+r['confidence'] if r else ''))}</div><small>{esc(reason)}</small>'+ (f'<div style="color:#f3cf7c">{esc(both)} · WATCH</div>' if price is not None else (f'<div style="color:#bda5df">WATCH · {esc(status or "Price unavailable")}</div>' if not live else ''))+'</div>',unsafe_allow_html=True)
                 st.markdown(f'[Open Polymarket](https://polymarket.us/sports/{m["sport"].lower()}/{slug})' if slug else '&nbsp;', unsafe_allow_html=True)
+        if page=='Picks' and days>0:
+            st.subheader('Upcoming schedule')
+            upcoming=sorted([m for m in display if m.get('game',{}).get('state')=='pre'],key=lambda m:m['start'])
+            if upcoming:
+                st.dataframe([{'Sport':m['sport'],'Time':local(m['start']),'Away':m['away'],'Home':m['home']} for m in upcoming],hide_index=True,width='stretch')
+            else: st.info('No upcoming games returned by the schedule feed.')
+            st.caption('Future previews are not saved or graded. Schedule includes games without sufficient research.')
         st.caption('Spread and player-yardage selections withheld until line mapping and player models are validated. Live scores only; no live predictions.')
     elif page=='Results':
         if rows and saved:
@@ -734,5 +748,5 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.5I Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.5J Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
