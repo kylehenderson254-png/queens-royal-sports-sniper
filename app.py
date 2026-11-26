@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -340,7 +340,7 @@ def recover_pending(index,url):
     # Cached date lookups, bounded concurrency; no guessed outcomes.
     def lookup(item):
         sport,day=item
-        return sport,history_day(sport,day)
+        return sport,fetch_board(sport,day)
     with ThreadPoolExecutor(max_workers=4) as pool:
         for sport,(games,status) in pool.map(lookup,sorted(dates)):
             for g in games:
@@ -398,7 +398,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.4 TEST · ROYAL INTELLIGENCE AUDIT · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.5 TEST · ROYAL RESEARCH & RECORDING FIX · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -407,7 +407,24 @@ def collect_snapshot(db_url,odds_key):
     index={(sport,g['event_id']):g for sport,(games,status) in zip(FOCUS,boards) for g in games if g['event_id']}
     active=[(sport,g) for (sport,_),g in index.items() if g['state'] in ('pre','in')]
     with ThreadPoolExecutor(max_workers=4) as pool:
-        research_rows=list(pool.map(lambda sport:research(sport,today,odds_key),FOCUS))
+        research_rows={pool.submit(research,sport,today,odds_key):sport for sport in FOCUS}
+        new=[]; diagnostics=[]; market_cards=[]; previews={}
+        board_statuses={sport:status for sport,(_,status) in zip(FOCUS,boards)}
+        for future in as_completed(research_rows):
+            sport=research_rows[future]
+            history,status,events,odds_status=future.result()
+            for g in history: index.setdefault((sport,g['event_id']),g)
+            board_status=board_statuses[sport]
+            batch=[]
+            for league,g in active:
+                if league!=sport: continue
+                start=parse_date(g.get('date'))
+                if not start or start.astimezone(CT).date()!=today: continue
+                for kind,selection,line,confidence,why in forecast(g,sport,history,None,None,preview=True):
+                    batch.append(dict(sport=sport,event_id=g['event_id'],home=g['home'],away=next(t for t in g['teams'] if t!=g['home']),start=g['date'],phase='PREGAME',model='ROYAL_75G',revision='7.6.5',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
+            try: persist(batch,index,db_url)
+            except Exception as exc: log.warning("Early journal write: %s",type(exc).__name__)
+        research_rows=[f.result() for f in sorted(research_rows,key=lambda f:FOCUS.index(research_rows[f]))]
     new=[]; diagnostics=[]; market_cards=[]; previews={}
     for sport,(history,_,_,_) in zip(FOCUS,research_rows):
         for g in history: index.setdefault((sport,g['event_id']),g)
@@ -429,7 +446,7 @@ def collect_snapshot(db_url,odds_key):
             previews[(sport,g['event_id'])]=forecast(g,sport,history,None,None,preview=True)
             for kind,selection,line,confidence,why in predictions:
                 if start.astimezone(CT).date()!=today: continue
-                new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',model='ROYAL_75G',revision='7.6.4',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
+                new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',model='ROYAL_75G',revision='7.6.5',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
     storage_ok=False; storage_error=None
     try:
         try: recover_pending(index,db_url)
@@ -566,9 +583,9 @@ def classify_market(x,sport):
     typ=str(x.get('sportsMarketType') or '').lower()
     prefix=SPORT_TYPES.get(sport)
     if not prefix:return None
-    return {prefix+'_team_full_game_winner':'Moneyline',prefix+'_team_full_game_spread':'Spread',
+    return {prefix+'_team_full_game_winner':'Moneyline',prefix+'_team_full_game_spread':'Spread',prefix+'_team_full_game_total':'Total',
             'football_player_passing_yards':'Passing','football_player_rushing_yards':'Rushing',
-            'football_player_receiving_yards':'Receiving'}.get(typ) if prefix=='football' else {prefix+'_team_full_game_winner':'Moneyline',prefix+'_team_full_game_spread':'Spread'}.get(typ)
+            'football_player_receiving_yards':'Receiving'}.get(typ) if prefix=='football' else {prefix+'_team_full_game_winner':'Moneyline',prefix+'_team_full_game_spread':'Spread',prefix+'_team_full_game_total':'Total'}.get(typ)
 
 def match_poly_event(events,names,ab,start):
     matches={}
@@ -602,7 +619,7 @@ def poly_for_game(m):
                 if len(ss)!=1 or ss[0].get('tradable') is False:return ''
                 y=ss[0]; tid=y.get('teamId')
                 return team_ids.get(str(tid),'') if tid is not None else ''
-            out.append(dict(category=category,title=title,slug=ms,long=side(True),short=side(False),line=numeric(x.get('line')),main_line=numeric((event.get('eventState') or {}).get('mainSpreadLine')),short_title=str(x.get('titleShort') or '')))
+            out.append(dict(category=category,title=title,slug=ms,long=side(True),short=side(False),line=numeric(x.get('line')),main_line=numeric((event.get('eventState') or {}).get('mainSpreadLine')),short_title=str(x.get('titleShort') or x.get('title') or title),main_total=numeric((event.get('eventState') or {}).get('mainTotalLine'))))
         return event['slug'],out,'League event matched · '+str(len(out))+' supported markets'
     except Exception as e:
         code=getattr(getattr(e,'response',None),'status_code',None)
@@ -698,23 +715,26 @@ def experimental_value(r,m,price):
 
 @st.cache_data(ttl=3600,show_spinner=False)
 def historical_model_check(sport, history):
+    from collections import Counter
+    skips=Counter()
     samples=[]
     for g in sorted(history,key=lambda x:x.get('date',''))[-100:]:
-        if not g.get('completed') or g.get('state')!='post': continue
-        if any(x in str(g.get('detail','')).lower() for x in ('cancel','postpon','abandon','forfeit','suspend')): continue
+        if not g.get('completed') or g.get('state')!='post': skips['Not final']+=1; continue
+        if any(x in str(g.get('detail','')).lower() for x in ('cancel','postpon','abandon','forfeit','suspend')): skips['Invalid game']+=1; continue
         home=g.get('home'); teams=g.get('teams',[])
-        if len(teams)!=2 or home not in teams: continue
+        if len(teams)!=2 or home not in teams: skips['Team mapping']+=1; continue
         away=next(t for t in teams if t!=home)
         h=numeric(g.get('scores',{}).get(home)); a=numeric(g.get('scores',{}).get(away))
-        if h is None or a is None or h==a: continue
+        if h is None or a is None or h==a: skips['Missing score or tie']+=1; continue
         trial=dict(g,state='pre')
         preds=forecast(trial,sport,history,None,None,preview=True,retrospective=True)
-        if not preds: continue
+        if not preds: skips['Insufficient eligible history or equal projection']+=1; continue
         _,pick,_,grade,why=preds[0]
         val=experimental_value(dict(selection=pick,why=why),dict(home=home,away=away,sport=sport),None)
         if val: samples.append((val[0],int(pick==(home if h>a else away))))
+        else: skips['Probability unavailable']+=1
     n=len(samples)
-    return dict(Eligible=n,Skipped=max(0,min(100,len(history))-n),Correct=sum(y for p,y in samples),Samples=n,Accuracy=f'{sum(y for p,y in samples)/n:.1%}' if n else '—',Brier=round(sum((p-y)**2 for p,y in samples)/n,3) if n else None,MeanProbability=f'{sum(p for p,y in samples)/n:.1%}' if n else '—')
+    return dict(SkipReasons='; '.join(f'{k}: {v}' for k,v in skips.items()),Eligible=n,Skipped=max(0,min(100,len(history))-n),Correct=sum(y for p,y in samples),Samples=n,Accuracy=f'{sum(y for p,y in samples)/n:.1%}' if n else '—',Brier=round(sum((p-y)**2 for p,y in samples)/n,3) if n else None,MeanProbability=f'{sum(p for p,y in samples)/n:.1%}' if n else '—')
 
 @st.fragment(run_every='5s')
 def dashboard():
@@ -814,6 +834,11 @@ def dashboard():
                 if v:r['side_research'][t]=v
             r['discovery_counts']=(len(ml),sum(x['category']=='Spread' for x in markets))
             r['spread_research']=[]
+            if page=='Research':
+                totals=[x for x in markets if x['category']=='Total' and x['line'] is not None and x['main_total'] is not None and abs(x['line']-x['main_total'])<1e-8]
+                for x in totals[:2]:
+                    sq,ss,ts,sf=poly_quote(x['slug'])
+                    r['spread_research'].append(('Listed main total: '+x['short_title'],sq if sf and mapping_ok else None,ss))
             for x in (spread_items or alternate_items)[:4]:
                 if not x['short_title']:continue
                 sq,ss,ts,sf=poly_quote(x['slug'])
@@ -839,7 +864,7 @@ def dashboard():
             value=experimental_value(r,m,price)
             fair=f'{value[0]:.0%}' if value else '—'
             edge=f'{value[1]*100:+.1f} pp' if value and value[1] is not None else '—'
-            label='Preview · ' if r.get('preview') else ''
+            label='Preview / not locked · ' if r.get('preview') else ''
             if page=='Research':
                 with cols[i%3]:
                     st.markdown(f"**{m['away']} vs {m['home']}**")
@@ -869,7 +894,7 @@ def dashboard():
                 best=max(gaps,key=lambda z:z[1]) if gaps else None
                 action='WATCH · Price unverified' if best is None else 'SKIP · Both estimates below asks' if best[1]<=0 else f'WATCH · Model value side: {best[0]} {best[1]*100:+.1f} pp (model)'
                 # Opposite-team gap is illustrative, not a verified settlement probability.
-                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">Projected winner: {esc(selection)} · ML</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Queen’s fair price: <b>{esc(fair)}</b> · Winner price gap: <b style="color:{edge_color}">{esc(edge)}</b></div><small>{esc(quote_label)}</small><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
+                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">Projected winner: {esc(selection)} · {esc(label or "ML")}</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Queen’s fair price: <b>{esc(fair)}</b> · Winner price gap: <b style="color:{edge_color}">{esc(edge)}</b></div><small>{esc(quote_label)}</small><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
                 if slug: st.markdown(f'[Open Polymarket](https://polymarket.us/event/{slug})')
         if page=='Picks' and days>0:
             st.subheader('Upcoming Battles')
@@ -885,7 +910,7 @@ def dashboard():
             shown=[dict(r,grading_status=pending_status(r,index)) for r in rows if view=='All' or (view=='Pending')==(r['result']=='PENDING')]
             for r in sorted(shown,key=lambda r:r.get('start',''),reverse=True)[:100]:
                 e=lambda v:html.escape(str(v),quote=True)
-                result=r['result']; color={'WIN':'#62d6a1','LOSS':'#ff8585'}.get(result,'#e9c46a')
+                result=r['grading_status'] if r['result']=='PENDING' else r['result']; color={'WIN':'#62d6a1','LOSS':'#ff8585'}.get(result,'#e9c46a')
                 st.markdown(f'<div class="royal-record"><div><b>{e(r["selection"])}</b><small>{e(r["sport"])} · {e(r["kind"])} · {e(local(r["start"]))}</small></div><b style="color:{color}">{e(result)}</b></div>',unsafe_allow_html=True)
         else: st.info('No verified saved results available.')
     else:
@@ -903,9 +928,9 @@ def dashboard():
             for sport in FOCUS:
                 hist=[g for (league,_),g in index.items() if league==sport and g.get('completed')]
                 checks.append(dict(Sport=sport,**historical_model_check(sport,hist)))
-            st.session_state['royal764_checks']=checks
-        if st.session_state.get('royal764_checks'):
-            st.dataframe(st.session_state['royal764_checks'],hide_index=True,width='stretch')
+            st.session_state['royal765_checks']=checks
+        if st.session_state.get('royal765_checks'):
+            st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.4 Royal Intelligence Audit · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.5 Royal Research & Recording Fix · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
