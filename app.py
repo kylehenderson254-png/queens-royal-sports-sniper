@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -313,7 +313,8 @@ def current_board(sport,today):
     return list({g['event_id']:g for g in recent+future}.values()),status+'; upcoming '+fs
 
 def research(sport,today,odds_key):
-    offsets=range(1,15) if sport in ('NBA','NHL') else [i for i in (range(1,85) if sport=='NFL' else range(1,36)) if (today-timedelta(days=i)).weekday() in ((3,4,5,6,0) if sport=='NFL' else (3,4,5))]
+    # Include Saturday college games and enough prior weeks for walk-forward testing.
+    offsets=range(1,61) if sport in ('NBA','NHL') else range(1,91)
     games,status=collect_days(sport,[today-timedelta(days=i) for i in offsets],history_day)
     odds,odds_status=royal_consensus(sport,hashlib.sha256(odds_key.encode()).hexdigest(),odds_key)
     return games,status,odds,odds_status
@@ -397,7 +398,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.3 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.4 TEST · ROYAL INTELLIGENCE AUDIT · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -424,11 +425,11 @@ def collect_snapshot(db_url,odds_key):
             if not start or not home or not away or (g['state']=='pre' and not utc()<start<=utc()+timedelta(days=7)): continue
             matches=[e for e in events if parse_date(e.get('commence_time')) and abs((parse_date(e['commence_time'])-start).total_seconds())<7200 and _unique_score_team(e.get('home_team'),g['teams'],sport)==home and _unique_score_team(e.get('away_team'),g['teams'],sport)==away]
             prob,spread,total=royal_lines(matches[0]) if len(matches)==1 else (None,None,None)
-            predictions=forecast(g,sport,history,spread,total)
+            predictions=forecast(g,sport,history,spread,total,preview=True)  # record all eligible same-day winner forecasts, not just large margins
             previews[(sport,g['event_id'])]=forecast(g,sport,history,None,None,preview=True)
             for kind,selection,line,confidence,why in predictions:
                 if start.astimezone(CT).date()!=today: continue
-                new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',model='ROYAL_75G',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
+                new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',model='ROYAL_75G',revision='7.6.4',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
     storage_ok=False; storage_error=None
     try:
         try: recover_pending(index,db_url)
@@ -678,6 +679,10 @@ def projection_summary(r,m):
     other=next(t for t in scores if t!=winner)
     return f"{scores[m['away']]:.1f} – {scores[m['home']]:.1f}",f"{winner} +{scores[winner]-scores[other]:.1f} pts"
 
+def projection_margin(r,m):
+    match=re.search(r'projected score (.+?) (-?\d+\.\d+), (.+?) (-?\d+\.\d+)\.',r.get('why',''))
+    return float(match[2])-float(match[4]) if match else 0.0
+
 def experimental_value(r,m,price):
     match=re.search(r'projected score (.+?) (-?\d+\.\d+), (.+?) (-?\d+\.\d+)\.',r.get('why',''))
     if not match: return None
@@ -709,7 +714,7 @@ def historical_model_check(sport, history):
         val=experimental_value(dict(selection=pick,why=why),dict(home=home,away=away,sport=sport),None)
         if val: samples.append((val[0],int(pick==(home if h>a else away))))
     n=len(samples)
-    return dict(Samples=n,Accuracy=f'{sum(y for p,y in samples)/n:.1%}' if n else '—',Brier=round(sum((p-y)**2 for p,y in samples)/n,3) if n else None,MeanProbability=f'{sum(p for p,y in samples)/n:.1%}' if n else '—')
+    return dict(Eligible=n,Skipped=max(0,min(100,len(history))-n),Correct=sum(y for p,y in samples),Samples=n,Accuracy=f'{sum(y for p,y in samples)/n:.1%}' if n else '—',Brier=round(sum((p-y)**2 for p,y in samples)/n,3) if n else None,MeanProbability=f'{sum(p for p,y in samples)/n:.1%}' if n else '—')
 
 @st.fragment(run_every='5s')
 def dashboard():
@@ -798,7 +803,8 @@ def dashboard():
                 elif q: status='Team-side mapping unverified'
             elif slug: status='Unique moneyline not identified'
             # Research coverage is not a calibrated probability or proof of value.
-            spread_items=[x for x in markets if x['category']=='Spread' and x['line'] is not None and x['main_line'] is not None and abs(abs(x['line'])-abs(x['main_line']))<1e-8]
+            spread_items=[x for x in markets if x['category']=='Spread' and x['line'] is not None and math.isfinite(x['line']) and x['main_line'] is not None and abs(abs(x['line'])-abs(x['main_line']))<1e-8]
+            alternate_items=sorted([x for x in markets if x['category']=='Spread' and x['line'] is not None and math.isfinite(x['line']) and x['short_title'] and re.search(r'[+-]\d',x['short_title'])],key=lambda x:abs(abs(x['line'])-abs(projection_margin(r,m))))[:4] if page=='Research' else []
             spread_labels={x['short_title'] for x in spread_items if x['short_title'] and re.search(r'[+-]\d',x['short_title']) and not re.search(r'\b(?:half|quarter|period|q[1-4]|f5)\b',x['short_title'],re.I)}
             spread_text=next(iter(spread_labels)) if len(spread_labels)==1 else 'Unverified'
             r=dict(r,market_spread=spread_text,team_prices=team_prices,quote_ts=quote_ts,quote_fresh=fresh)
@@ -806,11 +812,12 @@ def dashboard():
             for t in g['teams']:
                 v=experimental_value(dict(r,selection=t),m,team_prices.get(t) if fresh else None)
                 if v:r['side_research'][t]=v
+            r['discovery_counts']=(len(ml),sum(x['category']=='Spread' for x in markets))
             r['spread_research']=[]
-            for x in spread_items[:4]:
+            for x in (spread_items or alternate_items)[:4]:
                 if not x['short_title']:continue
                 sq,ss,ts,sf=poly_quote(x['slug'])
-                r['spread_research'].append((x['short_title'],sq if sf and mapping_ok else None,ss))
+                r['spread_research'].append((('Main candidate: ' if x in spread_items else 'Listed alternate / main unverified: ')+x['short_title'],sq if sf and mapping_ok else None,ss))
             candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status,both))
         if page in ('Picks','Research'):
             candidates.sort(key=lambda x:(x[0],x[1]['start']))
@@ -841,6 +848,7 @@ def dashboard():
                     st.write(r['why'])
                     if value: st.caption(f'Experimental normal-margin model: assumed uncertainty {value[2]:g} points/goals; estimate {fair}; gross price gap {edge}. Not fitted, backtested or fee-adjusted.')
                     st.caption('Market: '+status+' · '+(both or 'Price unavailable'))
+                    st.caption(f'Discovery: {r["discovery_counts"][0]} moneyline / {r["discovery_counts"][1]} full-game spread contracts; main line: {r["market_spread"]}')
                     for t,v in r['side_research'].items():
                         gap=f' · illustrative gap {v[1]*100:+.1f} pp' if v[1] is not None else ''
                         st.caption(f'{t}: estimated fair {v[0]:.0%}'+gap)
@@ -859,9 +867,9 @@ def dashboard():
                 quote_label=('FRESH SNAPSHOT' if r['quote_fresh'] else 'STALE SNAPSHOT')+' · '+datetime.fromtimestamp(r['quote_ts'],CT).strftime('%I:%M:%S %p CT') if r['quote_ts'] and r['team_prices'] else 'PRICE UNAVAILABLE'
                 gaps=[(t,v[1]) for t,v in r['side_research'].items() if v[1] is not None]
                 best=max(gaps,key=lambda z:z[1]) if gaps else None
-                action='WATCH · Price unverified' if best is None else 'SKIP · Both estimates below asks' if best[1]<=0 else f'WATCH · {best[0]} {best[1]*100:+.1f} pp (model)'
+                action='WATCH · Price unverified' if best is None else 'SKIP · Both estimates below asks' if best[1]<=0 else f'WATCH · Model value side: {best[0]} {best[1]*100:+.1f} pp (model)'
                 # Opposite-team gap is illustrative, not a verified settlement probability.
-                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">{esc(selection)} · ML</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Queen’s fair price: <b>{esc(fair)}</b> · Estimated value: <b style="color:{edge_color}">{esc(edge)}</b></div><small>{esc(quote_label)}</small><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
+                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">Projected winner: {esc(selection)} · ML</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Queen’s fair price: <b>{esc(fair)}</b> · Winner price gap: <b style="color:{edge_color}">{esc(edge)}</b></div><small>{esc(quote_label)}</small><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
                 if slug: st.markdown(f'[Open Polymarket](https://polymarket.us/event/{slug})')
         if page=='Picks' and days>0:
             st.subheader('Upcoming Battles')
@@ -869,8 +877,8 @@ def dashboard():
             if upcoming:
                 st.dataframe([{'Sport':m['sport'],'Time':local(m['start']),'Away':m['away'],'Home':m['home']} for m in upcoming],hide_index=True,width='stretch')
             else: st.info('No upcoming games returned by the schedule feed.')
-            st.caption('Future previews are not saved or graded. Schedule includes games without sufficient research.')
-        st.caption('Spread quotes are informational; player-yardage selections withheld until player models are validated. Opposite-team estimates do not model ties or voids. Live scores only; no live predictions.')
+            st.caption('Future previews are not saved or graded until their game day. Schedule includes games without sufficient research.')
+        st.caption('Same-day eligible winner forecasts are recorded regardless of margin; historical records retain their original selection rules. Spread quotes are informational; player-yardage selections withheld until player models are validated. Opposite-team estimates do not model ties or voids. Live scores only; no live predictions.')
     elif page=='Results':
         if rows and saved:
             view=st.selectbox('Results filter',['All','Graded','Pending'])
@@ -882,11 +890,12 @@ def dashboard():
         else: st.info('No verified saved results available.')
     else:
         if saved and rows:
+            summary=[]
             for field in ('sport','kind','phase','confidence'):
-                st.subheader(field.title())
                 for value in sorted({r[field] for r in rows}):
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
-                    st.write(f'{value}: {a} correct / {b} wrong')
+                    summary.append(dict(Group=field.title(),Category=value,Correct=a,Wrong=b,Pending=sum(r['result']=='PENDING' for r in group)))
+            st.dataframe(summary,hide_index=True,width='stretch')
         st.subheader('Historical probability check')
         st.caption('Retrospective walk-forward check: earlier games only, up to 100 recent games per sport. No market prices or fees; not a profitability test.')
         if st.button('Run historical check'):
@@ -894,9 +903,9 @@ def dashboard():
             for sport in FOCUS:
                 hist=[g for (league,_),g in index.items() if league==sport and g.get('completed')]
                 checks.append(dict(Sport=sport,**historical_model_check(sport,hist)))
-            st.session_state['royal761_checks']=checks
-        if st.session_state.get('royal761_checks'):
-            st.dataframe(st.session_state['royal761_checks'],hide_index=True,width='stretch')
+            st.session_state['royal764_checks']=checks
+        if st.session_state.get('royal764_checks'):
+            st.dataframe(st.session_state['royal764_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.3 Royal Market Intelligence · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.4 Royal Intelligence Audit · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
