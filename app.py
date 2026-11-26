@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5H | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5H.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -388,7 +388,7 @@ def logo_directory(sport):
     except Exception: return {}
 def logo_for(sport,name): return logo_directory(sport).get(clean(name),'')
 
-st.markdown("""<style>.block-container{max-width:none!important;padding:1rem 2vw 2rem!important;width:100%!important}.stApp{background:radial-gradient(ellipse at top,#29134b 0%,#100d20 42%,#090812 100%)}div[data-testid=stMetric]{border:1px solid #67449b;border-radius:12px;padding:12px}img{object-fit:contain}div[data-testid=stImage]{width:100%!important}div[data-testid=stImage] img{width:100%!important;border-radius:12px}div[data-testid=stSegmentedControl] button{min-height:44px;font-weight:700}div[data-testid=stMetric]{background:#1c1532}.rgame{background:linear-gradient(125deg,#201435,#100d1d);border:1px solid #634293;border-radius:12px;padding:9px 12px;margin-bottom:5px;color:#fff;box-shadow:0 0 10px #57288a33}.rteam{display:flex;align-items:center;gap:9px;min-height:27px;font-size:13px}.rteam b{margin-left:auto}.rgame small{color:#c2addd;font-size:11px}.rpred{background:linear-gradient(135deg,#28163f,#100d1d 80%);border:1px solid #8050b4;border-radius:13px;padding:8px 10px;margin-bottom:5px;color:#fff;box-shadow:0 2px 12px #57288a33;font-size:13px}.rpred .meta{font-size:11px;color:#c6addf}.rpred .match{display:flex;align-items:center;justify-content:space-between;gap:6px;margin:5px 0}.rpred .side{flex:1;text-align:center;font-weight:700}.rpred .side.royalpick{color:#ffe39a;background:#49351f66;border:1px solid #d8a94d;border-radius:9px;padding:3px 2px;box-shadow:0 0 10px #eab54a33}.rpred .royalwinner b{color:#ffe39a}.rpred .side img{display:block;margin:0 auto 2px;width:27px;height:27px}.rpred .project{font-size:23px;font-weight:800;color:#e4c5ff;white-space:nowrap}.rpred .bet{border-top:1px solid #51346c;padding:3px 0;line-height:1.35}.rpred .bet b{color:#e0b5ff}.rpred .bet span{color:#eee;font-size:12px;line-height:1.35}.rpred .watch{color:#ffd18a;font-size:11px;margin-top:3px}.rpred .reason{color:#c6addf;font-size:11px;margin-bottom:3px}</style>""",unsafe_allow_html=True)
+st.markdown("""<style>.block-container{max-width:none!important;padding:1rem 2vw 2rem!important;width:100%!important}.stApp{background:radial-gradient(ellipse at top,#29134b 0%,#100d20 42%,#090812 100%)}div[data-testid=stMetric]{border:1px solid #67449b;border-radius:12px;padding:12px}img{object-fit:contain}div[data-testid=stImage]{width:100%!important}div[data-testid=stImage] img{width:100%!important;border-radius:12px}div[data-testid=stSegmentedControl] button{min-height:44px;font-weight:700}div[data-testid=stMetric]{background:#1c1532}.rgame{background:linear-gradient(125deg,#201435,#100d1d);border:1px solid #634293;border-radius:12px;padding:9px 12px;margin-bottom:5px;color:#fff;box-shadow:0 0 10px #57288a33}.rteam{display:flex;align-items:center;gap:9px;min-height:27px;font-size:13px}.rteam b{margin-left:auto}.rgame small{color:#c2addd;font-size:11px}.rpred{background:linear-gradient(135deg,#28163f,#100d1d 80%);border:1px solid #8050b4;border-radius:13px;padding:8px 10px;margin-bottom:5px;color:#fff;box-shadow:0 2px 12px #57288a33;font-size:13px}.rpred .meta{font-size:11px;color:#c6addf}.rpred .match{display:flex;align-items:center;justify-content:space-between;gap:6px;margin:5px 0}.rpred .side{flex:1;text-align:center;font-weight:700}.rpred .side.royalpick{color:#ffe39a;background:#49351f66;border:1px solid #d8a94d;border-radius:9px;padding:3px 2px;box-shadow:0 0 10px #eab54a33}.rpred .royalwinner b{color:#ffe39a}.rpred .side img{display:block;margin:0 auto 2px;width:27px;height:27px}.rpred .project{font-size:23px;font-weight:800;color:#e4c5ff;white-space:nowrap}.rpred .bet{border-top:1px solid #51346c;padding:3px 0;line-height:1.35}.rpred .bet b{color:#e0b5ff}.rpred .bet span{color:#eee;font-size:12px;line-height:1.35}.rpred .watch{color:#ffd18a;font-size:11px;margin-top:3px}.rpred .reason{color:#c6addf;font-size:11px;margin-bottom:3px}.royal-uniform-card{box-sizing:border-box;width:100%;height:330px;display:flex;flex-direction:column;gap:6px;overflow-y:auto;overflow-wrap:anywhere}.royal-uniform-card>div:last-child{margin-top:auto}@media(max-width:640px){.royal-uniform-card{height:330px}}</style>""",unsafe_allow_html=True)
 banners=[p for folder in (Path('.'),Path('assets'),Path('images')) if folder.is_dir() for p in folder.iterdir() if p.is_file() and p.suffix.lower() in ('.png','.jpg','.jpeg','.webp') and 'banner' in p.stem.lower()]
 if banners:
     banner=sorted(banners)[0]
@@ -396,7 +396,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.5H TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.5H.1 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -683,8 +683,8 @@ def dashboard():
             selection=('♛ '+r['selection']) if r else 'No saved pregame research'
             label='Saved pregame · ' if live and r else ''
             with cols[i%3]:
-                st.markdown(f'<div style="border:1px solid #654290;border-radius:12px;padding:12px;background:#171022"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(detail)}</small><div style="font-weight:700">{team(m["away"])} {esc(score)} {team(m["home"])}</div><div style="color:#f3cf7c">{esc(label+selection+(' · '+r['confidence'] if r else ''))}</div><small>{esc(reason)}</small>'+ (f'<div style="color:#f3cf7c">Snapshot ask {price:.0%} · WATCH</div>' if price is not None else (f'<div style="color:#bda5df">WATCH · {esc(status or "Price unavailable")}</div>' if not live else ''))+'</div>',unsafe_allow_html=True)
-                if slug: st.markdown(f'[Open Polymarket](https://polymarket.us/sports/{m["sport"].lower()}/{slug})')
+                st.markdown(f'<div class="royal-uniform-card" style="border:1px solid #654290;border-radius:12px;padding:12px;background:#171022"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(detail)}</small><div style="font-weight:700">{team(m["away"])} {esc(score)} {team(m["home"])}</div><div style="color:#f3cf7c">{esc(label+selection+(' · '+r['confidence'] if r else ''))}</div><small>{esc(reason)}</small>'+ (f'<div style="color:#f3cf7c">Snapshot ask {price:.0%} · WATCH</div>' if price is not None else (f'<div style="color:#bda5df">WATCH · {esc(status or "Price unavailable")}</div>' if not live else ''))+'</div>',unsafe_allow_html=True)
+                st.markdown(f'[Open Polymarket](https://polymarket.us/sports/{m["sport"].lower()}/{slug})' if slug else '&nbsp;', unsafe_allow_html=True)
         st.caption('Spread and player-yardage selections withheld until line mapping and player models are validated. Live scores only; no live predictions.')
     elif page=='Results':
         if rows and saved:
@@ -700,5 +700,5 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.5H Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.5H.1 Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
