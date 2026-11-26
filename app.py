@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -397,7 +397,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.1 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.2 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -610,14 +610,53 @@ def parse_poly_bbo(payload,slug):
         if k in d and (numeric(d[k]) is None or not numeric(d[k])>0):return None,'Empty or invalid book depth'
     return (a,1-b),'Two-sided snapshot'
 
-@st.cache_data(ttl=20,show_spinner=False)
-def poly_quote(slug):
+def fetch_poly_quote(slug):
     try:
         r=requests.get(BASE+'/v1/markets/'+quote(slug,safe='')+'/bbo',timeout=4)
         r.raise_for_status(); return parse_poly_bbo(r.json(),slug)
     except requests.HTTPError as e:
         return None,'Quote HTTP '+str(e.response.status_code if e.response is not None else 'unknown')
     except Exception as e:return None,'Quote '+type(e).__name__
+
+class RoyalQuoteCache:
+    def __init__(self):
+        self.lock=threading.Lock(); self.pool=ThreadPoolExecutor(max_workers=4); self.entries={}
+    def poll(self,slug):
+        with self.lock:
+            now=time.monotonic()
+            e=self.entries.setdefault(slug,dict(q=None,ts=None,next=0,future=None,status='Waiting for quote'))
+            f=e['future']
+            if f is not None and f.done():
+                try: q,status=f.result()
+                except Exception as exc: q,status=None,type(exc).__name__
+                e['status']=status; e['future']=None
+                if q is not None: e['q']=q; e['ts']=time.time()
+                e['ok']=q is not None
+                e['next']=now+(5 if q is not None else 30 if '429' in status else 10)
+            if e['future'] is None and now>=e['next']:
+                e['future']=self.pool.submit(fetch_poly_quote,slug)
+            age=max(0,time.time()-e['ts']) if e['ts'] is not None else None
+            fresh=bool(e.get('ok') and age is not None and age<=15)
+            return e['q'],e['status'],e['ts'],fresh
+
+@st.cache_resource
+def royal_quote_cache(): return RoyalQuoteCache()
+
+def poly_quote(slug): return royal_quote_cache().poll(slug)
+
+@st.cache_resource
+def royal_mapping_cache(): return {},threading.Lock()
+
+def retained_mapping(m):
+    cache,lock=royal_mapping_cache(); key=(m['sport'],m['game']['event_id'],m['start'])
+    slug,markets,status=poly_for_game(m)
+    with lock:
+        if slug and markets:
+            cache[key]=(slug,markets,time.time()); return slug,markets,status,True
+        old=cache.get(key)
+        if old and time.time()-old[2]<3600:
+            return old[0],old[1],status+' · retained mapping',False
+    return slug,markets,status,False
 
 def projection_summary(r,m):
     match=re.search(r'projected score (.+?) (-?\d+\.\d+), (.+?) (-?\d+\.\d+)\.',r.get('why',''))
@@ -738,21 +777,21 @@ def dashboard():
                     _,selection,_,confidence,why=preview
                     r=dict(selection=selection,confidence=confidence,why=why,preview=True)
             if not r: continue
-            slug,markets,status=poly_for_game(m)
+            slug,markets,status,mapping_ok=retained_mapping(m)
             ml=[x for x in markets if x['category']=='Moneyline']
-            q=None; price=None; both=''; team_prices={}
+            q=None; price=None; both=''; team_prices={}; quote_ts=None; fresh=False
             if len(ml)==1:
-                item=ml[0]; q,status=poly_quote(item['slug'])
+                item=ml[0]; q,status,quote_ts,fresh=poly_quote(item['slug']); fresh=fresh and mapping_ok
                 sides=[item[k] for k in ('long','short')]
                 if q and set(sides)==set(g['teams']) and r['selection'] in sides:
-                    team_prices=dict(zip(sides,q)); price=q[sides.index(r['selection'])]; both=' / '.join(f'{t} {v:.0%}' for t,v in zip(sides,q))
+                    team_prices=dict(zip(sides,q)); price=q[sides.index(r['selection'])] if fresh else None; both=' / '.join(f'{t} {v:.0%}' for t,v in zip(sides,q))
                 elif q: status='Team-side mapping unverified'
             elif slug: status='Unique moneyline not identified'
             # Research coverage is not a calibrated probability or proof of value.
             spread_items=[x for x in markets if x['category']=='Spread' and x['line'] is not None and x['main_line'] is not None and abs(abs(x['line'])-abs(x['main_line']))<1e-8]
             spread_labels={x['short_title'] for x in spread_items if x['short_title'] and re.search(r'[+-]\d',x['short_title']) and not re.search(r'\b(?:half|quarter|period|q[1-4]|f5)\b',x['short_title'],re.I)}
             spread_text=next(iter(spread_labels)) if len(spread_labels)==1 else 'Unverified'
-            r=dict(r,market_spread=spread_text,team_prices=team_prices)
+            r=dict(r,market_spread=spread_text,team_prices=team_prices,quote_ts=quote_ts,quote_fresh=fresh)
             candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status,both))
         if page in ('Picks','Research'):
             candidates.sort(key=lambda x:(x[0],x[1]['start']))
@@ -793,8 +832,9 @@ def dashboard():
                     px_text=f'{px*100:.0f}¢' if px is not None else '—'
                     return f'<div class="royal-side">{img}<b>{esc(code)}</b><b class="royal-gold">{esc(px_text)}</b></div>'
                 edge_color="#62d6a1" if value and value[1] is not None and value[1]>0 else "#ff8585" if value and value[1] is not None and value[1]<0 else "#c6addf"
+                quote_label=('FRESH SNAPSHOT' if r['quote_fresh'] else 'STALE SNAPSHOT')+' · '+datetime.fromtimestamp(r['quote_ts'],CT).strftime('%I:%M:%S %p CT') if r['quote_ts'] and r['team_prices'] else 'PRICE UNAVAILABLE'
                 action="SKIP · Model price below ask" if value and value[1] is not None and value[1]<0 else "WATCH · Experimental"
-                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">{esc(selection)} · ML</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Model fair price: <b>{esc(fair)}</b> · Market edge: <b style="color:{edge_color}">{esc(edge)}</b></div><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
+                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">{esc(selection)} · ML</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Queen’s fair price: <b>{esc(fair)}</b> · Estimated value: <b style="color:{edge_color}">{esc(edge)}</b></div><small>{esc(quote_label)}</small><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
                 if slug: st.markdown(f'[Open Polymarket](https://polymarket.us/event/{slug})')
         if page=='Picks' and days>0:
             st.subheader('Upcoming Battles')
@@ -831,5 +871,5 @@ def dashboard():
         if st.session_state.get('royal761_checks'):
             st.dataframe(st.session_state['royal761_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.1 Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.2 Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
