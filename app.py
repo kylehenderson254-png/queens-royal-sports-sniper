@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.1 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -210,9 +210,9 @@ def royal_lines(event):
 # Separate accuracy-only journal. Legacy archive remains untouched.
 from statistics import mean
 
-def forecast(game, sport, history, spread, total, preview=False):
+def forecast(game, sport, history, spread, total, preview=False, retrospective=False):
     home=game.get('home'); teams=game.get('teams',[]); target=parse_date(game.get('date'))
-    if home not in teams or len(teams)!=2 or not target or game.get('state')!='pre' or target<=utc(): return []
+    if home not in teams or len(teams)!=2 or not target or game.get('state')!='pre' or (not retrospective and target<=utc()): return []
     away=next(t for t in teams if t!=home)
     valid=[]
     for g in history:
@@ -389,7 +389,7 @@ def logo_directory(sport):
 def logo_for(sport,name): return logo_directory(sport).get(clean(name),'')
 
 st.markdown("""<style>.block-container{max-width:none!important;padding:1rem 2vw 2rem!important;width:100%!important}.stApp{background:radial-gradient(ellipse at top,#29134b 0%,#100d20 42%,#090812 100%)}div[data-testid=stMetric]{border:1px solid #67449b;border-radius:12px;padding:12px}img{object-fit:contain}div[data-testid=stImage]{width:100%!important}div[data-testid=stImage] img{width:100%!important;border-radius:12px}div[data-testid=stSegmentedControl] button{min-height:44px;font-weight:700}div[data-testid=stMetric]{background:#1c1532}.rgame{background:linear-gradient(125deg,#201435,#100d1d);border:1px solid #634293;border-radius:12px;padding:9px 12px;margin-bottom:5px;color:#fff;box-shadow:0 0 10px #57288a33}.rteam{display:flex;align-items:center;gap:9px;min-height:27px;font-size:13px}.rteam b{margin-left:auto}.rgame small{color:#c2addd;font-size:11px}.rpred{background:linear-gradient(135deg,#28163f,#100d1d 80%);border:1px solid #8050b4;border-radius:13px;padding:8px 10px;margin-bottom:5px;color:#fff;box-shadow:0 2px 12px #57288a33;font-size:13px}.rpred .meta{font-size:11px;color:#c6addf}.rpred .match{display:flex;align-items:center;justify-content:space-between;gap:6px;margin:5px 0}.rpred .side{flex:1;text-align:center;font-weight:700}.rpred .side.royalpick{color:#ffe39a;background:#49351f66;border:1px solid #d8a94d;border-radius:9px;padding:3px 2px;box-shadow:0 0 10px #eab54a33}.rpred .royalwinner b{color:#ffe39a}.rpred .side img{display:block;margin:0 auto 2px;width:27px;height:27px}.rpred .project{font-size:23px;font-weight:800;color:#e4c5ff;white-space:nowrap}.rpred .bet{border-top:1px solid #51346c;padding:3px 0;line-height:1.35}.rpred .bet b{color:#e0b5ff}.rpred .bet span{color:#eee;font-size:12px;line-height:1.35}.rpred .watch{color:#ffd18a;font-size:11px;margin-top:3px}.rpred .reason{color:#c6addf;font-size:11px;margin-bottom:3px}.royal-uniform-card{box-sizing:border-box;width:100%;height:330px;display:flex;flex-direction:column;gap:6px;overflow-y:auto;overflow-wrap:anywhere}.royal-live-card{box-sizing:border-box;width:100%;min-height:160px;display:flex;flex-direction:column;gap:6px;border:1px solid #654290;border-radius:12px;padding:12px;background:#171022}.royal-live-card .live-team{display:flex;align-items:center;gap:8px;font-weight:700}.royal-live-card .live-team b{margin-left:auto;font-size:22px;color:#fff}.royal-uniform-card>div:last-child{margin-top:auto}@media(max-width:640px){.royal-uniform-card{height:330px}}</style>""",unsafe_allow_html=True)
-st.markdown("""<style>.royal-v76,.royal-record,.royal-live-card{background:linear-gradient(135deg,#29183e,#100b1d 80%);border:1px solid #9563c9;border-radius:15px;box-shadow:0 0 14px #7e43ba35;padding:12px;color:#f5edff}.royal-v76{height:305px;box-sizing:border-box;display:flex;flex-direction:column;gap:5px;overflow:auto;font-size:13px}.royal-v76 small,.royal-record small{color:#c6addf;font-size:11px}.royal-match{display:flex;align-items:center;justify-content:space-around}.royal-side{display:flex;flex-direction:column;align-items:center;flex:1}.royal-gold{color:#f3cf7c!important;font-weight:700}.royal-projection{font-size:25px;font-weight:800;text-align:center;background:#ffffff08;border-radius:8px}.royal-record{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}.royal-record small{display:block}.royal-live-card .live-team b{font-size:30px;color:#f3cf7c}.royal-live-card{min-height:175px}</style>""",unsafe_allow_html=True)
+st.markdown("""<style>.royal-v76,.royal-record,.royal-live-card{background:linear-gradient(135deg,#29183e,#100b1d 80%);border:1px solid #9563c9;border-radius:15px;box-shadow:0 0 14px #7e43ba35;padding:12px;color:#f5edff}.royal-v76{min-height:305px;height:auto;box-sizing:border-box;display:flex;flex-direction:column;gap:5px;overflow:visible;font-size:13px}.royal-v76 small,.royal-record small{color:#c6addf;font-size:11px}.royal-match{display:flex;align-items:center;justify-content:space-around}.royal-side{display:flex;flex-direction:column;align-items:center;flex:1}.royal-gold{color:#f3cf7c!important;font-weight:700}.royal-projection{font-size:25px;font-weight:800;text-align:center;background:#ffffff08;border-radius:8px}.royal-record{display:flex;align-items:center;justify-content:space-between;margin-bottom:7px}.royal-record small{display:block}.royal-live-card .live-team b{font-size:30px;color:#f3cf7c}.royal-live-card{min-height:175px}</style>""",unsafe_allow_html=True)
 banners=[p for folder in (Path('.'),Path('assets'),Path('images')) if folder.is_dir() for p in folder.iterdir() if p.is_file() and p.suffix.lower() in ('.png','.jpg','.jpeg','.webp') and 'banner' in p.stem.lower()]
 if banners:
     banner=sorted(banners)[0]
@@ -397,7 +397,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.1 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -641,6 +641,27 @@ def experimental_value(r,m,price):
     prob=.5*(1+math.erf(margin/(sigma*math.sqrt(2))))
     return prob, (prob-price if price is not None else None),sigma
 
+
+@st.cache_data(ttl=3600,show_spinner=False)
+def historical_model_check(sport, history):
+    samples=[]
+    for g in sorted(history,key=lambda x:x.get('date',''))[-100:]:
+        if not g.get('completed') or g.get('state')!='post': continue
+        if any(x in str(g.get('detail','')).lower() for x in ('cancel','postpon','abandon','forfeit','suspend')): continue
+        home=g.get('home'); teams=g.get('teams',[])
+        if len(teams)!=2 or home not in teams: continue
+        away=next(t for t in teams if t!=home)
+        h=numeric(g.get('scores',{}).get(home)); a=numeric(g.get('scores',{}).get(away))
+        if h is None or a is None or h==a: continue
+        trial=dict(g,state='pre')
+        preds=forecast(trial,sport,history,None,None,preview=True,retrospective=True)
+        if not preds: continue
+        _,pick,_,grade,why=preds[0]
+        val=experimental_value(dict(selection=pick,why=why),dict(home=home,away=away,sport=sport),None)
+        if val: samples.append((val[0],int(pick==(home if h>a else away))))
+    n=len(samples)
+    return dict(Samples=n,Accuracy=f'{sum(y for p,y in samples)/n:.1%}' if n else '—',Brier=round(sum((p-y)**2 for p,y in samples)/n,3) if n else None,MeanProbability=f'{sum(p for p,y in samples)/n:.1%}' if n else '—')
+
 @st.fragment(run_every='5s')
 def dashboard():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret("QUEEN_DATABASE_URL"),"")
@@ -719,19 +740,19 @@ def dashboard():
             if not r: continue
             slug,markets,status=poly_for_game(m)
             ml=[x for x in markets if x['category']=='Moneyline']
-            q=None; price=None; both=''
+            q=None; price=None; both=''; team_prices={}
             if len(ml)==1:
                 item=ml[0]; q,status=poly_quote(item['slug'])
                 sides=[item[k] for k in ('long','short')]
                 if q and set(sides)==set(g['teams']) and r['selection'] in sides:
-                    price=q[sides.index(r['selection'])]; both=' / '.join(f'{t} {v:.0%}' for t,v in zip(sides,q))
+                    team_prices=dict(zip(sides,q)); price=q[sides.index(r['selection'])]; both=' / '.join(f'{t} {v:.0%}' for t,v in zip(sides,q))
                 elif q: status='Team-side mapping unverified'
             elif slug: status='Unique moneyline not identified'
             # Research coverage is not a calibrated probability or proof of value.
             spread_items=[x for x in markets if x['category']=='Spread' and x['line'] is not None and x['main_line'] is not None and abs(abs(x['line'])-abs(x['main_line']))<1e-8]
             spread_labels={x['short_title'] for x in spread_items if x['short_title'] and re.search(r'[+-]\d',x['short_title']) and not re.search(r'\b(?:half|quarter|period|q[1-4]|f5)\b',x['short_title'],re.I)}
             spread_text=next(iter(spread_labels)) if len(spread_labels)==1 else 'Unverified'
-            r=dict(r,market_spread=spread_text)
+            r=dict(r,market_spread=spread_text,team_prices=team_prices)
             candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status,both))
         if page in ('Picks','Research'):
             candidates.sort(key=lambda x:(x[0],x[1]['start']))
@@ -767,9 +788,13 @@ def dashboard():
                 def royal_side(t):
                     u=g.get('logos',{}).get(t,'') or ''
                     img=f'<img src="{esc(u)}" width="44" height="44">' if u.startswith('https://') else ''
-                    code=g.get('abbr',{}).get(t) or t
-                    return f'<div class="royal-side">{img}<b>{esc(code)}</b></div>'
-                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">{esc(selection)} · ML</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>{esc(both or "Prices unavailable")}</div><div>Model fair price: <b>{esc(fair)}</b> · Gross gap: <b>{esc(edge)}</b></div><small class="royal-gold">EXPERIMENTAL · WATCH · {esc(label+r["confidence"])}</small></div>',unsafe_allow_html=True)
+                    code=(g.get('abbr',{}).get(t) or t).upper()
+                    px=r['team_prices'].get(t)
+                    px_text=f'{px*100:.0f}¢' if px is not None else '—'
+                    return f'<div class="royal-side">{img}<b>{esc(code)}</b><b class="royal-gold">{esc(px_text)}</b></div>'
+                edge_color="#62d6a1" if value and value[1] is not None and value[1]>0 else "#ff8585" if value and value[1] is not None and value[1]<0 else "#c6addf"
+                action="SKIP · Model price below ask" if value and value[1] is not None and value[1]<0 else "WATCH · Experimental"
+                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">{esc(selection)} · ML</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Model fair price: <b>{esc(fair)}</b> · Market edge: <b style="color:{edge_color}">{esc(edge)}</b></div><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
                 if slug: st.markdown(f'[Open Polymarket](https://polymarket.us/event/{slug})')
         if page=='Picks' and days>0:
             st.subheader('Upcoming Battles')
@@ -795,6 +820,16 @@ def dashboard():
                 for value in sorted({r[field] for r in rows}):
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
+        st.subheader('Historical probability check')
+        st.caption('Retrospective walk-forward check: earlier games only, up to 100 recent games per sport. No market prices or fees; not a profitability test.')
+        if st.button('Run historical check'):
+            checks=[]
+            for sport in FOCUS:
+                hist=[g for (league,_),g in index.items() if league==sport and g.get('completed')]
+                checks.append(dict(Sport=sport,**historical_model_check(sport,hist)))
+            st.session_state['royal761_checks']=checks
+        if st.session_state.get('royal761_checks'):
+            st.dataframe(st.session_state['royal761_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6 Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.1 Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
