@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.4.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5A | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -184,7 +184,10 @@ def royal_consensus(sport, _key):
         r=requests.get('https://api.the-odds-api.com/v4/sports/'+ODDS_KEYS[sport]+'/odds',params={'apiKey':key,'regions':'us','markets':'h2h,spreads,totals','oddsFormat':'decimal'},timeout=10)
         r.raise_for_status(); data=r.json()
         return data if isinstance(data,list) else [], 'Sportsbook consensus · 15-minute cache'
-    except Exception as exc: return [],'Odds feed unavailable: '+type(exc).__name__
+    except Exception as exc:
+        code=getattr(getattr(exc,'response',None),'status_code',None)
+        logging.getLogger('royal_predictions').warning('Odds %s: %s',sport, f'HTTP {code}' if code else type(exc).__name__)
+        return [],'Odds feed unavailable: '+(f'HTTP {code}' if code else type(exc).__name__)
 
 def royal_lines(event):
     from statistics import median
@@ -245,6 +248,11 @@ def forecast(game, sport, history, spread, total):
 
 def grade_new(r,g):
     if not g or not g.get('completed') or g.get('state')!='post': return None
+    if any(x in str(g.get('detail','')).lower() for x in ('cancel','postpon','abandon','forfeit','suspend')): return None
+    if r.get('kind') not in ('WINNER','SPREAD','TOTAL'): return None
+    if r['kind'] in ('WINNER','SPREAD') and r.get('selection') not in (r.get('home'),r.get('away')): return None
+    if r['kind']=='TOTAL' and r.get('selection') not in ('OVER','UNDER'): return None
+    if r['kind']!='WINNER' and (numeric(r.get('line')) is None or not math.isfinite(numeric(r['line']))): return None
     if set(g.get('teams',[]))!={r['home'],r['away']}: return None
     h=numeric(g['scores'].get(r['home'])); a=numeric(g['scores'].get(r['away']))
     if h is None or a is None: return None
@@ -252,8 +260,8 @@ def grade_new(r,g):
         if h==a: return 'PUSH'
         if g.get('winner') not in (r['home'],r['away']): return None
         return 'WIN' if g['winner']==r['selection'] else 'LOSS'
-    if r['kind']=='SPREAD': v=h-a+r['line']; positive=r['selection']==r['home']
-    else: v=h+a-r['line']; positive=r['selection']=='OVER'
+    if r['kind']=='SPREAD': v=h-a+numeric(r['line']); positive=r['selection']==r['home']
+    else: v=h+a-numeric(r['line']); positive=r['selection']=='OVER'
     return 'PUSH' if abs(v)<1e-8 else 'WIN' if (v>0)==positive else 'LOSS'
 
 
@@ -304,6 +312,44 @@ def research(sport,today,odds_key):
     odds,odds_status=royal_consensus(sport,odds_key)
     return games,status,odds,odds_status
 
+def recover_pending(index,url):
+    # Read only; network requests occur outside database transactions.
+    if not url: return
+    import psycopg2
+    conn=psycopg2.connect(url,connect_timeout=12,sslmode='require')
+    try:
+        with conn.cursor() as c:
+            c.execute("SELECT to_regclass('royal_sports_accuracy_v74_test')")
+            if not c.fetchone()[0]: return
+            c.execute("SELECT payload FROM royal_sports_accuracy_v74_test WHERE result='PENDING'")
+            pending=[r[0] for r in c.fetchall()]
+    finally: conn.close()
+    dates=set()
+    for r in pending:
+        start=parse_date(r.get('start')); sport=r.get('sport')
+        if sport not in FOCUS or not start or start>utc() or grade_new(r,index.get((sport,r.get('event_id')))): continue
+        for day in {start.astimezone(CT).date(),start.date()}:
+            dates.add((sport,day.strftime('%Y%m%d')))
+    # Cached date lookups, bounded concurrency; no guessed outcomes.
+    def lookup(item):
+        sport,day=item
+        return sport,history_day(sport,day)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        for sport,(games,status) in pool.map(lookup,sorted(dates)):
+            for g in games:
+                key=(sport,g['event_id'])
+                if key not in index or (g.get('completed') and not index[key].get('completed')): index[key]=g
+    log.info('Recovery checked %s pending records across %s league/date pairs',len(pending),len(dates))
+
+def pending_status(r,index):
+    if r['result']!='PENDING': return r['result']
+    g=index.get((r['sport'],r['event_id'])) or {}
+    if g.get('completed'): return 'FINAL / NEEDS REVIEW'
+    if g.get('state')=='in': return 'LIVE'
+    start=parse_date(r.get('start'))
+    if start and start>utc(): return 'UPCOMING'
+    return 'AWAITING VERIFIED FINAL'
+
 def persist(new,index,url):
     import psycopg2
     from psycopg2.extras import Json, execute_values
@@ -343,7 +389,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.4.6 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.5A TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -375,6 +421,8 @@ def collect_snapshot(db_url,odds_key):
                 new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
     storage_ok=False; storage_error=None
     try:
+        try: recover_pending(index,db_url)
+        except Exception as exc: log.warning("Recovery lookup: %s",type(exc).__name__)
         rows=persist(new,index,db_url); storage_ok=True
     except Exception as e:
         storage_error=type(e).__name__ + (' / '+str(e.pgcode) if getattr(e,'pgcode',None) else '')
@@ -491,7 +539,11 @@ def dashboard():
     saved=all(r['result']!='UNSAVED' for r in rows) and storage_ok
     w=sum(r['result']=='WIN' for r in rows); l=sum(r['result']=='LOSS' for r in rows)
     if page in ('Results','Stats'):
+        from collections import Counter
+        counts=Counter(pending_status(r,index) for r in rows)
         for c,label,value in zip(st.columns(4),['Correct','Wrong','Accuracy','Pending'],[w,l,f'{w/(w+l):.1%}' if w+l else '—',sum(r['result']=='PENDING' for r in rows)]): c.metric(label,value if saved else '—')
+    if page in ('Results','Stats') and saved:
+        st.caption(f"Pushes: {counts['PUSH']} · Upcoming: {counts['UPCOMING']} · Live: {counts['LIVE']} · Awaiting verified final: {counts['AWAITING VERIFIED FINAL']} · Final needs review: {counts['FINAL / NEEDS REVIEW']}")
     if page in ('Picks','Live'):
         selected=st.segmented_control('Sport',['All',*FOCUS],default='All',key='sport_filter') or 'All'
         horizon=st.segmented_control('Schedule',['Today','Next 3 days','Next 7 days'],default='Today') or 'Today' if page=='Picks' else 'Today'
@@ -536,7 +588,10 @@ def dashboard():
                 st.markdown('**'+day.strftime('%A, %b %d')+'**')
                 render_games(sorted([m for m in upcoming if parse_date(m['start']).astimezone(CT).date()==day],key=lambda m:m['start']))
     elif page=='Results':
-        if rows and saved: st.dataframe(rows,width='stretch',hide_index=True)
+        if rows and saved:
+            view=st.selectbox('Results filter',['All','Graded','Pending'])
+            shown=[dict(r,grading_status=pending_status(r,index)) for r in rows if view=='All' or (view=='Pending')==(r['result']=='PENDING')]
+            st.dataframe(sorted(shown,key=lambda r:r.get('start',''),reverse=True),width='stretch',hide_index=True)
         else: st.info('No verified saved results available.')
     else:
         if saved and rows:
