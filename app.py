@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -326,9 +326,9 @@ def recover_pending(index,url):
     conn=psycopg2.connect(url,connect_timeout=12,sslmode='require')
     try:
         with conn.cursor() as c:
-            c.execute("SELECT to_regclass('royal_sports_accuracy_v75g_clean_test')")
+            c.execute("SELECT to_regclass('royal_sports_accuracy_v766_fresh_test')")
             if not c.fetchone()[0]: return
-            c.execute("SELECT payload FROM royal_sports_accuracy_v75g_clean_test WHERE result='PENDING' AND payload->>'model'='ROYAL_75G'")
+            c.execute("SELECT payload FROM royal_sports_accuracy_v766_fresh_test WHERE result='PENDING' AND payload->>'model'='ROYAL_766'")
             pending=[r[0] for r in c.fetchall()]
     finally: conn.close()
     dates=set()
@@ -367,16 +367,16 @@ def persist(new,index,url):
             with conn.cursor() as c:
                 c.execute("SET LOCAL statement_timeout = '15000ms'")
                 c.execute("SET LOCAL lock_timeout = '5000ms'")
-                c.execute('SELECT pg_advisory_xact_lock(254757)')
-                c.execute("CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v75g_clean_test (id text PRIMARY KEY,payload jsonb NOT NULL,result text NOT NULL DEFAULT 'PENDING')")
-                new=[r for r in new if r.get('model')=='ROYAL_75G' and r.get('confidence') in ('RESEARCH B','RESEARCH C') and r.get('phase')=='PREGAME' and parse_date(r.get('start')) and parse_date(r['start'])>utc()]
+                c.execute('SELECT pg_advisory_xact_lock(254766)')
+                c.execute("CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v766_fresh_test (id text PRIMARY KEY,payload jsonb NOT NULL,result text NOT NULL DEFAULT 'PENDING')")
+                new=[r for r in new if r.get('model')=='ROYAL_766' and r.get('confidence') in ('RESEARCH B','RESEARCH C') and r.get('phase')=='PREGAME' and parse_date(r.get('start')) and parse_date(r['start'])>utc()]
                 if new:
-                    execute_values(c,'INSERT INTO royal_sports_accuracy_v75g_clean_test(id,payload) VALUES %s ON CONFLICT DO NOTHING',[(f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}",Json(r)) for r in new],page_size=200)
-                c.execute("SELECT id,payload FROM royal_sports_accuracy_v75g_clean_test WHERE result='PENDING' AND payload->>'model'='ROYAL_75G'")
+                    execute_values(c,'INSERT INTO royal_sports_accuracy_v766_fresh_test(id,payload) VALUES %s ON CONFLICT DO NOTHING',[(f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}",Json(r)) for r in new],page_size=200)
+                c.execute("SELECT id,payload FROM royal_sports_accuracy_v766_fresh_test WHERE result='PENDING' AND payload->>'model'='ROYAL_766'")
                 for key,r in c.fetchall():
                     result=grade_new(r,index.get((r['sport'],r['event_id'])))
-                    if result: c.execute("UPDATE royal_sports_accuracy_v75g_clean_test SET result=%s WHERE id=%s AND result='PENDING'",(result,key))
-                c.execute("SELECT payload,result FROM royal_sports_accuracy_v75g_clean_test WHERE payload->>'model'='ROYAL_75G' AND payload->>'confidence' IN ('RESEARCH B','RESEARCH C')")
+                    if result: c.execute("UPDATE royal_sports_accuracy_v766_fresh_test SET result=%s WHERE id=%s AND result='PENDING'",(result,key))
+                c.execute("SELECT payload,result FROM royal_sports_accuracy_v766_fresh_test WHERE payload->>'model'='ROYAL_766' AND payload->>'confidence' IN ('RESEARCH B','RESEARCH C')")
                 return [dict(r,result=result) for r,result in c.fetchall()]
     finally: conn.close()
 
@@ -398,7 +398,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.5 TEST · ROYAL RESEARCH & RECORDING FIX · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.6 TEST · ROYAL FRESH RECORD TEST · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -417,11 +417,11 @@ def collect_snapshot(db_url,odds_key):
             board_status=board_statuses[sport]
             batch=[]
             for league,g in active:
-                if league!=sport: continue
+                if league!=sport or g.get('state')!='pre' or g.get('home') not in g.get('teams',[]) or len(g.get('teams',[]))!=2: continue
                 start=parse_date(g.get('date'))
                 if not start or start.astimezone(CT).date()!=today: continue
                 for kind,selection,line,confidence,why in forecast(g,sport,history,None,None,preview=True):
-                    batch.append(dict(sport=sport,event_id=g['event_id'],home=g['home'],away=next(t for t in g['teams'] if t!=g['home']),start=g['date'],phase='PREGAME',model='ROYAL_75G',revision='7.6.5',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
+                    batch.append(dict(sport=sport,event_id=g['event_id'],home=g['home'],away=next(t for t in g['teams'] if t!=g['home']),start=g['date'],phase='PREGAME',model='ROYAL_766',revision='7.6.6',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
             try: persist(batch,index,db_url)
             except Exception as exc: log.warning("Early journal write: %s",type(exc).__name__)
         research_rows=[f.result() for f in sorted(research_rows,key=lambda f:FOCUS.index(research_rows[f]))]
@@ -446,7 +446,7 @@ def collect_snapshot(db_url,odds_key):
             previews[(sport,g['event_id'])]=forecast(g,sport,history,None,None,preview=True)
             for kind,selection,line,confidence,why in predictions:
                 if start.astimezone(CT).date()!=today: continue
-                new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',model='ROYAL_75G',revision='7.6.5',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
+                new.append(dict(sport=sport,event_id=g['event_id'],home=home,away=away,start=g['date'],phase='LIVE' if g['state']=='in' else 'PREGAME',model='ROYAL_766',revision='7.6.6',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
     storage_ok=False; storage_error=None
     try:
         try: recover_pending(index,db_url)
@@ -747,7 +747,7 @@ def dashboard():
         return
     today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error=snapshot[:8]
     previews=snapshot[8] if len(snapshot)==9 and isinstance(snapshot[8],dict) else {}
-    if storage_ok: st.caption('Permanent V7.5G research-only storage connected')
+    if storage_ok: st.caption('Permanent V7.6.6 fresh research journal connected')
     else: st.warning('Permanent storage unavailable; accuracy totals are not available. '+str(storage_error or 'Unknown error'))
     if busy: st.caption('Updating research in background; showing last completed snapshot.')
     if error: st.warning('Latest research refresh failed: '+error)
@@ -932,5 +932,5 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.5 Royal Research & Recording Fix · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.6 Royal Fresh Record Test · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
