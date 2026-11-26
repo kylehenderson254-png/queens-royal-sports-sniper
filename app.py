@@ -10,10 +10,10 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
-LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
+LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
 ESPN = {"NBA":"basketball/nba", "NFL":"football/nfl", "NCAAB":"basketball/mens-college-basketball", "NCAAF":"football/college-football", "NHL":"hockey/nhl", "MLB":"baseball/mlb", "WNBA":"basketball/wnba", "MLS":"soccer/usa.1", "EPL":"soccer/eng.1", "Tennis":"tennis/all"}
 def utc(): return datetime.now(timezone.utc)
 def parse_date(s):
@@ -397,7 +397,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.2 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.3 TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -550,11 +550,24 @@ def poly_league(sport):
 
 def poly_team(t, names, ab):
     if not isinstance(t,dict): return None
-    exact={n for n in names if any(clean(t.get(k) or '')==clean(n) for k in ('name','safeName','alias'))}
+    fields=[str(t.get(k) or '') for k in ('name','safeName','alias','abbreviation','displayAbbreviation')]
+    exact={n for n in names if any(clean(v)==clean(n) for v in fields if v)}
     if len(exact)==1: return next(iter(exact))
-    codes={clean(t.get(k) or '') for k in ('abbreviation','displayAbbreviation','alias')}-{''}
+    codes={clean(v) for v in fields if v}
     matches=[n for n in names if clean(ab.get(n) or '') in codes]
+    if len(matches)==1:return matches[0]
+    # Only accept an unambiguous full-name prefix, never a fuzzy nickname.
+    matches=[n for n in names if any(len(clean(v))>=5 and clean(n).startswith(clean(v)) for v in fields[:3])]
     return matches[0] if len(matches)==1 else None
+
+SPORT_TYPES={'NFL':'football','NCAAF':'football','NBA':'basketball','NHL':'hockey'}
+def classify_market(x,sport):
+    typ=str(x.get('sportsMarketType') or '').lower()
+    prefix=SPORT_TYPES.get(sport)
+    if not prefix:return None
+    return {prefix+'_team_full_game_winner':'Moneyline',prefix+'_team_full_game_spread':'Spread',
+            'football_player_passing_yards':'Passing','football_player_rushing_yards':'Rushing',
+            'football_player_receiving_yards':'Receiving'}.get(typ) if prefix=='football' else {prefix+'_team_full_game_winner':'Moneyline',prefix+'_team_full_game_spread':'Spread'}.get(typ)
 
 def match_poly_event(events,names,ab,start):
     matches={}
@@ -567,7 +580,7 @@ def match_poly_event(events,names,ab,start):
         if len(teams)!=2: continue
         mapped=[poly_team(t,names,ab) for t in teams]
         slug=e.get('slug')
-        if set(mapped)==set(names) and isinstance(slug,str) and re.fullmatch(r'[a-zA-Z0-9_-]+',slug): matches[slug]=(e,dict(zip((str(t.get('id')) for t in teams),mapped)))
+        if len({str(t.get('id')) for t in teams if isinstance(t,dict) and t.get('id') is not None})==2 and set(mapped)==set(names) and isinstance(slug,str) and re.fullmatch(r'[a-zA-Z0-9_-]+',slug): matches[slug]=(e,dict(zip((str(t.get('id')) for t in teams),mapped)))
     return next(iter(matches.values())) if len(matches)==1 else (None,{})
 
 def poly_for_game(m):
@@ -580,10 +593,7 @@ def poly_for_game(m):
         for x in event.get('markets') or []:
             if not isinstance(x,dict) or x.get('closed') is True or x.get('active') is False or x.get('hidden') is True:continue
             title=str(x.get('question') or x.get('title') or '')
-            typ=' '.join(str(x.get(k) or '') for k in ('sportsMarketType','sportsMarketTypeV2','marketType')).lower()
-            label=(title+' '+typ).lower()
-            if re.search(r'first half|second half|[1-4](?:st|nd|rd|th) quarter|\bq[1-4]\b|1st half|2nd half|period',label):continue
-            category=next((c for c,pat in [('Passing','pass(?:ing)?[ _-]*yards'),('Rushing','rush(?:ing)?[ _-]*yards'),('Receiving','receiv(?:ing|er)?[ _-]*yards'),('Spread','spread|win by'),('Moneyline','moneyline|money.line|game.winner')] if re.search(pat,label)),None)
+            category=classify_market(x,m['sport'])
             ms=x.get('slug'); sides=x.get('marketSides') or []
             if not category or not isinstance(ms,str) or not re.fullmatch(r'[a-zA-Z0-9_-]+',ms):continue
             def side(flag):
@@ -792,6 +802,15 @@ def dashboard():
             spread_labels={x['short_title'] for x in spread_items if x['short_title'] and re.search(r'[+-]\d',x['short_title']) and not re.search(r'\b(?:half|quarter|period|q[1-4]|f5)\b',x['short_title'],re.I)}
             spread_text=next(iter(spread_labels)) if len(spread_labels)==1 else 'Unverified'
             r=dict(r,market_spread=spread_text,team_prices=team_prices,quote_ts=quote_ts,quote_fresh=fresh)
+            r['side_research']={}
+            for t in g['teams']:
+                v=experimental_value(dict(r,selection=t),m,team_prices.get(t) if fresh else None)
+                if v:r['side_research'][t]=v
+            r['spread_research']=[]
+            for x in spread_items[:4]:
+                if not x['short_title']:continue
+                sq,ss,ts,sf=poly_quote(x['slug'])
+                r['spread_research'].append((x['short_title'],sq if sf and mapping_ok else None,ss))
             candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status,both))
         if page in ('Picks','Research'):
             candidates.sort(key=lambda x:(x[0],x[1]['start']))
@@ -822,6 +841,11 @@ def dashboard():
                     st.write(r['why'])
                     if value: st.caption(f'Experimental normal-margin model: assumed uncertainty {value[2]:g} points/goals; estimate {fair}; gross price gap {edge}. Not fitted, backtested or fee-adjusted.')
                     st.caption('Market: '+status+' · '+(both or 'Price unavailable'))
+                    for t,v in r['side_research'].items():
+                        gap=f' · illustrative gap {v[1]*100:+.1f} pp' if v[1] is not None else ''
+                        st.caption(f'{t}: estimated fair {v[0]:.0%}'+gap)
+                    for name,sq,ss in r['spread_research']:
+                        st.caption(f'{name}: '+(f'YES {sq[0]:.0%} / NO {sq[1]:.0%}' if sq else ss))
                 continue
             with cols[i%3]:
                 def royal_side(t):
@@ -833,7 +857,10 @@ def dashboard():
                     return f'<div class="royal-side">{img}<b>{esc(code)}</b><b class="royal-gold">{esc(px_text)}</b></div>'
                 edge_color="#62d6a1" if value and value[1] is not None and value[1]>0 else "#ff8585" if value and value[1] is not None and value[1]<0 else "#c6addf"
                 quote_label=('FRESH SNAPSHOT' if r['quote_fresh'] else 'STALE SNAPSHOT')+' · '+datetime.fromtimestamp(r['quote_ts'],CT).strftime('%I:%M:%S %p CT') if r['quote_ts'] and r['team_prices'] else 'PRICE UNAVAILABLE'
-                action="SKIP · Model price below ask" if value and value[1] is not None and value[1]<0 else "WATCH · Experimental"
+                gaps=[(t,v[1]) for t,v in r['side_research'].items() if v[1] is not None]
+                best=max(gaps,key=lambda z:z[1]) if gaps else None
+                action='WATCH · Price unverified' if best is None else 'SKIP · Both estimates below asks' if best[1]<=0 else f'WATCH · {best[0]} {best[1]*100:+.1f} pp (model)'
+                # Opposite-team gap is illustrative, not a verified settlement probability.
                 st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">{esc(selection)} · ML</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Queen’s fair price: <b>{esc(fair)}</b> · Estimated value: <b style="color:{edge_color}">{esc(edge)}</b></div><small>{esc(quote_label)}</small><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
                 if slug: st.markdown(f'[Open Polymarket](https://polymarket.us/event/{slug})')
         if page=='Picks' and days>0:
@@ -843,7 +870,7 @@ def dashboard():
                 st.dataframe([{'Sport':m['sport'],'Time':local(m['start']),'Away':m['away'],'Home':m['home']} for m in upcoming],hide_index=True,width='stretch')
             else: st.info('No upcoming games returned by the schedule feed.')
             st.caption('Future previews are not saved or graded. Schedule includes games without sufficient research.')
-        st.caption('Spread and player-yardage selections withheld until line mapping and player models are validated. Live scores only; no live predictions.')
+        st.caption('Spread quotes are informational; player-yardage selections withheld until player models are validated. Opposite-team estimates do not model ties or voids. Live scores only; no live predictions.')
     elif page=='Results':
         if rows and saved:
             view=st.selectbox('Results filter',['All','Graded','Pending'])
@@ -871,5 +898,5 @@ def dashboard():
         if st.session_state.get('royal761_checks'):
             st.dataframe(st.session_state['royal761_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.2 Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.3 Royal Market Intelligence · existing V7.5G research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
