@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5G | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.5H | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"ncaaf", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -396,7 +396,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.5G TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
+st.caption('V7.5H TEST · ROYAL MARKET INTELLIGENCE · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -571,14 +571,27 @@ def poly_event(sport, away, home, day):
             return '',[],'Poly HTTP '+str(code) if code else 'Poly '+type(e).__name__
     return '',[],'Event not found (slug mapping unverified)'
 
+def parse_poly_bbo(payload):
+    if not isinstance(payload,dict): return None, 'Invalid quote response'
+    d=payload.get('marketData',payload)
+    if not isinstance(d,dict): return None,'Missing market data'
+    if d.get('marketState') not in ('MARKET_STATE_OPEN','OPEN'):
+        return None,'Market state not confirmed open'
+    b,a=numeric(d.get('bestBid')),numeric(d.get('bestAsk'))
+    if b is None or a is None or not 0<b<=a<1:
+        return None,'Missing or invalid two-sided prices'
+    return (a,1-b),'Two-sided snapshot'
+
 @st.cache_data(ttl=20,show_spinner=False)
 def poly_quote(slug):
     try:
-        r=requests.get(BASE+'/v1/markets/'+quote(slug,safe='')+'/bbo',timeout=4); r.raise_for_status()
-        d=r.json().get('marketData',{}); b,a=numeric(d.get('bestBid')),numeric(d.get('bestAsk'))
-        if d.get('marketState') not in ('MARKET_STATE_OPEN','OPEN') or b is None or a is None or not 0<b<=a<1: return None
-        return a,1-b
-    except Exception: return None
+        r=requests.get(BASE+'/v1/markets/'+quote(slug,safe='')+'/bbo',timeout=4)
+        r.raise_for_status()
+        return parse_poly_bbo(r.json())
+    except requests.HTTPError as e:
+        return None,'Quote HTTP '+str(e.response.status_code if e.response is not None else 'unknown')
+    except Exception as e:
+        return None,'Quote '+type(e).__name__
 
 def poly_for_game(m):
     g=m['game']; ab=g.get('abbr',{}); start=parse_date(m['start'])
@@ -631,7 +644,7 @@ def dashboard():
         live_items=[m for m in display if m.get('game',{}).get('state')=='in']
         if not display: st.info('Live status unavailable or no games confirmed in progress. Check Stats for feed health.' if page=='Live' else 'No verified games available for this view.')
         st.subheader('♛ Queen’s Top Picks' if page=='Picks' else 'Live research')
-        st.caption('Odds API paused. Research-ranked WATCH picks; coverage grades are not win probabilities. Injuries and exchange prices unverified. Exact-line ties may push.')
+        st.caption('Odds API paused. Research-ranked WATCH picks; coverage grades are not win probabilities. Injuries unverified. Quote snapshots are not guaranteed live or executable. Exact-line ties may push.')
         candidates=[]
         for m in display:
             g=m.get('game',{}); key=(m['sport'],g.get('event_id'))
@@ -645,17 +658,18 @@ def dashboard():
             ml=[x for x in markets if x['category']=='Moneyline']
             q=None; price=None
             if len(ml)==1:
-                item=ml[0]; q=poly_quote(item['slug'])
+                item=ml[0]; q,status=poly_quote(item['slug'])
                 sides=[_unique_score_team(item[k],g['teams'],m['sport']) for k in ('long','short')]
                 if q and set(sides)==set(g['teams']) and r['selection'] in sides: price=q[sides.index(r['selection'])]
+                elif q: status='Team-side mapping unverified'
+            elif slug: status='Unique moneyline not identified'
             # Research coverage is not a calibrated probability or proof of value.
-            if price is not None and r['confidence']=='RESEARCH B':
-                candidates.append((1,m,r,price,slug,status))
+            candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status))
         if page=='Picks':
-            candidates.sort(key=lambda x:x[1]['start'])
+            candidates.sort(key=lambda x:(x[0],x[1]['start']))
             candidates=candidates[:5]
-            if not candidates: st.info('No qualified research selections with verified team-side quotes yet. No forced picks.')
-            else: st.caption('Research watchlist only — not validated betting value. Up to five selections, ordered by start time.')
+            if not candidates: st.info('No saved upcoming research selections for this view.')
+            else: st.caption('Research watchlist only — not validated betting value. Up to five selections, ranked by research coverage then start time.')
         for i,(_,m,r,price,slug,status) in enumerate(candidates):
             if i%3==0: cols=st.columns(3)
             g=m['game']; esc=lambda x:html.escape(str(x),quote=True)
@@ -669,7 +683,7 @@ def dashboard():
             selection=('♛ '+r['selection']) if r else 'No saved pregame research'
             label='Saved pregame · ' if live and r else ''
             with cols[i%3]:
-                st.markdown(f'<div style="border:1px solid #654290;border-radius:12px;padding:12px;background:#171022"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(detail)}</small><div style="font-weight:700">{team(m["away"])} {esc(score)} {team(m["home"])}</div><div style="color:#f3cf7c">{esc(label+selection)}</div><small>{esc(reason)}</small>'+ (f'<div style="color:#4ade80">Quote {price:.0%} · WATCH</div>' if price is not None else '')+'</div>',unsafe_allow_html=True)
+                st.markdown(f'<div style="border:1px solid #654290;border-radius:12px;padding:12px;background:#171022"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(detail)}</small><div style="font-weight:700">{team(m["away"])} {esc(score)} {team(m["home"])}</div><div style="color:#f3cf7c">{esc(label+selection+(' · '+r['confidence'] if r else ''))}</div><small>{esc(reason)}</small>'+ (f'<div style="color:#f3cf7c">Snapshot ask {price:.0%} · WATCH</div>' if price is not None else (f'<div style="color:#bda5df">WATCH · {esc(status or "Price unavailable")}</div>' if not live else ''))+'</div>',unsafe_allow_html=True)
                 if slug: st.markdown(f'[Open Polymarket](https://polymarket.us/sports/{m["sport"].lower()}/{slug})')
         st.caption('Spread and player-yardage selections withheld until line mapping and player models are validated. Live scores only; no live predictions.')
     elif page=='Results':
@@ -686,5 +700,5 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     st.write(f'{value}: {a} correct / {b} wrong')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.5G Royal Poly Connect research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.5H Royal Data Repair · existing V7.5G research journal; prior records retained separately. Experimental, not calibrated probabilities. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
