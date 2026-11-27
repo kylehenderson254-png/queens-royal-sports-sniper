@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -398,7 +398,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.6 TEST · ROYAL FRESH RECORD TEST · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.7 TEST · ROYAL APPLE CONNECTION TEST · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -737,6 +737,49 @@ def historical_model_check(sport, history):
     return dict(SkipReasons='; '.join(f'{k}: {v}' for k,v in skips.items()),Eligible=n,Skipped=max(0,min(100,len(history))-n),Correct=sum(y for p,y in samples),Samples=n,Accuracy=f'{sum(y for p,y in samples)/n:.1%}' if n else '—',Brier=round(sum((p-y)**2 for p,y in samples)/n,3) if n else None,MeanProbability=f'{sum(p for p,y in samples)/n:.1%}' if n else '—')
 
 @st.fragment(run_every='5s')
+@st.cache_data(ttl=120, show_spinner=False)
+def apple_feed_probe():
+    endpoints = {
+        'Manifest': 'https://api.sports.apple.com/v3/en-us/manifest/3.0.0',
+        'Update directory': 'https://api-sports.cdn-apple.com/v3/query/updates/SPORTS',
+    }
+    results = []
+    for name, url in endpoints.items():
+        started = time.monotonic()
+        try:
+            with requests.get(url, timeout=(3, 5), stream=True, allow_redirects=False,
+                              headers={'Accept': 'application/json'}) as response:
+                status = response.status_code
+                if status != 200:
+                    results.append(dict(Source=name, Status=f'HTTP {status}', Keys='—'))
+                    continue
+                data = bytearray()
+                for chunk in response.iter_content(65536):
+                    data.extend(chunk)
+                    if len(data) > 4000000:
+                        raise ValueError('Response exceeds diagnostic size limit')
+                    if time.monotonic()-started > 8:
+                        raise TimeoutError('Diagnostic time limit')
+                import json
+                payload = json.loads(data)
+                keys = ', '.join(str(k) for k in list(payload)[:15]) if isinstance(payload,dict) else f'{len(payload)} items' if isinstance(payload,list) else type(payload).__name__
+                results.append(dict(Source=name, Status='JSON received — unverified', Keys=keys, Milliseconds=round((time.monotonic()-started)*1000)))
+        except Exception as exc:
+            results.append(dict(Source=name, Status=type(exc).__name__, Keys='—'))
+    return results, utc().isoformat()
+
+
+def apple_diagnostics():
+    st.subheader('Apple Sports · experimental connection test')
+    st.caption('Unofficial endpoints; no Apple-derived scores, predictions or grading yet. ESPN remains authoritative for this dashboard. Manual probe only; cached for two minutes.')
+    if st.button('Test Apple Sports feed', key='apple_probe_767'):
+        st.session_state['apple_probe_767_result'] = apple_feed_probe()
+    if st.session_state.get('apple_probe_767_result'):
+        result, stamp = st.session_state['apple_probe_767_result']
+        st.caption('Probe completed: '+local(stamp))
+        st.dataframe(result, hide_index=True, width='stretch')
+
+
 def dashboard():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret("QUEEN_DATABASE_URL"),"")
     if snapshot is None:
@@ -921,6 +964,7 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     summary.append(dict(Group=field.title(),Category=value,Correct=a,Wrong=b,Pending=sum(r['result']=='PENDING' for r in group)))
             st.dataframe(summary,hide_index=True,width='stretch')
+        apple_diagnostics()
         st.subheader('Historical probability check')
         st.caption('Retrospective walk-forward check: earlier games only, up to 100 recent games per sport. No market prices or fees; not a profitability test.')
         if st.button('Run historical check'):
@@ -932,5 +976,5 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.6 Royal Fresh Record Test · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.7 Royal Apple Connection Test · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
