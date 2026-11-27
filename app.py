@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.9 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -357,6 +357,13 @@ def pending_status(r,index):
     if start and start>utc(): return 'UPCOMING'
     return 'AWAITING VERIFIED FINAL'
 
+WRITE_AUDIT=[]
+WRITE_LOCK=threading.Lock()
+def write_note(**entry):
+    with WRITE_LOCK:
+        WRITE_AUDIT.append(dict(Time=local(utc().isoformat()),**entry))
+        del WRITE_AUDIT[:-30]
+
 def persist(new,index,url):
     import psycopg2
     from psycopg2.extras import Json, execute_values
@@ -369,6 +376,7 @@ def persist(new,index,url):
                 c.execute("SET LOCAL lock_timeout = '5000ms'")
                 c.execute('SELECT pg_advisory_xact_lock(254766)')
                 c.execute("CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v766_fresh_test (id text PRIMARY KEY,payload jsonb NOT NULL,result text NOT NULL DEFAULT 'PENDING')")
+                attempted=len(new)
                 new=[r for r in new if r.get('model')=='ROYAL_766' and r.get('confidence') in ('RESEARCH B','RESEARCH C') and r.get('phase')=='PREGAME' and parse_date(r.get('start')) and parse_date(r['start'])>utc()]
                 if new:
                     execute_values(c,'INSERT INTO royal_sports_accuracy_v766_fresh_test(id,payload) VALUES %s ON CONFLICT DO NOTHING',[(f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}",Json(r)) for r in new],page_size=200)
@@ -377,7 +385,13 @@ def persist(new,index,url):
                     result=grade_new(r,index.get((r['sport'],r['event_id'])))
                     if result: c.execute("UPDATE royal_sports_accuracy_v766_fresh_test SET result=%s WHERE id=%s AND result='PENDING'",(result,key))
                 c.execute("SELECT payload,result FROM royal_sports_accuracy_v766_fresh_test WHERE payload->>'model'='ROYAL_766' AND payload->>'confidence' IN ('RESEARCH B','RESEARCH C')")
-                return [dict(r,result=result) for r,result in c.fetchall()]
+                saved_rows=[dict(r,result=result) for r,result in c.fetchall()]
+            # Leaving the transaction context commits before reporting success.
+        write_note(Status='Committed',Attempted=attempted,Eligible=len(new),JournalRows=len(saved_rows))
+        return saved_rows
+    except Exception as exc:
+        write_note(Status='Write failed: '+type(exc).__name__+' '+str(getattr(exc,'pgcode',None) or ''),Attempted=len(new))
+        raise
     finally: conn.close()
 
 @st.cache_data(ttl=86400,show_spinner=False)
@@ -398,7 +412,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.8 TEST · ROYAL DATA AUDIT · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.9 TEST · ROYAL DATA RECOVERY · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -423,7 +437,9 @@ def collect_snapshot(db_url,odds_key):
                 for kind,selection,line,confidence,why in forecast(g,sport,history,None,None,preview=True):
                     batch.append(dict(sport=sport,event_id=g['event_id'],home=g['home'],away=next(t for t in g['teams'] if t!=g['home']),start=g['date'],phase='PREGAME',model='ROYAL_766',revision='7.6.6',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
             try: persist(batch,index,db_url)
-            except Exception as exc: log.warning("Early journal write: %s",type(exc).__name__)
+            except Exception as exc:
+                write_note(Status="Early save failed: "+type(exc).__name__,Attempted=len(batch))
+                log.warning("Early journal write: %s",type(exc).__name__)
         research_rows=[f.result() for f in sorted(research_rows,key=lambda f:FOCUS.index(research_rows[f]))]
     new=[]; diagnostics=[]; market_cards=[]; previews={}
     for sport,(history,_,_,_) in zip(FOCUS,research_rows):
@@ -736,7 +752,6 @@ def historical_model_check(sport, history):
     n=len(samples)
     return dict(SkipReasons='; '.join(f'{k}: {v}' for k,v in skips.items()),Eligible=n,Skipped=max(0,min(100,len(history))-n),Correct=sum(y for p,y in samples),Samples=n,Accuracy=f'{sum(y for p,y in samples)/n:.1%}' if n else '—',Brier=round(sum((p-y)**2 for p,y in samples)/n,3) if n else None,MeanProbability=f'{sum(p for p,y in samples)/n:.1%}' if n else '—')
 
-@st.fragment(run_every='5s')
 @st.cache_data(ttl=120, show_spinner=False)
 def apple_feed_probe():
     endpoints = {
@@ -763,7 +778,12 @@ def apple_feed_probe():
                         raise TimeoutError('Diagnostic time limit')
                 import json
                 payload = json.loads(data)
-                shapes.extend(dict(Source=name,**row) for row in apple_shape(payload))
+                # Sample each top-level branch independently so the large teams directory cannot hide updates.
+                if isinstance(payload,dict):
+                    for branch, value in payload.items():
+                        if isinstance(value,(dict,list)):
+                            shapes.extend(dict(Source=name,**dict(row,Path='$.'+str(branch)+row['Path'][1:])) for row in apple_shape(value)[:8])
+                else: shapes.extend(dict(Source=name,**row) for row in apple_shape(payload))
                 keys = ', '.join(str(k) for k in list(payload)[:15]) if isinstance(payload,dict) else f'{len(payload)} items' if isinstance(payload,list) else type(payload).__name__
                 results.append(dict(Source=name, Status='JSON received — unverified', Keys=keys, Milliseconds=round((time.monotonic()-started)*1000)))
         except Exception as exc:
@@ -794,6 +814,30 @@ def journal_audit(url):
         if conn is not None: conn.close()
 
 
+@st.cache_data(ttl=60,show_spinner=False)
+def archive_inventory(url):
+    import psycopg2
+    from psycopg2 import sql
+    if not url: return [], 'Missing database URL'
+    conn=None; out=[]
+    try:
+        conn=psycopg2.connect(url,connect_timeout=8,sslmode='require')
+        conn.set_session(readonly=True,autocommit=True)
+        with conn.cursor() as c:
+            c.execute("SET statement_timeout = '3000ms'")
+            c.execute("SELECT schemaname,tablename FROM pg_tables WHERE tablename LIKE 'royal_sports_%' OR tablename LIKE 'royal_predictions_%' ORDER BY schemaname,tablename LIMIT 40")
+            tables=c.fetchall()
+            for schema,table in tables:
+                try:
+                    c.execute(sql.SQL('SELECT count(*) FROM {}.{}').format(sql.Identifier(schema),sql.Identifier(table)))
+                    out.append(dict(Schema=schema,Journal=table,Rows=c.fetchone()[0]))
+                except Exception as exc:
+                    out.append(dict(Schema=schema,Journal=table,Rows=type(exc).__name__))
+        return out,None
+    except Exception as exc: return out,type(exc).__name__
+    finally:
+        if conn is not None: conn.close()
+
 def journal_diagnostics(url):
     st.subheader('Permanent journal audit')
     if st.button('Check saved records directly',key='journal768'):
@@ -804,6 +848,18 @@ def journal_diagnostics(url):
         st.caption(f'Direct database read: {sum(g["Count"] for g in groups)} total rows; {len(rows)} eligible V7.6.6 records. No records modified by this audit.')
         if groups: st.dataframe(groups,hide_index=True,width='stretch')
         if rows: st.dataframe([dict(Sport=r.get('sport'),Selection=r.get('selection'),Start=local(r.get('start')),Result=r.get('result')) for r in rows],hide_index=True,width='stretch')
+    with WRITE_LOCK: writes=list(WRITE_AUDIT)
+    st.caption('Write receipts for this server process; committed row counts are not new-insert counts.')
+    if writes: st.dataframe(writes[::-1],hide_index=True,width='stretch')
+    else: st.info('No write receipts yet in this process.')
+    if st.button('Scan previous sports journals',key='archive769'):
+        archive_inventory.clear()
+        st.session_state['archive769']=archive_inventory(url)
+    if 'archive769' in st.session_state:
+        inventory,err=st.session_state['archive769']
+        if err: st.warning(err)
+        if inventory: st.dataframe(inventory,hide_index=True,width='stretch')
+        elif not err: st.info('No matching sports tables found.')
     return rows,error
 
 
@@ -835,6 +891,7 @@ def apple_diagnostics():
         if shapes: st.dataframe(shapes,hide_index=True,width='stretch')
 
 
+@st.fragment(run_every='5s')
 def dashboard():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret("QUEEN_DATABASE_URL"),"")
     if snapshot is None:
@@ -1038,5 +1095,5 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.8 Royal Data Audit · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.9 Royal Data Recovery · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
