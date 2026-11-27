@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.9 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -368,8 +368,9 @@ def persist(new,index,url):
     import psycopg2
     from psycopg2.extras import Json, execute_values
     if not url: raise RuntimeError('Missing database URL')
-    conn=psycopg2.connect(url,connect_timeout=12,sslmode='require')
+    conn=None
     try:
+        conn=psycopg2.connect(url,connect_timeout=12,sslmode='require')
         with conn:
             with conn.cursor() as c:
                 c.execute("SET LOCAL statement_timeout = '15000ms'")
@@ -378,8 +379,9 @@ def persist(new,index,url):
                 c.execute("CREATE TABLE IF NOT EXISTS royal_sports_accuracy_v766_fresh_test (id text PRIMARY KEY,payload jsonb NOT NULL,result text NOT NULL DEFAULT 'PENDING')")
                 attempted=len(new)
                 new=[r for r in new if r.get('model')=='ROYAL_766' and r.get('confidence') in ('RESEARCH B','RESEARCH C') and r.get('phase')=='PREGAME' and parse_date(r.get('start')) and parse_date(r['start'])>utc()]
+                inserted=0
                 if new:
-                    execute_values(c,'INSERT INTO royal_sports_accuracy_v766_fresh_test(id,payload) VALUES %s ON CONFLICT DO NOTHING',[(f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}",Json(r)) for r in new],page_size=200)
+                    inserted=len(execute_values(c,'INSERT INTO royal_sports_accuracy_v766_fresh_test(id,payload) VALUES %s ON CONFLICT DO NOTHING RETURNING id',[(f"{r['sport']}:{r['event_id']}:{r['phase']}:{r['kind']}",Json(r)) for r in new],page_size=200,fetch=True))
                 c.execute("SELECT id,payload FROM royal_sports_accuracy_v766_fresh_test WHERE result='PENDING' AND payload->>'model'='ROYAL_766'")
                 for key,r in c.fetchall():
                     result=grade_new(r,index.get((r['sport'],r['event_id'])))
@@ -387,12 +389,13 @@ def persist(new,index,url):
                 c.execute("SELECT payload,result FROM royal_sports_accuracy_v766_fresh_test WHERE payload->>'model'='ROYAL_766' AND payload->>'confidence' IN ('RESEARCH B','RESEARCH C')")
                 saved_rows=[dict(r,result=result) for r,result in c.fetchall()]
             # Leaving the transaction context commits before reporting success.
-        write_note(Status='Committed',Attempted=attempted,Eligible=len(new),JournalRows=len(saved_rows))
+        write_note(Status='Committed',Attempted=attempted,Eligible=len(new),Inserted=inserted,JournalRows=len(saved_rows))
         return saved_rows
     except Exception as exc:
         write_note(Status='Write failed: '+type(exc).__name__+' '+str(getattr(exc,'pgcode',None) or ''),Attempted=len(new))
         raise
-    finally: conn.close()
+    finally:
+        if conn is not None: conn.close()
 
 @st.cache_data(ttl=86400,show_spinner=False)
 def logo_directory(sport):
@@ -412,7 +415,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.9A TEST · ROYAL DATA RECOVERY · NBA / NFL / NHL / NCAAF')
+st.caption('V7.7 TEST · ROYAL DATA INTEGRITY · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -436,6 +439,7 @@ def collect_snapshot(db_url,odds_key):
                 if not start or start.astimezone(CT).date()!=today: continue
                 for kind,selection,line,confidence,why in forecast(g,sport,history,None,None,preview=True):
                     batch.append(dict(sport=sport,event_id=g['event_id'],home=g['home'],away=next(t for t in g['teams'] if t!=g['home']),start=g['date'],phase='PREGAME',model='ROYAL_766',revision='7.6.6',kind=kind,selection=selection,line=line,confidence=confidence,why=why,created_at=utc().isoformat()))
+            write_note(Status='Pregame scan',Sport=sport,Attempted=len(batch),Upcoming=sum(1 for league,g in active if league==sport and g.get('state')=='pre' and parse_date(g.get('date')) and parse_date(g['date']).astimezone(CT).date()==today))
             try: persist(batch,index,db_url)
             except Exception as exc:
                 write_note(Status="Early save failed: "+type(exc).__name__,Attempted=len(batch))
@@ -838,6 +842,21 @@ def archive_inventory(url):
     finally:
         if conn is not None: conn.close()
 
+def prior_journal(url):
+    import psycopg2
+    conn=None
+    try:
+        conn=psycopg2.connect(url,connect_timeout=8,sslmode='require')
+        conn.set_session(readonly=True)
+        with conn.cursor() as c:
+            c.execute("SET LOCAL statement_timeout = '8000ms'")
+            c.execute("SELECT payload,result FROM public.royal_sports_accuracy_v75g_clean_test LIMIT 20")
+            return [dict(Sport=r.get('sport'),Selection=r.get('selection'),Start=local(r.get('start')),Result=result) for r,result in c.fetchall()],None
+    except Exception as exc: return [],type(exc).__name__
+    finally:
+        if conn is not None: conn.close()
+
+
 def journal_diagnostics(url):
     st.subheader('Permanent journal audit')
     if st.button('Check saved records directly',key='journal768'):
@@ -849,9 +868,15 @@ def journal_diagnostics(url):
         if groups: st.dataframe(groups,hide_index=True,width='stretch')
         if rows: st.dataframe([dict(Sport=r.get('sport'),Selection=r.get('selection'),Start=local(r.get('start')),Result=r.get('result')) for r in rows],hide_index=True,width='stretch')
     with WRITE_LOCK: writes=list(WRITE_AUDIT)
-    st.caption('Write receipts for this server process; committed row counts are not new-insert counts.')
+    st.caption('Write receipts for this server process; Inserted counts new committed rows; JournalRows counts all eligible saved rows.')
     if writes: st.dataframe(writes[::-1],hide_index=True,width='stretch')
     else: st.info('No write receipts yet in this process.')
+    if st.button('Inspect three prior V7.5G records (read only)',key='prior77'):
+        st.session_state['prior77_result']=prior_journal(url)
+    if 'prior77_result' in st.session_state:
+        prior,err=st.session_state['prior77_result']
+        if err: st.warning(err)
+        else: st.dataframe(prior,hide_index=True,width='stretch')
     if st.button('Scan previous sports journals',key='archive769'):
         archive_inventory.clear()
         st.session_state['archive769_result']=archive_inventory(url)
@@ -892,7 +917,10 @@ def apple_diagnostics():
         result, stamp, shapes = st.session_state['apple_probe_768_result']
         st.caption('Probe completed: '+local(stamp))
         st.dataframe(result, hide_index=True, width='stretch')
-        if shapes: st.dataframe(shapes,hide_index=True,width='stretch')
+        if shapes:
+            for source in ('Update directory','Manifest'):
+                st.caption(source+' structural sample')
+                st.dataframe([r for r in shapes if r.get('Source')==source],hide_index=True,width='stretch')
 
 
 @st.fragment(run_every='5s')
@@ -1099,5 +1127,5 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.9A Royal Data Recovery · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.7 Royal Data Integrity · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
