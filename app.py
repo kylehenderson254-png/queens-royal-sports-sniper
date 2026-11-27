@@ -412,7 +412,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.9 TEST · ROYAL DATA RECOVERY · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.9A TEST · ROYAL DATA RECOVERY · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -854,9 +854,13 @@ def journal_diagnostics(url):
     else: st.info('No write receipts yet in this process.')
     if st.button('Scan previous sports journals',key='archive769'):
         archive_inventory.clear()
-        st.session_state['archive769']=archive_inventory(url)
-    if 'archive769' in st.session_state:
-        inventory,err=st.session_state['archive769']
+        st.session_state['archive769_result']=archive_inventory(url)
+    if 'archive769_result' in st.session_state:
+        result=st.session_state['archive769_result']
+        if isinstance(result, (tuple, list)) and len(result)==2:
+            inventory,err=result
+        else:
+            inventory,err=[], 'Invalid scan result; press Scan previous sports journals again.'
         if err: st.warning(err)
         if inventory: st.dataframe(inventory,hide_index=True,width='stretch')
         elif not err: st.info('No matching sports tables found.')
@@ -1095,5 +1099,5 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.9 Royal Data Recovery · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.9A Royal Data Recovery · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
