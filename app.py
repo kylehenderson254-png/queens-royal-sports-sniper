@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.6.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -398,7 +398,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.6.7 TEST · ROYAL APPLE CONNECTION TEST · NBA / NFL / NHL / NCAAF')
+st.caption('V7.6.8 TEST · ROYAL DATA AUDIT · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -744,6 +744,7 @@ def apple_feed_probe():
         'Update directory': 'https://api-sports.cdn-apple.com/v3/query/updates/SPORTS',
     }
     results = []
+    shapes = []
     for name, url in endpoints.items():
         started = time.monotonic()
         try:
@@ -762,22 +763,76 @@ def apple_feed_probe():
                         raise TimeoutError('Diagnostic time limit')
                 import json
                 payload = json.loads(data)
+                shapes.extend(dict(Source=name,**row) for row in apple_shape(payload))
                 keys = ', '.join(str(k) for k in list(payload)[:15]) if isinstance(payload,dict) else f'{len(payload)} items' if isinstance(payload,list) else type(payload).__name__
                 results.append(dict(Source=name, Status='JSON received — unverified', Keys=keys, Milliseconds=round((time.monotonic()-started)*1000)))
         except Exception as exc:
             results.append(dict(Source=name, Status=type(exc).__name__, Keys='—'))
-    return results, utc().isoformat()
+    return results, utc().isoformat(), shapes
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def journal_audit(url):
+    import psycopg2
+    if not url: return [], [], 'Missing database URL'
+    conn=None
+    try:
+        conn=psycopg2.connect(url,connect_timeout=8,sslmode='require')
+        conn.set_session(readonly=True)
+        with conn.cursor() as c:
+            c.execute("SET LOCAL statement_timeout = '8000ms'")
+            c.execute("SELECT to_regclass('royal_sports_accuracy_v766_fresh_test')")
+            if not c.fetchone()[0]: return [], [], 'V7.6.6 table not found'
+            c.execute("SELECT payload->>'model',payload->>'confidence',result,count(*) FROM royal_sports_accuracy_v766_fresh_test GROUP BY 1,2,3")
+            groups=[dict(Model=m,Confidence=k,Result=r,Count=n) for m,k,r,n in c.fetchall()]
+            c.execute("SELECT payload,result FROM royal_sports_accuracy_v766_fresh_test WHERE payload->>'model'='ROYAL_766' AND payload->>'confidence' IN ('RESEARCH B','RESEARCH C')")
+            rows=[dict(r,result=result) for r,result in c.fetchall()]
+            return groups,rows,None
+    except Exception as exc:
+        return [],[],type(exc).__name__
+    finally:
+        if conn is not None: conn.close()
+
+
+def journal_diagnostics(url):
+    st.subheader('Permanent journal audit')
+    if st.button('Check saved records directly',key='journal768'):
+        journal_audit.clear()
+    groups,rows,error=journal_audit(url)
+    if error: st.warning('Journal audit: '+error)
+    else:
+        st.caption(f'Direct database read: {sum(g["Count"] for g in groups)} total rows; {len(rows)} eligible V7.6.6 records. No records modified by this audit.')
+        if groups: st.dataframe(groups,hide_index=True,width='stretch')
+        if rows: st.dataframe([dict(Sport=r.get('sport'),Selection=r.get('selection'),Start=local(r.get('start')),Result=r.get('result')) for r in rows],hide_index=True,width='stretch')
+    return rows,error
+
+
+def apple_shape(payload):
+    # Structural samples only: no guessed event URLs or credentials.
+    out=[]
+    def walk(v,path,depth):
+        if len(out)>=60 or depth>5: return
+        if isinstance(v,dict):
+            out.append(dict(Path=path,Type='object',Count=len(v),Fields=', '.join(str(k)[:80] for k in list(v)[:15])))
+            for k,x in list(v.items())[:12]:
+                if isinstance(x,(dict,list)): walk(x,path+'.'+str(k)[:80],depth+1)
+        elif isinstance(v,list):
+            out.append(dict(Path=path,Type='array',Count=len(v),Fields=''))
+            if v: walk(v[0],path+'[0]',depth+1)
+    walk(payload,'$',0)
+    return out
 
 
 def apple_diagnostics():
     st.subheader('Apple Sports · experimental connection test')
     st.caption('Unofficial endpoints; no Apple-derived scores, predictions or grading yet. ESPN remains authoritative for this dashboard. Manual probe only; cached for two minutes.')
-    if st.button('Test Apple Sports feed', key='apple_probe_767'):
-        st.session_state['apple_probe_767_result'] = apple_feed_probe()
-    if st.session_state.get('apple_probe_767_result'):
-        result, stamp = st.session_state['apple_probe_767_result']
+    if st.button('Test Apple Sports feed', key='apple_probe_768'):
+        st.session_state['apple_probe_768_result'] = apple_feed_probe()
+    if st.session_state.get('apple_probe_768_result'):
+        result, stamp, shapes = st.session_state['apple_probe_768_result']
         st.caption('Probe completed: '+local(stamp))
         st.dataframe(result, hide_index=True, width='stretch')
+        if shapes: st.dataframe(shapes,hide_index=True,width='stretch')
 
 
 def dashboard():
@@ -794,6 +849,12 @@ def dashboard():
     else: st.warning('Permanent storage unavailable; accuracy totals are not available. '+str(storage_error or 'Unknown error'))
     if busy: st.caption('Updating research in background; showing last completed snapshot.')
     if error: st.warning('Latest research refresh failed: '+error)
+    if page in ('Results','Stats'):
+        _, direct_rows, direct_error = journal_audit(royal_secret("QUEEN_DATABASE_URL"))
+        if direct_error is None:
+            rows=direct_rows; storage_ok=True
+        else:
+            st.warning('Direct journal read failed: '+direct_error+'; showing research snapshot.')
     saved=all(r['result']!='UNSAVED' for r in rows) and storage_ok
     w=sum(r['result']=='WIN' for r in rows); l=sum(r['result']=='LOSS' for r in rows)
     if page in ('Results','Stats'):
@@ -964,6 +1025,7 @@ def dashboard():
                     group=[r for r in rows if r[field]==value]; a=sum(r['result']=='WIN' for r in group); b=sum(r['result']=='LOSS' for r in group)
                     summary.append(dict(Group=field.title(),Category=value,Correct=a,Wrong=b,Pending=sum(r['result']=='PENDING' for r in group)))
             st.dataframe(summary,hide_index=True,width='stretch')
+        journal_diagnostics(royal_secret("QUEEN_DATABASE_URL"))
         apple_diagnostics()
         st.subheader('Historical probability check')
         st.caption('Retrospective walk-forward check: earlier games only, up to 100 recent games per sport. No market prices or fees; not a profitability test.')
@@ -976,5 +1038,5 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.6.7 Royal Apple Connection Test · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.6.8 Royal Data Audit · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 dashboard()
