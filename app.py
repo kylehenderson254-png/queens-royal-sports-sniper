@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.3 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -416,7 +416,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.8.2 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
+st.caption('V7.8.3 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -924,6 +924,34 @@ def apple_diagnostics():
                 st.dataframe([r for r in shapes if r.get('Source')==source],hide_index=True,width='stretch')
 
 
+def research_combo_groups(candidates, stamp):
+    """Research-only ordering; no calibrated probabilities or execution advice."""
+    pool={}
+    for _,m,r,*_ in candidates:
+        if m['sport'] not in FEATURED or not m.get('game',{}).get('event_id'):
+            continue
+        start=parse_date(m['start'])
+        if not start or start<=stamp or m['game'].get('state')!='pre': continue
+        if not r.get('preview') and r.get('result')!='PENDING': continue
+        value=experimental_value(r,m,None)
+        if not value or not math.isfinite(value[0]) or value[0]<=.5: continue
+        key=(m['sport'],str(m['game']['event_id']))
+        row=dict(sport=key[0],event_id=key[1],selection=r['selection'],home=m['home'],away=m['away'],start=m['start'],preview=bool(r.get('preview')),coverage=r['confidence'],score=value[0],model= 'ROYAL_766',kind='WINNER',line=None,created_at=stamp.isoformat())
+        if key not in pool or (pool[key]['preview'] and not row['preview']): pool[key]=row
+    ranked=sorted(pool.values(),key=lambda r:(-r['score'],r['coverage']!='RESEARCH B',r['preview'],r['sport'],r['event_id']))
+    used=set(); groups={}
+    for size in (2,3,5,10):
+        if len(ranked)<size:
+            groups[size]=[]; continue
+        key=lambda r:(r['sport'],r['event_id'])
+        unused=[r for r in ranked if key(r) not in used]
+        reused=[r for r in ranked if key(r) in used]
+        legs=(unused+reused)[:size]
+        groups[size]=legs
+        used.update(key(r) for r in legs)
+    return groups,len(ranked)
+
+
 @st.fragment(run_every='5s' if page=='Live' else None)
 def dashboard():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret("QUEEN_DATABASE_URL"),"")
@@ -1027,7 +1055,7 @@ def dashboard():
                 item=ml[0]; q,status,quote_ts,fresh=poly_quote(item['slug']); fresh=fresh and mapping_ok
                 sides=[item[k] for k in ('long','short')]
                 if q and set(sides)==set(g['teams']) and r['selection'] in sides:
-                    team_prices=dict(zip(sides,q)); price=q[sides.index(r['selection'])] if fresh else None; both=' / '.join(f'{t} {v:.0%}' for t,v in zip(sides,q))
+                    team_prices=dict(zip(sides,q)); price=q[sides.index(r['selection'])] if fresh else None; both=('Ask prices: ' if fresh else 'Stale ask prices: ')+' / '.join(f'{t} {v*100:.1f}¢' for t,v in zip(sides,q))
                 elif q: status='Team-side mapping unverified'
             elif slug: status='Unique moneyline not identified'
             # Research coverage is not a calibrated probability or proof of value.
@@ -1060,17 +1088,35 @@ def dashboard():
             else: st.subheader('Queen’s research reasoning')
         if page=='Picks':
             st.subheader('Optional combinations · research only')
-            size=st.segmented_control('Legs',[2,3,5,10],default=2,key='royal782_legs') or 2
-            unique={}
-            for _,m,r,*rest in candidates:
-                unique.setdefault((m['sport'],m['game']['event_id']),(m,r))
-            legs=list(unique.values())[:size]
-            if len(legs)==size:
-                for i,(m,r) in enumerate(legs,1):
-                    state='PREVIEW' if r.get('preview') else 'LOCKED'
-                    st.markdown(f'<div class="royal-record"><div><b>{i}. {html.escape(r["selection"])}</b><small>{league_mark(m["sport"])} · {html.escape(local(m["start"]))}</small></div><b class="royal-gold">{state}</b></div>',unsafe_allow_html=True)
-                st.caption('Illustrative research grouping, not a validated parlay or betting recommendation. Preview legs may change; no automatic grading or orders.')
-            else: st.info(f'Only {len(legs)} distinct eligible upcoming forecasts; {size} needed.')
+            size=st.segmented_control('Legs',[2,3,5,10],default=2,key='royal783_legs') or 2
+            st.caption('Ranked independently of card order by experimental sport-adjusted projected margin; uncalibrated, not a value or safety ranking. Groups avoid repeating games across sizes when the pool allows.')
+            scope=(today.isoformat(),selected,horizon)
+            cache=st.session_state.setdefault('royal783_groups',{})
+            regenerate=st.button('Build new research combinations',key='royal783_build')
+            now=utc()
+            if scope not in cache or regenerate or cache[scope][1]==0:
+                groups,eligible=research_combo_groups(candidates,now)
+                cache[scope]=(groups,eligible,now.isoformat())
+            groups,eligible,stamp=cache[scope]
+            legs=groups[size]
+            current={(m['sport'],str(m['game']['event_id'])):r for _,m,r,*_ in candidates}
+            if legs:
+                st.caption('Research snapshot · '+local(stamp)+' · held unchanged in this browser session until rebuilt. Not a saved individual prediction.')
+                other_keys={(r['sport'],r['event_id']) for n,rs in groups.items() if n<size for r in rs}
+                overlap=sum((r['sport'],r['event_id']) in other_keys for r in legs)
+                if overlap: st.caption(f'{overlap} game(s) shared with smaller groups because the distinct-game pool is limited.')
+                for i,r in enumerate(legs,1):
+                    live_r=current.get((r['sport'],r['event_id']))
+                    expired=parse_date(r['start'])<=now
+                    changed=live_r is not None and live_r['selection']!=r['selection']
+                    state='STARTED / EXPIRED' if expired else 'FORECAST CHANGED' if changed else 'NOT IN CURRENT VIEW' if live_r is None else 'PREVIEW' if r['preview'] else 'LOCKED PICK'
+                    st.markdown(f'<div class="royal-record"><div><b>{i}. {html.escape(r["selection"])}</b><small>{league_mark(r["sport"])} · {html.escape(local(r["start"]))} · {html.escape(r["coverage"])}</small></div><b class="royal-gold">{state}</b></div>',unsafe_allow_html=True)
+                if any(parse_date(r['start'])<=now for r in legs): st.warning('This research snapshot includes started games. Rebuild to view upcoming-only combinations.')
+                buf=io.StringIO(); fields=['sport','event_id','selection','home','away','start','preview','coverage','score','model','kind','line','created_at']
+                writer=csv.DictWriter(buf,fieldnames=fields); writer.writeheader(); writer.writerows(legs)
+                st.download_button('Save research snapshot CSV',buf.getvalue(),file_name=f'royal_research_{size}leg_{today}.csv',mime='text/csv',key='royal783_export')
+                st.caption('Research grouping only; no verified prices, joint probabilities, automatic grading or orders. CSV preserves the original selections for later comparison.')
+            else: st.info(f'Only {eligible} distinct eligible upcoming forecasts at snapshot; {size} needed. Rebuild to check again.')
         for i,(_,m,r,price,slug,status,both) in enumerate(candidates):
             if i%3==0: cols=st.columns(3)
             g=m['game']; esc=lambda x:html.escape(str(x),quote=True)
@@ -1144,7 +1190,7 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.8.2 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.8.3 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 @st.fragment(run_every='5s')
 def research_heartbeat():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret('QUEEN_DATABASE_URL'),'')
