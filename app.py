@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -175,6 +175,7 @@ def royal_secret(key):
     except Exception: return os.getenv(key, '')
 
 FOCUS=('NBA','NFL','NHL','NCAAF')
+FEATURED=('NBA','NFL','NCAAF')
 ODDS_KEYS={'NBA':'basketball_nba','NFL':'americanfootball_nfl','NHL':'icehockey_nhl','NCAAF':'americanfootball_ncaaf'}
 @st.cache_data(ttl=900,show_spinner=False)
 def royal_consensus(sport, key_fingerprint, _key):
@@ -415,7 +416,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.7 TEST · ROYAL DATA INTEGRITY · NBA / NFL / NHL / NCAAF')
+st.caption('V7.8 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -923,7 +924,7 @@ def apple_diagnostics():
                 st.dataframe([r for r in shapes if r.get('Source')==source],hide_index=True,width='stretch')
 
 
-@st.fragment(run_every='5s')
+@st.fragment(run_every='5s' if page=='Live' else None)
 def dashboard():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret("QUEEN_DATABASE_URL"),"")
     if snapshot is None:
@@ -938,7 +939,7 @@ def dashboard():
     else: st.warning('Permanent storage unavailable; accuracy totals are not available. '+str(storage_error or 'Unknown error'))
     if busy: st.caption('Updating research in background; showing last completed snapshot.')
     if error: st.warning('Latest research refresh failed: '+error)
-    if page in ('Results','Stats'):
+    if page in ('Picks','Live','Results','Stats'):
         _, direct_rows, direct_error = journal_audit(royal_secret("QUEEN_DATABASE_URL"))
         if direct_error is None:
             rows=direct_rows; storage_ok=True
@@ -951,14 +952,21 @@ def dashboard():
         counts=Counter(pending_status(r,index) for r in rows)
         for c,label,value in zip(st.columns(4),['Correct','Wrong','Accuracy','Pending'],[w,l,f'{w/(w+l):.1%}' if w+l else '—',sum(r['result']=='PENDING' for r in rows)]): c.metric(label,value if saved else '—')
     if page in ('Results','Stats') and saved:
+        focus_rows=[r for r in rows if r.get('sport') in FEATURED]
+        fw=sum(r['result']=='WIN' for r in focus_rows); fl=sum(r['result']=='LOSS' for r in focus_rows)
+        st.caption('Above: all sports, including NHL research.')
+        st.subheader('Royal Focus · NBA / NFL / NCAAF')
+        for c,label,value in zip(st.columns(4),['Correct','Wrong','Accuracy','Pending'],[fw,fl,f'{fw/(fw+fl):.1%}' if fw+fl else '—',sum(r['result']=='PENDING' for r in focus_rows)]): c.metric(label,value)
         st.caption(f"Pushes: {counts['PUSH']} · Upcoming: {counts['UPCOMING']} · Live: {counts['LIVE']} · Awaiting verified final: {counts['AWAITING VERIFIED FINAL']} · Final needs review: {counts['FINAL / NEEDS REVIEW']}")
     if page in ('Picks','Live','Research'):
-        selected=st.segmented_control('Sport',['All',*FOCUS],default='All',key='sport_filter') or 'All'
+        allowed=FEATURED if page=='Picks' else FOCUS
+        selected=st.segmented_control('Sport',['All',*allowed],default='All',key='sport_filter_'+page) or 'All'
         horizon=st.segmented_control('Schedule',['Today','Next 3 days','Next 7 days'],default='Today') or 'Today' if page in ('Picks','Research') else 'Today'
         days={'Today':0,'Next 3 days':2,'Next 7 days':6}[horizon]
 
         display=[]
         for sport,g in active:
+            if sport not in allowed: continue
             if selected!='All' and sport!=selected: continue
             start=parse_date(g['date'])
             if not start or (page=='Live' and g['state']!='in') or (page in ('Picks','Research') and not today<=start.astimezone(CT).date()<=today+timedelta(days=days)): continue
@@ -968,12 +976,13 @@ def dashboard():
             display.append(dict(sport=sport,home=home,away=away,start=g['date'],game=g,**({k:matched[0][k] for k in ('prob','spread','total')} if len(matched)==1 else {})))
         if page=='Picks':
             for m in market_cards:
+                if m['sport'] not in allowed: continue
                 if selected!='All' and m['sport']!=selected: continue
                 if not today<=parse_date(m['start']).astimezone(CT).date()<=today+timedelta(days=days): continue
                 if any(x['sport']==m['sport'] and _unique_score_team(m['home'],[x['home'],x['away']],m['sport'])==x['home'] and _unique_score_team(m['away'],[x['home'],x['away']],m['sport'])==x['away'] and abs((parse_date(x['start'])-parse_date(m['start'])).total_seconds())<7200 for x in display): continue
                 display.append(m)
         live_items=[m for m in display if m.get('game',{}).get('state')=='in']
-        if (live_items and page=='Picks') or page=='Live':
+        if page=='Live':
             st.subheader('🔴 Royal Live Arena')
             st.caption('Score snapshot completed '+datetime.fromtimestamp(time.time()-max(0,time.monotonic()-royal_elite_worker_75g().finished),CT).strftime('%I:%M:%S %p CT')+' · No live predictions')
             if not live_items: st.info('No games confirmed in progress in this snapshot.')
@@ -984,21 +993,45 @@ def dashboard():
                     u=g.get('logos',{}).get(t,'') or ''
                     logo=f'<img src="{esc(u)}" width="36" height="36">' if u.startswith('https://') else ''
                     return f'<div class="live-team">{logo}<span>{esc(t)}</span><b>{esc(g.get("scores",{}).get(t,"—"))}</b></div>'
-                saved_pick=next((r for r in rows if r['sport']==m['sport'] and r['event_id']==g.get('event_id') and r['kind']=='WINNER' and r['phase']=='PREGAME'),None)
+                saved_pick=next((r for r in rows if r.get('result')!='UNSAVED' and r['sport']==m['sport'] and r['event_id']==g.get('event_id') and r['kind']=='WINNER' and r['phase']=='PREGAME'),None)
                 note='♛ Pregame selection: '+saved_pick['selection'] if saved_pick else 'ROYAL MONITOR · No locked pick'
                 with live_cols[i%3]:
                     st.markdown(f'<div class="royal-live-card"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(g.get("detail", "In progress"))}</small>{live_team(m["away"])}{live_team(m["home"])}<small style="color:#f3cf7c">{esc(note)}</small></div>',unsafe_allow_html=True)
         if page=='Picks':
+            # The journal is the source of truth. Never substitute a forecast.
+            locked_today = [r for r in rows if saved and r.get('sport') in FEATURED and r.get('result') != 'UNSAVED'
+                and r.get('kind') == 'WINNER' and r.get('phase') == 'PREGAME'
+                and parse_date(r.get('start')) and parse_date(r['start']).astimezone(CT).date() == today]
+            locked_today.sort(key=lambda r:(r.get('created_at',''),r['sport'],r['event_id']))
+            locked_today = [r for r in locked_today if selected == 'All' or r['sport'] == selected]
+            st.subheader('🔒 Today’s locked picks')
+            if not locked_today: st.info('No verified saved picks for this view yet.')
+            for r in locked_today:
+                g = index.get((r['sport'],r['event_id']), {})
+                result = pending_status(r,index)
+                st.markdown(f"**{html.escape(r['selection'])}** · {r['sport']} · {result} · {local(r['start'])}")
+            st.caption('Original selections stay in the journal after kickoff and final. New eligible locks may be added; no existing lock is replaced.')
+            st.subheader('Optional combinations · research only')
+            eligible=[r for r in locked_today if r['result']=='PENDING' and parse_date(r['start'])>utc() and index.get((r['sport'],r['event_id']),{}).get('state')=='pre']
+            # Fixed ordering by original save time, not changing odds.
+            unique=list({(r['sport'],r['event_id']):r for r in eligible}.values())
+            size=st.segmented_control('Legs',[2,3,5,10],default=2,key='royal78_legs') or 2
+            if len(unique)>=size:
+                for i,r in enumerate(unique[:size],1): st.write(f"{i}. {r['selection']} · {r['sport']}")
+                st.caption('Illustrative combination of locked forecasts, not a ranked or validated parlay. Changes as games start; no orders or grading.')
+            else: st.caption(f'Only {len(unique)} eligible distinct upcoming locked games; no {size}-leg combination.')
+        if page=='Picks':
             st.subheader('♛ Royal Selections')
-            st.caption('Research only · Odds API paused · Injuries unverified · Prices are snapshots.')
+            st.caption('Royal Focus: NBA / NFL / NCAAF. NHL remains in Research, Live and all-sports results. Prices are snapshots; use Refresh displayed data.')
         candidates=[]
         for m in display:
             g=m.get('game',{}); key=(m['sport'],g.get('event_id'))
             if not g: continue
             saved_rows=[r for r in rows if (r['sport'],r['event_id'])==key and r['kind']=='WINNER' and r['phase']=='PREGAME']
-            r=saved_rows[0] if saved_rows else None
+            r=saved_rows[0] if saved_rows and saved and saved_rows[0].get('result')!='UNSAVED' else None
             if page=='Live': continue
             if g.get('state')!='pre': continue
+            if not r and page=='Picks': continue
             if not r:
                 preview=next((v for v in previews.get(key,[]) if v[0]=='WINNER'),None)
                 if preview:
@@ -1039,7 +1072,7 @@ def dashboard():
             candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status,both))
         if page in ('Picks','Research'):
             candidates.sort(key=lambda x:(x[0],x[1]['start']))
-            if page=='Picks': candidates=candidates[:5]
+            if page=='Picks': candidates.sort(key=lambda x:(x[2].get('created_at',''),x[1]['sport'],x[1]['game']['event_id']))
             if not candidates: st.info('No qualified research previews or saved picks for this view.')
             elif page=='Picks': st.caption('WATCH · Research selections, not validated betting value.')
             else: st.subheader('Queen’s research reasoning')
@@ -1057,7 +1090,7 @@ def dashboard():
             value=experimental_value(r,m,price)
             fair=f'{value[0]:.0%}' if value else '—'
             edge=f'{value[1]*100:+.1f} pp' if value and value[1] is not None else '—'
-            label='Preview / not locked · ' if r.get('preview') else ''
+            label='Preview / not locked · ' if r.get('preview') else 'LOCKED · '
             if page=='Research':
                 with cols[i%3]:
                     st.markdown(f"**{m['away']} vs {m['home']}**")
@@ -1096,7 +1129,7 @@ def dashboard():
                 st.dataframe([{'Sport':m['sport'],'Time':local(m['start']),'Away':m['away'],'Home':m['home']} for m in upcoming],hide_index=True,width='stretch')
             else: st.info('No upcoming games returned by the schedule feed.')
             st.caption('Future previews are not saved or graded until their game day. Schedule includes games without sufficient research.')
-        st.caption('Same-day eligible winner forecasts are recorded regardless of margin; historical records retain their original selection rules. Spread quotes are informational; player-yardage selections withheld until player models are validated. Opposite-team estimates do not model ties or voids. Live scores only; no live predictions.')
+        st.caption('NHL is research-only; all its outcomes remain in the journal. Same-day eligible winner forecasts are recorded regardless of margin; historical records retain their original selection rules. Spread quotes are informational; player-yardage selections withheld until player models are validated. Opposite-team estimates do not model ties or voids. Live scores only; no live predictions.')
     elif page=='Results':
         if rows and saved:
             view=st.selectbox('Results filter',['All','Graded','Pending'])
@@ -1127,5 +1160,20 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.7 Royal Data Integrity · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.8 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+@st.fragment(run_every='5s')
+def research_heartbeat():
+    snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret('QUEEN_DATABASE_URL'),'')
+    st.caption('Research worker: '+('retrying' if error else 'updating' if busy else 'ready')+' · Picks stay still until refreshed.')
+    if st.button('Refresh displayed data',key='royal78_refresh'):
+        journal_audit.clear()
+        st.rerun()
+    if snapshot is not None and st.session_state.get('royal78_initial_wait'):
+        st.session_state['royal78_initial_wait']=False
+        st.rerun()
+
+if page!='Live':
+    initial,_,_=royal_elite_worker_75g().poll(royal_secret('QUEEN_DATABASE_URL'),'')
+    st.session_state['royal78_initial_wait']=initial is None
+    research_heartbeat()
 dashboard()
