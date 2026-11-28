@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.6 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -416,7 +416,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.8.6 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
+st.caption('V7.8.7 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -610,14 +610,19 @@ def render_games(items):
 # Public, read-only league discovery; no guessed event slugs.
 @st.cache_data(ttl=90,show_spinner=False)
 def poly_league(sport):
+    # Cache failures as well as successes: do not retry per card on a 429.
     events=[]
-    for offset in range(0,500,100):
-        r=requests.get(BASE+'/v2/leagues/'+quote(LEAGUES[sport],safe='')+'/events',params={'limit':100,'offset':offset,'type':'sport','section':'general'},timeout=5)
-        r.raise_for_status(); batch=r.json().get('events')
-        if not isinstance(batch,list): raise ValueError('Missing events array')
-        events.extend(batch)
-        if len(batch)<100: break
-    return events
+    try:
+        for offset in range(0,500,100):
+            r=requests.get(BASE+'/v2/leagues/'+quote(LEAGUES[sport],safe='')+'/events',params={'limit':100,'offset':offset,'type':'sport','section':'general'},timeout=5)
+            r.raise_for_status(); batch=r.json().get('events')
+            if not isinstance(batch,list): raise ValueError('Missing events array')
+            events.extend(batch)
+            if len(batch)<100: break
+        return events, None
+    except Exception as exc:
+        code=getattr(getattr(exc,'response',None),'status_code',None)
+        return [], 'League HTTP '+str(code) if code else 'League '+type(exc).__name__
 
 def poly_team(t, names, ab):
     if not isinstance(t,dict): return None
@@ -658,7 +663,11 @@ def poly_for_game(m):
     g=m['game']; start=parse_date(m['start']); names=g['teams']
     if not start:return '',[],'Missing start'
     try:
-        event,team_ids=match_poly_event(poly_league(m['sport']),names,g.get('abbr',{}),start)
+        events, discovery_error=poly_league(m['sport'])
+        if discovery_error:
+            if '429' in discovery_error: royal_quote_cache().backoff()
+            return '',[],discovery_error
+        event,team_ids=match_poly_event(events,names,g.get('abbr',{}),start)
         if not event:return '',[],'No unique league event matched'
         out=[]
         for x in event.get('markets') or []:
@@ -700,32 +709,73 @@ def fetch_poly_quote(slug):
     except Exception as e:return None,'Quote '+type(e).__name__
 
 class RoyalQuoteCache:
+    """Shared, leased quote queue. Worker never calls Streamlit or touches session state."""
     def __init__(self):
-        self.lock=threading.Lock(); self.pool=ThreadPoolExecutor(max_workers=2); self.entries={}; self.next_request=0; self.pause_until=0
-    def poll(self,slug):
+        self.lock=threading.Lock(); self.pool=ThreadPoolExecutor(max_workers=2)
+        self.entries={}; self.next_request=0.; self.pause_until=0.; self.thread=None
+    @staticmethod
+    def _fetch(slug):
+        q,status=fetch_poly_quote(slug)
+        return q,status,time.time()
+    def backoff(self):
+        with self.lock: self.pause_until=max(self.pause_until,time.monotonic()+60)
+    def _tick(self):
+        now=time.monotonic()
+        for e in self.entries.values():
+            f=e['future']
+            if f is None or not f.done(): continue
+            try: q,status,ts=f.result()
+            except Exception as exc: q,status,ts=None,type(exc).__name__,time.time()
+            e['future']=None; e['status']=status; e['ok']=q is not None
+            if q is not None: e['q']=q; e['ts']=ts
+            e['next']=now+(12 if q is not None else 60 if '429' in status else 15)
+            if '429' in status: self.pause_until=max(self.pause_until,now+60)
+        for key in list(self.entries):
+            e=self.entries[key]
+            if e['future'] is None and now-e['lease']>300: del self.entries[key]
+        if now<max(self.next_request,self.pause_until): return
+        if sum(e['future'] is not None for e in self.entries.values())>=2: return
+        due=[(slug,e) for slug,e in self.entries.items() if e['lease']>now and e['future'] is None and e['next']<=now]
+        if due:
+            # Priority 0 = locked winner; then other research. Oldest dispatch first.
+            slug,e=min(due,key=lambda pair:(pair[1]['priority'],pair[1]['last'],pair[0]))
+            e['last']=now; e['future']=self.pool.submit(self._fetch,slug); self.next_request=now+.5
+    def _run(self):
+        while True:
+            with self.lock:
+                self._tick()
+                if not any(e['lease']>time.monotonic() or e['future'] is not None for e in self.entries.values()):
+                    self.thread=None; return
+            time.sleep(.15)
+    def _start(self):
+        if self.thread is None:
+            self.thread=threading.Thread(target=self._run,daemon=True); self.thread.start()
+    def poll(self,slug,priority=1):
         with self.lock:
             now=time.monotonic()
-            e=self.entries.setdefault(slug,dict(q=None,ts=None,next=0,future=None,status='Waiting for quote'))
-            f=e['future']
-            if f is not None and f.done():
-                try: q,status=f.result()
-                except Exception as exc: q,status=None,type(exc).__name__
-                e['status']=status; e['future']=None
-                if q is not None: e['q']=q; e['ts']=time.time()
-                e['ok']=q is not None
-                e['next']=now+(12 if q is not None else 60 if '429' in status else 15)
-                if '429' in status: self.pause_until=max(self.pause_until,now+60)
-            if e['future'] is None and now>=max(e['next'],self.next_request,self.pause_until):
-                e['future']=self.pool.submit(fetch_poly_quote,slug)
-                self.next_request=now+0.5
-            age=max(0,time.time()-e['ts']) if e['ts'] is not None else None
-            fresh=bool(e.get('ok') and age is not None and age<=15)
-            return e['q'],e['status'],e['ts'],fresh
+            e=self.entries.setdefault(slug,dict(q=None,ts=None,next=0.,future=None,status='Waiting for quote',ok=False,lease=0.,priority=priority,last=0.))
+            e['priority']=min(e['priority'],priority) if e['lease']>now else priority
+            e['lease']=now+25
+            self._start()
+            fresh=bool(e['ok'] and e['ts'] is not None and 0<=time.time()-e['ts']<=15)
+            status='Rate limit cooldown' if now<self.pause_until and not fresh else e['status']
+            return e['q'],status,e['ts'],fresh
+    def renew(self,items):
+        for slug,priority in items: self.poll(slug,priority)
+    def health(self,items):
+        with self.lock:
+            now=time.time(); mono=time.monotonic(); entries=[self.entries.get(slug,{}) for slug,_ in items]
+            fresh=sum(bool(e.get('ok') and e.get('ts') is not None and 0<=now-e['ts']<=15) for e in entries)
+            return fresh,len(entries),max(0,int(math.ceil(self.pause_until-mono)))
 
 @st.cache_resource
 def royal_quote_cache(): return RoyalQuoteCache()
 
-def poly_quote(slug): return royal_quote_cache().poll(slug)
+def poly_quote(slug,priority=1):
+    # Register once per session/view; the small heartbeat renews this lease.
+    subscriptions=st.session_state.setdefault('royal787_quotes',{})
+    subscriptions[slug]=min(priority,subscriptions.get(slug,priority))
+    return royal_quote_cache().poll(slug,priority)
 
 @st.cache_resource
 def royal_mapping_cache(): return {},threading.Lock()
@@ -1064,10 +1114,14 @@ def dashboard():
         if page=='Picks':
             unit_value=st.number_input('Paper value of 1 unit ($)',min_value=0.0,max_value=10000.0,value=5.0,step=0.5,key='royal784_unit')
             daily_cap=st.number_input('Daily paper exposure cap (U)',min_value=0.0,max_value=100.0,value=5.0,step=.5,key='royal785_cap')
-            st.caption('Experimental lock grades, not calibrated confidence or wager advice. Prices are snapshots; refresh to check again. Preview and missing/stale quotes receive 0U and separate labels.')
+            st.caption('Experimental lock grades, not calibrated confidence or wager advice. Prices are snapshots; the shared collector updates independently. Refresh to check again. Preview and missing/stale quotes receive 0U and separate labels.')
             st.subheader('♛ Royal Selections')
             st.caption('NBA / NFL / NCAAF · Upcoming games only. Completed picks are in Results. Locked predictions are immutable; future previews are not locked.')
         candidates=[]
+        st.session_state['royal787_quotes']={}
+        # Resolve today's locked games before other previews.
+        locked_keys={(r['sport'],r['event_id']) for r in rows if r.get('kind')=='WINNER' and r.get('phase')=='PREGAME' and r.get('result')=='PENDING'}
+        display.sort(key=lambda m: ((m['sport'],m.get('game',{}).get('event_id')) not in locked_keys,m['start']))
         for m in display:
             g=m.get('game',{}); key=(m['sport'],g.get('event_id'))
             if not g: continue
@@ -1090,7 +1144,14 @@ def dashboard():
             ml=[x for x in markets if x['category']=='Moneyline']
             q=None; price=None; both=''; team_prices={}; quote_ts=None; fresh=False
             if len(ml)==1:
-                item=ml[0]; q,status,quote_ts,fresh=poly_quote(item['slug']); fresh=fresh and mapping_ok
+                item=ml[0]
+                if page=='Picks' and r.get('preview'):
+                    status='Future preview · quote requests deferred'
+                elif not mapping_ok:
+                    status='Market mapping unverified'
+                else:
+                    q,status,quote_ts,fresh=poly_quote(item['slug'],0 if not r.get('preview') else 1)
+                fresh=fresh and mapping_ok
                 sides=[item[k] for k in ('long','short')]
                 if q and set(sides)==set(g['teams']) and r['selection'] in sides:
                     team_prices=dict(zip(sides,q)); price=q[sides.index(r['selection'])] if fresh else None; both=('Ask prices: ' if fresh else 'Stale ask prices: ')+' / '.join(f'{t} {v*100:.1f}¢' for t,v in zip(sides,q))
@@ -1108,14 +1169,14 @@ def dashboard():
                 if v:r['side_research'][t]=v
             r['discovery_counts']=(len(ml),sum(x['category']=='Spread' for x in markets))
             r['spread_research']=[]
-            if page=='Research':
+            if page=='Research' and not r.get('preview') and mapping_ok:
                 totals=[x for x in markets if x['category']=='Total' and x['line'] is not None and x['main_total'] is not None and abs(x['line']-x['main_total'])<1e-8]
                 for x in totals[:2]:
-                    sq,ss,ts,sf=poly_quote(x['slug'])
+                    sq,ss,ts,sf=poly_quote(x['slug'],2)
                     r['spread_research'].append(('Listed main total: '+x['short_title'],sq if sf and mapping_ok else None,ss))
-            for x in ((spread_items or alternate_items)[:4] if page=='Research' else []):
+            for x in ((spread_items or alternate_items)[:4] if page=='Research' and not r.get('preview') and mapping_ok else []):
                 if not x['short_title']:continue
-                sq,ss,ts,sf=poly_quote(x['slug'])
+                sq,ss,ts,sf=poly_quote(x['slug'],2)
                 r['spread_research'].append((('Main candidate: ' if x in spread_items else 'Listed alternate / main unverified: ')+x['short_title'],sq if sf and mapping_ok else None,ss))
             candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status,both))
         if page in ('Picks','Research'):
@@ -1134,7 +1195,7 @@ def dashboard():
                 grade_prices[k]=p
                 grade_map[k]=royal_paper_grade(r,m,p,rows if saved else [],now_grade) if saved else ('Unverified',0.,'Journal unavailable')
                 if grade_map[k][0]=='No quote' and r.get('team_prices'):
-                    grade_map[k]=('Price stale',0.,'Cached price is stale or mapping unverified')
+                    grade_map[k]=('Price stale',0.,'Cached price is stale or mapping unverified; quote collector updating')
             for _,m,r,price,*_ in sorted(candidates,key=lambda x:(-grade_map[(x[1]['sport'],str(x[1]['game']['event_id']))][1],x[1]['start'],x[1]['sport'],str(x[1]['game']['event_id']))):
                 k=(m['sport'],str(m['game']['event_id'])); day=parse_date(m['start']).astimezone(CT).date()
                 grade,units,note=grade_map[k]
@@ -1286,11 +1347,17 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.8.6 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.8.7 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 @st.fragment(run_every='5s')
 def research_heartbeat():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret('QUEEN_DATABASE_URL'),'')
     st.caption('Research worker: '+('retrying' if error else 'updating' if busy else 'ready')+' · Picks stay still until refreshed.')
+    if page in ('Picks','Research'):
+        subs=list(st.session_state.get('royal787_quotes',{}).items())
+        royal_quote_cache().renew(subs)
+        priority_subs=[x for x in subs if x[1]==0]
+        fresh,total,cooldown=royal_quote_cache().health(priority_subs)
+        st.caption(f'Quote collector · locked winner markets fresh: {fresh}/{total} · '+(f'Rate-limit cooldown {cooldown}s' if cooldown else 'Collecting independently')+' · Refresh displayed data to take a new grade/price snapshot.')
     if st.button('Refresh displayed data',key='royal78_refresh'):
         journal_audit.clear()
         st.rerun()
@@ -1298,6 +1365,8 @@ def research_heartbeat():
         st.session_state['royal78_initial_wait']=False
         st.rerun()
 
+if page not in ('Picks','Research'):
+    st.session_state['royal787_quotes']={}
 if page!='Live':
     initial,_,_=royal_elite_worker_75g().poll(royal_secret('QUEEN_DATABASE_URL'),'')
     st.session_state['royal78_initial_wait']=initial is None
