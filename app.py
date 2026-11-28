@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.4 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.5 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -416,7 +416,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.8.4 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
+st.caption('V7.8.5 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -541,6 +541,23 @@ def paper_return(stake, price):
 
 def fresh_research_price(price, timestamp):
     return price if price is not None and timestamp is not None and 0 <= time.time()-timestamp <= 15 else None
+
+def royal_paper_grade(r, m, price, rows, now):
+    """Uncalibrated research tiers, never a real-money recommendation."""
+    if r.get('preview') or r.get('result') != 'PENDING' or price is None:
+        return 'D', 0., 'Preview, unlocked or no fresh quote'
+    v=experimental_value(r,m,price)
+    if not v or v[1] is None or v[1]<=0 or v[0]<.52:
+        return 'D', 0., 'No positive experimental price gap'
+    sample=[x for x in rows if x.get('sport')==m['sport'] and x.get('kind')=='WINNER' and x.get('result') in ('WIN','LOSS') and parse_date(x.get('start')) and parse_date(x['start'])<now]
+    n=len(sample); wins=sum(x['result']=='WIN' for x in sample)
+    rate=(wins+10)/(n+20)
+    prob,gap,_=v
+    if n>=50 and rate>=.60 and prob>=.70 and gap>=.10 and r.get('confidence')=='RESEARCH B': return 'A+',2.,'Experimental tier; 50+ graded sport picks'
+    if n>=30 and rate>=.56 and prob>=.63 and gap>=.07 and r.get('confidence')=='RESEARCH B': return 'A',1.5,'Experimental tier; 30+ graded sport picks'
+    if n>=20 and rate>=.53 and prob>=.59 and gap>=.05 and r.get('confidence')=='RESEARCH B': return 'B+',1.,'Experimental tier; 20+ graded sport picks'
+    if gap>=.03 and prob>=.55 and r.get('confidence')=='RESEARCH B': return 'B',.5,'Limited evidence; paper only'
+    return 'C',.25,'Limited evidence; paper only'
 
 def prediction_card(group,g):
     r=group[0]; esc=lambda v:html.escape(str(v),quote=True)
@@ -1041,7 +1058,8 @@ def dashboard():
         unit_value=0.0
         if page=='Picks':
             unit_value=st.number_input('Paper value of 1 unit ($)',min_value=0.0,max_value=10000.0,value=5.0,step=0.5,key='royal784_unit')
-            st.caption('Illustrative paper exposure only. Not a recommended wager. Prices are snapshots; refresh to check again.')
+            daily_cap=st.number_input('Daily paper exposure cap (U)',min_value=0.0,max_value=100.0,value=5.0,step=.5,key='royal785_cap')
+            st.caption('Experimental lock grades, not calibrated confidence or wager advice. Prices are snapshots; refresh to check again. Preview and stale quotes receive 0U.')
             st.subheader('♛ Royal Selections')
             st.caption('NBA / NFL / NCAAF · Upcoming games only. Completed picks are in Results. Locked predictions are immutable; future previews are not locked.')
         candidates=[]
@@ -1102,6 +1120,20 @@ def dashboard():
             elif page=='Picks': st.caption('Upcoming forecasts are previews unless explicitly marked LOCKED. Only same-day eligible forecasts are saved.')
             else: st.subheader('Queen’s research reasoning')
         if page=='Picks':
+            # Allocate within the current view, separately for each game date.
+            # Reserve no more than 0.90U per date for optional groups in total.
+            now_grade=utc(); grade_map={}; remaining={}
+            for _,m,r,price,*_ in candidates:
+                k=(m['sport'],str(m['game']['event_id']))
+                p=fresh_research_price(price,r.get('quote_ts'))
+                grade_map[k]=royal_paper_grade(r,m,p,rows if saved else [],now_grade) if saved else ('D',0.,'Journal unavailable')
+            for _,m,r,price,*_ in sorted(candidates,key=lambda x:(-grade_map[(x[1]['sport'],str(x[1]['game']['event_id']))][1],x[1]['start'],x[1]['sport'],str(x[1]['game']['event_id']))):
+                k=(m['sport'],str(m['game']['event_id'])); day=parse_date(m['start']).astimezone(CT).date()
+                grade,units,note=grade_map[k]
+                left=remaining.setdefault(day,max(0.,daily_cap-min(.9,daily_cap)))
+                allocated=min(units,left); remaining[day]=max(0.,left-allocated)
+                grade_map[k]=(grade,allocated,note+(' · cap limited' if allocated<units else ''))
+            st.caption('Paper scenario cap applies per game date within this filtered view, not across sessions or actual wagers. Up to 0.90U reserved for all optional groups.')
             st.subheader('Optional combinations · research only')
             size=st.segmented_control('Legs',[2,3,5,10],default=2,key='royal783_legs') or 2
             st.caption('Ranked independently of card order by experimental sport-adjusted projected margin; uncalibrated, not a value or safety ranking. Groups avoid repeating games across sizes when the pool allows.')
@@ -1117,7 +1149,8 @@ def dashboard():
             current={(m['sport'],str(m['game']['event_id'])):r for _,m,r,*_ in candidates}
             current_prices={(m['sport'],str(m['game']['event_id'])):fresh_research_price(price,r.get('quote_ts')) for _,m,r,price,*_ in candidates}
             if legs:
-                units={2:.5,3:.25,5:.1,10:.05}[size]
+                leg_units=[grade_map.get((r['sport'],r['event_id']),('D',0.,''))[1] if (r['sport'],r['event_id']) in current and current[(r['sport'],r['event_id'])]['selection']==r['selection'] and parse_date(r['start'])>now else 0. for r in legs]
+                units=min({2:.5,3:.25,5:.1,10:.05}[size],min(leg_units,default=0.),min(.9,daily_cap)*{2:.5,3:.25,5:.1,10:.05}[size]/.9)
                 stake=units*unit_value
                 st.caption(f'Paper scenario: {units:g}U · ${stake:.2f} total exposure for this group (not per leg).')
                 st.caption('Research snapshot · '+local(stamp)+' · held unchanged in this browser session until rebuilt. Not a saved individual prediction.')
@@ -1138,7 +1171,7 @@ def dashboard():
                     hypothetical=paper_return(stake,math.prod(leg_prices))
                     if hypothetical: st.caption(f'Illustrative multiplied-price scenario only: payout ${hypothetical[0]:.2f} · gross gain ${hypothetical[1]:.2f} if all correct. Not an exchange parlay quote; fees, dependence and fills excluded.')
                 else: st.caption('Combined payout unavailable — fresh matched prices required for every leg.')
-                st.caption(f'If also modeling 1U on each individual game, this group adds {units:g}U of shared exposure to {size}U in singles; total {size+units:g}U (${(size+units)*unit_value:.2f}).')
+                st.caption(f'Paper singles in this group: {sum(leg_units):g}U; group adds {units:g}U; combined {sum(leg_units)+units:g}U (${(sum(leg_units)+units)*unit_value:.2f}). Weakest eligible leg limits group exposure.')
                 if any(parse_date(r['start'])<=now for r in legs): st.warning('This research snapshot includes started games. Rebuild to view upcoming-only combinations.')
                 buf=io.StringIO(); fields=['sport','event_id','selection','home','away','start','preview','coverage','score','model','kind','line','created_at']
                 writer=csv.DictWriter(buf,fieldnames=fields); writer.writeheader(); writer.writerows(legs)
@@ -1178,8 +1211,11 @@ def dashboard():
                 card_row=dict(r,sport=m['sport'],home=m['home'],away=m['away'],start=m['start'],kind='WINNER',line=None,result='UNSAVED' if r.get('preview') else r.get('result','PENDING'))
                 if page=='Picks':
                     p=fresh_research_price(price,r.get('quote_ts'))
-                    ret=paper_return(unit_value,p)
-                    card_row['unit_note']=f'Paper 1U · ${unit_value:.2f} · '+(f'Ask {p*100:.1f}¢ · payout ${ret[0]:.2f} · gross gain ${ret[1]:.2f}' if ret else 'Price / payout unavailable')
+                    grade,units,note=grade_map[(m['sport'],str(g['event_id']))]
+                    if p is None: grade,units,note='D',0.,'Quote expired'
+                    stake=units*unit_value
+                    ret=paper_return(stake,p) if units>0 else None
+                    card_row['unit_note']=f'Experimental lock {grade} · Paper {units:g}U · ${stake:.2f} · {note} · '+(f'Ask {p*100:.1f}¢ · payout ${ret[0]:.2f} · gross gain ${ret[1]:.2f}' if ret else 'Price / payout unavailable')
                 st.markdown(prediction_card([card_row],g),unsafe_allow_html=True)
                 st.caption(label+r['confidence']+' · '+(both or 'Price unavailable'))
                 st.caption('Market spread: '+str(r['market_spread']))
@@ -1222,7 +1258,7 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.8.4 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.8.5 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 @st.fragment(run_every='5s')
 def research_heartbeat():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret('QUEEN_DATABASE_URL'),'')
