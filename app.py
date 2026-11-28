@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.2 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -416,7 +416,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.8 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
+st.caption('V7.8.2 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -557,7 +557,7 @@ def prediction_card(group,g):
         cls="bet royalwinner" if x["kind"]=="WINNER" else "bet"
         crown="👑 " if x["kind"]=="WINNER" else ""
         bets+=f'<div class="{cls}"><b>{crown}{esc(label)}</b> <span>— {esc(detail)}</span></div>'
-    status='Not saved' if r['result']=='UNSAVED' else 'Saved research'
+    status='PREVIEW · NOT LOCKED' if r['result']=='UNSAVED' else 'LOCKED · '+str(r['result'])
     return f'<div class="rpred"><div class="meta">{league_mark(r["sport"])}{esc(" · "+local(r["start"])+" · "+status)}</div><div class="match">{side(r["away"])}<div class="project">{esc(projected)}</div>{side(r["home"])}</div><div class="reason">Projected score · {esc(reason)}</div>{bets}<div class="watch">WATCH · Exchange price unverified · Experimental</div></div>'
 
 def render_games(items):
@@ -934,6 +934,7 @@ def dashboard():
         st.warning('Research snapshot format changed. Waiting for a fresh snapshot.')
         return
     today,index,active,market_cards,diagnostics,rows,storage_ok,storage_error=snapshot[:8]
+    today=utc().astimezone(CT).date()
     previews=snapshot[8] if len(snapshot)==9 and isinstance(snapshot[8],dict) else {}
     if storage_ok: st.caption('Permanent V7.6.6 fresh research journal connected')
     else: st.warning('Permanent storage unavailable; accuracy totals are not available. '+str(storage_error or 'Unknown error'))
@@ -961,7 +962,7 @@ def dashboard():
     if page in ('Picks','Live','Research'):
         allowed=FEATURED if page=='Picks' else FOCUS
         selected=st.segmented_control('Sport',['All',*allowed],default='All',key='sport_filter_'+page) or 'All'
-        horizon=st.segmented_control('Schedule',['Today','Next 3 days','Next 7 days'],default='Today') or 'Today' if page in ('Picks','Research') else 'Today'
+        horizon=st.segmented_control('Schedule',['Today','Next 3 days','Next 7 days'],default='Next 3 days',key='royal782_schedule_'+page) or 'Next 3 days' if page in ('Picks','Research') else 'Today'
         days={'Today':0,'Next 3 days':2,'Next 7 days':6}[horizon]
 
         display=[]
@@ -998,31 +999,8 @@ def dashboard():
                 with live_cols[i%3]:
                     st.markdown(f'<div class="royal-live-card"><small style="color:#bda5df">{league_mark(m["sport"])} · {esc(g.get("detail", "In progress"))}</small>{live_team(m["away"])}{live_team(m["home"])}<small style="color:#f3cf7c">{esc(note)}</small></div>',unsafe_allow_html=True)
         if page=='Picks':
-            # The journal is the source of truth. Never substitute a forecast.
-            locked_today = [r for r in rows if saved and r.get('sport') in FEATURED and r.get('result') != 'UNSAVED'
-                and r.get('kind') == 'WINNER' and r.get('phase') == 'PREGAME'
-                and parse_date(r.get('start')) and parse_date(r['start']).astimezone(CT).date() == today]
-            locked_today.sort(key=lambda r:(r.get('created_at',''),r['sport'],r['event_id']))
-            locked_today = [r for r in locked_today if selected == 'All' or r['sport'] == selected]
-            st.subheader('🔒 Today’s locked picks')
-            if not locked_today: st.info('No verified saved picks for this view yet.')
-            for r in locked_today:
-                g = index.get((r['sport'],r['event_id']), {})
-                result = pending_status(r,index)
-                st.markdown(f"**{html.escape(r['selection'])}** · {r['sport']} · {result} · {local(r['start'])}")
-            st.caption('Original selections stay in the journal after kickoff and final. New eligible locks may be added; no existing lock is replaced.')
-            st.subheader('Optional combinations · research only')
-            eligible=[r for r in locked_today if r['result']=='PENDING' and parse_date(r['start'])>utc() and index.get((r['sport'],r['event_id']),{}).get('state')=='pre']
-            # Fixed ordering by original save time, not changing odds.
-            unique=list({(r['sport'],r['event_id']):r for r in eligible}.values())
-            size=st.segmented_control('Legs',[2,3,5,10],default=2,key='royal78_legs') or 2
-            if len(unique)>=size:
-                for i,r in enumerate(unique[:size],1): st.write(f"{i}. {r['selection']} · {r['sport']}")
-                st.caption('Illustrative combination of locked forecasts, not a ranked or validated parlay. Changes as games start; no orders or grading.')
-            else: st.caption(f'Only {len(unique)} eligible distinct upcoming locked games; no {size}-leg combination.')
-        if page=='Picks':
             st.subheader('♛ Royal Selections')
-            st.caption('Royal Focus: NBA / NFL / NCAAF. NHL remains in Research, Live and all-sports results. Prices are snapshots; use Refresh displayed data.')
+            st.caption('NBA / NFL / NCAAF · Upcoming games only. Completed picks are in Results. Locked predictions are immutable; future previews are not locked.')
         candidates=[]
         for m in display:
             g=m.get('game',{}); key=(m['sport'],g.get('event_id'))
@@ -1031,9 +1009,13 @@ def dashboard():
             r=saved_rows[0] if saved_rows and saved and saved_rows[0].get('result')!='UNSAVED' else None
             if page=='Live': continue
             if g.get('state')!='pre': continue
-            if not r and page=='Picks': continue
+            if not parse_date(m['start']) or parse_date(m['start']) <= utc(): continue
+            if r and r.get('result') != 'PENDING': continue
             if not r:
                 preview=next((v for v in previews.get(key,[]) if v[0]=='WINNER'),None)
+                if not preview:
+                    history=[v for (league,_),v in index.items() if league==m['sport'] and v.get('completed')]
+                    preview=next((v for v in forecast(g,m['sport'],history,None,None,preview=True) if v[0]=='WINNER'),None)
                 if preview:
                     _,selection,_,confidence,why=preview
                     r=dict(selection=selection,confidence=confidence,why=why,preview=True)
@@ -1072,10 +1054,23 @@ def dashboard():
             candidates.append((0 if r['confidence']=='RESEARCH B' else 1,m,r,price,slug,status,both))
         if page in ('Picks','Research'):
             candidates.sort(key=lambda x:(x[0],x[1]['start']))
-            if page=='Picks': candidates.sort(key=lambda x:(x[2].get('created_at',''),x[1]['sport'],x[1]['game']['event_id']))
+            if page=='Picks': candidates.sort(key=lambda x:(x[2].get('preview',False),x[1]['start'],x[1]['sport'],x[1]['game']['event_id']))
             if not candidates: st.info('No qualified research previews or saved picks for this view.')
-            elif page=='Picks': st.caption('WATCH · Research selections, not validated betting value.')
+            elif page=='Picks': st.caption('Upcoming forecasts are previews unless explicitly marked LOCKED. Only same-day eligible forecasts are saved.')
             else: st.subheader('Queen’s research reasoning')
+        if page=='Picks':
+            st.subheader('Optional combinations · research only')
+            size=st.segmented_control('Legs',[2,3,5,10],default=2,key='royal782_legs') or 2
+            unique={}
+            for _,m,r,*rest in candidates:
+                unique.setdefault((m['sport'],m['game']['event_id']),(m,r))
+            legs=list(unique.values())[:size]
+            if len(legs)==size:
+                for i,(m,r) in enumerate(legs,1):
+                    state='PREVIEW' if r.get('preview') else 'LOCKED'
+                    st.markdown(f'<div class="royal-record"><div><b>{i}. {html.escape(r["selection"])}</b><small>{league_mark(m["sport"])} · {html.escape(local(m["start"]))}</small></div><b class="royal-gold">{state}</b></div>',unsafe_allow_html=True)
+                st.caption('Illustrative research grouping, not a validated parlay or betting recommendation. Preview legs may change; no automatic grading or orders.')
+            else: st.info(f'Only {len(legs)} distinct eligible upcoming forecasts; {size} needed.')
         for i,(_,m,r,price,slug,status,both) in enumerate(candidates):
             if i%3==0: cols=st.columns(3)
             g=m['game']; esc=lambda x:html.escape(str(x),quote=True)
@@ -1093,10 +1088,9 @@ def dashboard():
             label='Preview / not locked · ' if r.get('preview') else 'LOCKED · '
             if page=='Research':
                 with cols[i%3]:
-                    st.markdown(f"**{m['away']} vs {m['home']}**")
-                    st.caption(local(m['start'])+' · '+label+r['confidence'])
-                    st.write(selection)
-                    st.write(r['why'])
+                    research_row=dict(r,sport=m['sport'],home=m['home'],away=m['away'],start=m['start'],kind='WINNER',line=None,result='UNSAVED' if r.get('preview') else r.get('result','PENDING'))
+                    st.markdown(prediction_card([research_row],g),unsafe_allow_html=True)
+                    st.caption(label+r['confidence'])
                     if value: st.caption(f'Experimental normal-margin model: assumed uncertainty {value[2]:g} points/goals; estimate {fair}; gross price gap {edge}. Not fitted, backtested or fee-adjusted.')
                     st.caption('Market: '+status+' · '+(both or 'Price unavailable'))
                     st.caption(f'Discovery: {r["discovery_counts"][0]} moneyline / {r["discovery_counts"][1]} full-game spread contracts; main line: {r["market_spread"]}')
@@ -1107,26 +1101,16 @@ def dashboard():
                         st.caption(f'{name}: '+(f'YES {sq[0]:.0%} / NO {sq[1]:.0%}' if sq else ss))
                 continue
             with cols[i%3]:
-                def royal_side(t):
-                    u=g.get('logos',{}).get(t,'') or ''
-                    img=f'<img src="{esc(u)}" width="44" height="44">' if u.startswith('https://') else ''
-                    code=(g.get('abbr',{}).get(t) or t).upper()
-                    px=r['team_prices'].get(t)
-                    px_text=f'{px*100:.0f}¢' if px is not None else '—'
-                    return f'<div class="royal-side">{img}<b>{esc(code)}</b><b class="royal-gold">{esc(px_text)}</b></div>'
-                edge_color="#62d6a1" if value and value[1] is not None and value[1]>0 else "#ff8585" if value and value[1] is not None and value[1]<0 else "#c6addf"
-                quote_label=('FRESH SNAPSHOT' if r['quote_fresh'] else 'STALE SNAPSHOT')+' · '+datetime.fromtimestamp(r['quote_ts'],CT).strftime('%I:%M:%S %p CT') if r['quote_ts'] and r['team_prices'] else 'PRICE UNAVAILABLE'
-                gaps=[(t,v[1]) for t,v in r['side_research'].items() if v[1] is not None]
-                best=max(gaps,key=lambda z:z[1]) if gaps else None
-                action='WATCH · Price unverified' if best is None else 'SKIP · Both estimates below asks' if best[1]<=0 else f'WATCH · Model value side: {best[0]} {best[1]*100:+.1f} pp (model)'
-                # Opposite-team gap is illustrative, not a verified settlement probability.
-                st.markdown(f'<div class="royal-v76"><small>{league_mark(m["sport"])} · {esc(detail)}</small><div class="royal-match">{royal_side(m["away"])}<span>VS</span>{royal_side(m["home"])}</div><div class="royal-gold">Projected winner: {esc(selection)} · {esc(label or "ML")}</div><div class="royal-projection">{esc(projected)}</div><small>PROJECTED SCORE · {esc(margin)}</small><div>Market spread: {esc(r["market_spread"])}</div><div>Queen’s fair price: <b>{esc(fair)}</b> · Winner price gap: <b style="color:{edge_color}">{esc(edge)}</b></div><small>{esc(quote_label)}</small><small class="royal-gold">{esc(action)}</small></div>',unsafe_allow_html=True)
+                card_row=dict(r,sport=m['sport'],home=m['home'],away=m['away'],start=m['start'],kind='WINNER',line=None,result='UNSAVED' if r.get('preview') else r.get('result','PENDING'))
+                st.markdown(prediction_card([card_row],g),unsafe_allow_html=True)
+                st.caption(label+r['confidence']+' · '+(both or 'Price unavailable'))
+                st.caption('Market spread: '+str(r['market_spread']))
                 if slug: st.markdown(f'[Open Polymarket](https://polymarket.us/event/{slug})')
-        if page=='Picks' and days>0:
+        if page in ('Picks','Research'):
             st.subheader('Upcoming Battles')
             upcoming=sorted([m for m in display if m.get('game',{}).get('state')=='pre'],key=lambda m:m['start'])
             if upcoming:
-                st.dataframe([{'Sport':m['sport'],'Time':local(m['start']),'Away':m['away'],'Home':m['home']} for m in upcoming],hide_index=True,width='stretch')
+                render_games(upcoming)
             else: st.info('No upcoming games returned by the schedule feed.')
             st.caption('Future previews are not saved or graded until their game day. Schedule includes games without sufficient research.')
         st.caption('NHL is research-only; all its outcomes remain in the journal. Same-day eligible winner forecasts are recorded regardless of margin; historical records retain their original selection rules. Spread quotes are informational; player-yardage selections withheld until player models are validated. Opposite-team estimates do not model ties or voids. Live scores only; no live predictions.')
@@ -1160,7 +1144,7 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.8 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.8.2 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 @st.fragment(run_every='5s')
 def research_heartbeat():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret('QUEEN_DATABASE_URL'),'')
