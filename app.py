@@ -10,7 +10,7 @@ import time
 import threading
 import streamlit as st
 
-st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.7 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="ROYAL SPORTS SNIPER V7.8.8 | 254", page_icon="👑", layout="wide", initial_sidebar_state="collapsed")
 CT = ZoneInfo("America/Chicago")
 BASE = "https://gateway.polymarket.us"
 LEAGUES = {"NBA":"nba", "NFL":"nfl", "NCAAB":"ncaab", "NCAAF":"cfb", "NHL":"nhl", "MLB":"mlb", "WNBA":"wnba", "MLS":"mls", "EPL":"epl", "UFC":"ufc", "Tennis":"tennis/all"}
@@ -416,7 +416,7 @@ if banners:
     encoded=base64.b64encode(banner.read_bytes()).decode()
     st.markdown(f'<img alt="Royal Sports Sniper" style="display:block;width:100%;height:auto;max-width:none;margin:0 auto;border-radius:12px" src="data:image/{mime};base64,{encoded}">',unsafe_allow_html=True)
 else: st.title('ROYAL SPORTS SNIPER | 254')
-st.caption('V7.8.7 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
+st.caption('V7.8.8 STABILITY TEST · ROYAL PICK LOCK · NBA / NFL / NHL / NCAAF')
 page=st.segmented_control('View',['Picks','Live','Research','Results','Stats'],default='Picks',label_visibility='collapsed') or 'Picks'
 def collect_snapshot(db_url,odds_key):
     today=utc().astimezone(CT).date()
@@ -665,7 +665,7 @@ def poly_for_game(m):
     try:
         events, discovery_error=poly_league(m['sport'])
         if discovery_error:
-            if '429' in discovery_error: royal_quote_cache().backoff()
+            if '429' in discovery_error: royal_quote_cache_v788().backoff()
             return '',[],discovery_error
         event,team_ids=match_poly_event(events,names,g.get('abbr',{}),start)
         if not event:return '',[],'No unique league event matched'
@@ -769,13 +769,13 @@ class RoyalQuoteCache:
             return fresh,len(entries),max(0,int(math.ceil(self.pause_until-mono)))
 
 @st.cache_resource
-def royal_quote_cache(): return RoyalQuoteCache()
+def royal_quote_cache_v788(): return RoyalQuoteCache()
 
 def poly_quote(slug,priority=1):
     # Register once per session/view; the small heartbeat renews this lease.
     subscriptions=st.session_state.setdefault('royal787_quotes',{})
     subscriptions[slug]=min(priority,subscriptions.get(slug,priority))
-    return royal_quote_cache().poll(slug,priority)
+    return royal_quote_cache_v788().poll(slug,priority)
 
 @st.cache_resource
 def royal_mapping_cache(): return {},threading.Lock()
@@ -1347,16 +1347,16 @@ def dashboard():
         if st.session_state.get('royal765_checks'):
             st.dataframe(st.session_state['royal765_checks'],hide_index=True,width='stretch')
         st.dataframe(diagnostics,width='stretch',hide_index=True)
-    st.caption('V7.8.7 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
+    st.caption('V7.8.8 Royal Stability · fresh V7.6.6 research journal; prior records retained separately. Experimental fair prices use assumed uncertainty, not calibrated probabilities. Gross gaps exclude fees. Background snapshots refresh after completion; automatic Odds API requests disabled. No live trading.')
 @st.fragment(run_every='5s')
 def research_heartbeat():
     snapshot,busy,error=royal_elite_worker_75g().poll(royal_secret('QUEEN_DATABASE_URL'),'')
     st.caption('Research worker: '+('retrying' if error else 'updating' if busy else 'ready')+' · Picks stay still until refreshed.')
     if page in ('Picks','Research'):
         subs=list(st.session_state.get('royal787_quotes',{}).items())
-        royal_quote_cache().renew(subs)
+        royal_quote_cache_v788().renew(subs)
         priority_subs=[x for x in subs if x[1]==0]
-        fresh,total,cooldown=royal_quote_cache().health(priority_subs)
+        fresh,total,cooldown=royal_quote_cache_v788().health(priority_subs)
         st.caption(f'Quote collector · locked winner markets fresh: {fresh}/{total} · '+(f'Rate-limit cooldown {cooldown}s' if cooldown else 'Collecting independently')+' · Refresh displayed data to take a new grade/price snapshot.')
     if st.button('Refresh displayed data',key='royal78_refresh'):
         journal_audit.clear()
